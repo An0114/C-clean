@@ -31,7 +31,7 @@ pub fn migrate(conn: &Connection) -> Result<u32, DbError> {
         // 单迁移独立事务：失败即整张回滚，user_version 保持不变。
         let tx = conn.unchecked_transaction()?;
         tx.execute_batch(sql)?;
-        tx.pragma_update(None, "user_version", &version)?;
+        tx.pragma_update(None, "user_version", version)?;
         tx.commit()?;
         latest = *version;
     }

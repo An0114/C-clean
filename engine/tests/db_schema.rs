@@ -28,7 +28,14 @@ fn insert_item(conn: &Connection, session_id: i64) {
         "INSERT INTO cleanup_item
             (session_id, module_code, category, path, risk_level, description)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        rusqlite::params![session_id, "A", "npm_cache", r"C:\tmp\cache", "L1", "测试清理项"],
+        rusqlite::params![
+            session_id,
+            "A",
+            "npm_cache",
+            r"C:\tmp\cache",
+            "L1",
+            "测试清理项"
+        ],
     )
     .expect("insert item");
 }
@@ -53,7 +60,10 @@ fn opens_and_creates_db_file() {
     drop(conn);
 
     let db_file = dir.path().join("data").join("cdiskcleaner.db");
-    assert!(db_file.exists(), "应在 <data_root>/data/cdiskcleaner.db 创建库文件");
+    assert!(
+        db_file.exists(),
+        "应在 <data_root>/data/cdiskcleaner.db 创建库文件"
+    );
     // tempdir 自动清理
     dir.close().expect("close tempdir");
 }
@@ -113,7 +123,13 @@ fn rules_meta_rejects_id_not_1() {
         "INSERT INTO rules_meta
             (id, version, checksum_sha256, source_url, downloaded_at)
          VALUES (?1, ?2, ?3, ?4, ?5)",
-        rusqlite::params![2i64, "1.0.0", "x".repeat(64), "https://example/rules_meta.json", 1000i64],
+        rusqlite::params![
+            2i64,
+            "1.0.0",
+            "x".repeat(64),
+            "https://example/rules_meta.json",
+            1000i64
+        ],
     );
     match result {
         // rusqlite 0.40：约束冲突以 SqliteFailure 暴露，ErrorCode 映射为 ConstraintViolation
@@ -128,7 +144,13 @@ fn rules_meta_rejects_id_not_1() {
         "INSERT INTO rules_meta
             (id, version, checksum_sha256, source_url, downloaded_at)
          VALUES (?1, ?2, ?3, ?4, ?5)",
-        rusqlite::params![1i64, "1.0.0", "x".repeat(64), "https://example/rules_meta.json", 1000i64],
+        rusqlite::params![
+            1i64,
+            "1.0.0",
+            "x".repeat(64),
+            "https://example/rules_meta.json",
+            1000i64
+        ],
     )
     .expect("insert rules_meta id=1");
 }
@@ -142,13 +164,20 @@ fn cleanup_item_cascades_with_session() {
     insert_item(&conn, sid);
     insert_item(&conn, sid);
 
-    let before: i64 = conn.query_row("SELECT count(*) FROM cleanup_item", [], |r| r.get(0)).unwrap();
+    let before: i64 = conn
+        .query_row("SELECT count(*) FROM cleanup_item", [], |r| r.get(0))
+        .unwrap();
     assert_eq!(before, 2);
 
     // 删除 session：cleanup_item 应 ON DELETE CASCADE 连带清空
-    conn.execute("DELETE FROM scan_session WHERE id = ?1", rusqlite::params![sid])
-        .expect("delete session");
-    let after: i64 = conn.query_row("SELECT count(*) FROM cleanup_item", [], |r| r.get(0)).unwrap();
+    conn.execute(
+        "DELETE FROM scan_session WHERE id = ?1",
+        rusqlite::params![sid],
+    )
+    .expect("delete session");
+    let after: i64 = conn
+        .query_row("SELECT count(*) FROM cleanup_item", [], |r| r.get(0))
+        .unwrap();
     assert_eq!(after, 0, "删除 session 后其下 cleanup_item 必须级联删除");
 }
 
@@ -167,8 +196,11 @@ fn registry_backup_sets_null_on_task_delete() {
     .expect("insert registry_backup");
 
     // 删除 task：registry_backup.task_id 应 ON DELETE SET NULL，记录本身保留
-    conn.execute("DELETE FROM cleanup_task WHERE id = ?1", rusqlite::params![tid])
-        .expect("delete task");
+    conn.execute(
+        "DELETE FROM cleanup_task WHERE id = ?1",
+        rusqlite::params![tid],
+    )
+    .expect("delete task");
     let (count, task_id): (i64, Option<i64>) = conn
         .query_row(
             "SELECT count(*), max(task_id) FROM registry_backup",

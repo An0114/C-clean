@@ -26,9 +26,9 @@ pub fn open(data_root: &Path) -> Result<Connection, DbError> {
     let conn = Connection::open(&db_path)?;
 
     // SQLite 外键约束默认关闭，必须显式开启（TRD §4：外键开启）。
-    conn.pragma_update(None, "foreign_keys", &true)?;
+    conn.pragma_update(None, "foreign_keys", true)?;
     // WAL：桌面单用户场景下读写并发与崩溃恢复更友好。
-    conn.pragma_update(None, "journal_mode", &"WAL")?;
+    conn.pragma_update(None, "journal_mode", "WAL")?;
 
     // 打开后自动跑未应用的 schema 迁移；重复打开幂等（见 migrate.rs）。
     crate::db::migrate::migrate(&conn)?;
