@@ -30,7 +30,8 @@ pub fn open(data_root: &Path) -> Result<Connection, DbError> {
     // WAL：桌面单用户场景下读写并发与崩溃恢复更友好。
     conn.pragma_update(None, "journal_mode", &"WAL")?;
 
-    // schema 迁移在任务 002 的迁移器落地后串入（见 migrate.rs）。
+    // 打开后自动跑未应用的 schema 迁移；重复打开幂等（见 migrate.rs）。
+    crate::db::migrate::migrate(&conn)?;
 
     Ok(conn)
 }
