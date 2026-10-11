@@ -1,0 +1,90 @@
+# ============================================================
+# C-Disk Cleaner · 基线 .gitignore
+# 原则：密钥/环境变量绝不入库；构建产物/运行时数据不入库；
+#       IDE 个人配置不入库；示例配置(.env.example)保留入库。
+# ============================================================
+
+# ---------- 环境变量与密钥（最高优先级） ----------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+*.p12
+*.p12.bundle
+secrets/
+secrets.*/
+private/
+
+# ---------- Rust / Cargo ----------
+target/
+**/target/
+Cargo.lock
+*.rs.bk
+
+# ---------- Node / pnpm / 前端 ----------
+node_modules/
+**/node_modules/
+dist/
+dist-ssr/
+build/
+out/
+.next/
+.nuxt/
+*.local
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+npm-debug.log*
+
+# ---------- Tauri 构建产物 ----------
+src-tauri/target/
+src-tauri/gen/
+src-tauri/icons/*.bak
+release/
+bundles/
+*.msi
+*.exe
+*.nsis
+
+# ---------- 运行时数据 / 数据库 / 日志 / 保险箱 ----------
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+data/
+safe_box/
+SafeBox/
+logs/
+*.log
+audit/
+
+# ---------- IDE / 编辑器 ----------
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json.example
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+.fleet/
+*.code-workspace
+
+# ---------- 操作系统杂项 ----------
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+Desktop.ini
+
+# ---------- 打包/发布产物（源码包除外） ----------
+artifacts/
+packages/
+*.zip
+*.7z
+*.tar.gz
