@@ -1,0 +1,21 @@
+[package]
+name = "cdisk-cleaner"
+version = "0.1.0"
+description = "C-Disk Cleaner Tauri 2 主进程壳"
+edition.workspace = true
+rust-version.workspace = true
+
+# Tauri 约定：lib 目标命名为 `<bin>_lib`，main.rs 以 `cdisk_cleaner_lib::run()` 调用
+[lib]
+name = "cdisk_cleaner_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+# tauri-build 是 Tauri 壳的构建期依赖（生成窗口/资源绑定代码），
+# 不属于业务依赖，直接在本 crate 声明而不放进 workspace.dependencies。
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { workspace = true }
+# 链接仓库内 engine 核心库，验证 Rust workspace 链路打通。
+engine = { path = "../../engine" }
