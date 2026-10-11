@@ -80,13 +80,19 @@ impl ThrottledEmitter {
 impl ProgressEmitter for ThrottledEmitter {
     fn emit(&self, payload: &ScanProgress) {
         let now = Instant::now();
-        let mut last = self.last.lock().ok();
-        let should_send = match last.as_ref().map(|t| *t) {
+        let mut guard = self.last.lock().ok();
+        let should_send = match guard.as_ref() {
+            // 锁中毒：保守放行，不吞进度。
             None => true,
-            Some(prev) => now.duration_since(prev).as_millis() >= Self::MIN_INTERVAL_MS,
+            Some(g) => match &**g {
+                None => true,
+                Some(prev) => {
+                    now.duration_since(*prev).as_millis() >= Self::MIN_INTERVAL_MS
+                }
+            },
         };
         if should_send {
-            if let Some(g) = last.as_mut() {
+            if let Some(g) = guard.as_mut() {
                 **g = Some(now);
             }
             self.inner.emit(payload);

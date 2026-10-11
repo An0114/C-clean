@@ -26,10 +26,8 @@ impl<T: serde::Serialize> Envelope<T> {
             data: Some(data),
         }
     }
-}
 
-impl Envelope<()> {
-    /// 标准失败信封：data=None（TRD §5.1 默认）。
+    /// 标准失败信封：data=None（TRD §5.1 默认）。泛型可适配任意命令的出参类型。
     pub fn err(code: ErrorCode) -> Self {
         Self {
             code: code.code,
@@ -37,9 +35,7 @@ impl Envelope<()> {
             data: None,
         }
     }
-}
 
-impl<T: serde::Serialize> Envelope<T> {
     /// 带数据的失败信封（仅 L3 拒绝这类「必须回传明细」的场景使用）。
     pub fn err_with_data(code: ErrorCode, data: T) -> Self {
         Self {
