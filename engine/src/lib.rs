@@ -14,3 +14,6 @@ pub mod db;
 
 /// 执行引擎：删除唯一入口与 L3 红线白名单匹配器（task-003）。
 pub mod execute;
+
+/// IPC 网关：统一信封、命令纯逻辑、进度事件通道（task-004）。
+pub mod ipc;
