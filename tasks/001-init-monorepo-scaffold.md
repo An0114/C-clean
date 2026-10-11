@@ -127,3 +127,50 @@ DevAgent 交付物（不是本任务文档产出，是后续执行结果）：
 4. 本任务文档本身**由 DocsKeeper 在派发时**单独提交一次：
    `docs(task): 新增任务001-初始化monorepo脚手架 (#task-001)`，
    该提交只含 `tasks/001-init-monorepo-scaffold.md` 一个文件，落在 `feature/task-001-init-monorepo` 分支最前端（即 DevAgent 开工前的基线）。
+
+## 实现备注（DevAgent 回填，2026-10-11）
+
+### 实际改动文件清单（对照白名单）
+
+- 仓库根新增：`Cargo.toml`、`Cargo.lock`、`pnpm-workspace.yaml`、`package.json`、`.npmrc`、`pnpm-lock.yaml`（6 个）
+- `app/`：`app/package.json`、`app/index.html`、`app/vite.config.ts`、`app/tsconfig.json`、`app/src/main.tsx`、`app/src/App.tsx`、`app/src/vite-env.d.ts`
+- `app/src-tauri/`：`Cargo.toml`、`build.rs`、`src/main.rs`、`src/lib.rs`、`tauri.conf.json`、`icons/`（tauri icon 生成的全套 Windows/macOS 图标；android/ ios/ 子目录已删除，符合「仅 Windows」决策）
+- `engine/`：`Cargo.toml`、`src/lib.rs`（hello_engine 占位）、`tests/smoke.rs`（1 断言）
+- `elevation/`：`Cargo.toml`、`src/main.rs`（非 0 退出占位）
+- `rules/.gitkeep`、`scripts/.gitkeep`
+- 仓库根追加：`.gitignore`（仅追加 `app/src-tauri/gen/` 一条）、`README.md`（追加「本地启动（M0 脚手架）」段）、`docs/PROJECT_STATE.md`（状态同步）
+- 未改动：PRD/TRD/ARCHITECTURE/AGENTS/立项决策记录、`.gitattributes`、`LICENSE`。
+
+### 与任务文档的偏差（均已在代码/提交中注明原因）
+
+1. **`.npmrc` 新增**：首次 `pnpm install` 直连 npmjs.org 连续 ECONNRESET，追加 `registry=https://registry.npmmirror.com` 镜像（白名单允许「如确需」新增 `.npmrc`）。
+2. **`.gitignore` 追加 `app/src-tauri/gen/`**：已有 `src-tauri/gen/` 因含斜杠被锚定仓库根，匹配不到 `app/src-tauri/gen/`（Tauri v2 build 期生成的 ACL schema），属 §E-16 允许追加项，故显式追加锚定路径。其余 §E-16 条目（target/、node_modules/、dist/、.DS_Store、Thumbs.db 等）基线下均已存在，未重复追加。
+3. **`pnpm-workspace.yaml` 增加 `allowBuilds: esbuild: true`**：pnpm v11 不再读 package.json 的 `onlyBuiltDependencies`，且默认拦截 esbuild 构建脚本导致 vite 无法启动，按 pnpm v11 新约定迁入本文件。
+4. **`app/src-tauri/Cargo.toml` 增加 `[lib] name = "cdisk_cleaner_lib"`**：Tauri 约定 main.rs 以 `<bin>_lib::run()` 调用，不加此段会报 E0433。另加 `tauri-build` build-dependency（Tauri 壳必需构建期依赖，非业务依赖，未进 workspace.dependencies）。
+5. **rust-version 取 `"1.77"`**：TRD 未钉死，按任务说明填入。
+6. **额外一次 docs(task) 提交**：本「实现备注」按任务输出要求追加到本文件，因提交 6 规定只动 PROJECT_STATE.md，故单独补一次 `docs(task)` 提交，不与业务代码混提。
+
+### 自验命令与退出码（全部在仓库根执行）
+
+| 命令 | 退出码 | 结果 |
+|------|--------|------|
+| `cargo check --workspace --all-targets` | 0 | dev profile 编译通过，无 warning |
+| `cargo test -p engine` | 0 | smoke 测试 1 passed / 0 failed |
+| `pnpm install --frozen-lockfile` | 0 | Already up to date |
+| `pnpm --filter app build` | 0 | vite 5.4.11 构建成功，产物输出到 `app/dist/`（142.94 kB JS） |
+| `pnpm tauri dev` | 窗口正常拉起后手动终止 | Vite 5173 ready；Rust dev 编译 3m54s 通过；进程常驻 |
+
+注：cargo 拉包时本机 rsproxy 镜像 schannel 吊销检查离线（CRYPT_E_REVOCATION_OFFLINE），以环境变量 `CARGO_HTTP_CHECK_REVOKE=false` 会话内绕过，未改动全局 cargo 配置。
+
+### 手测空窗口现象
+
+- `pnpm tauri dev` 后进程 `cdisk-cleaner.exe` 常驻，主窗口标题实测为 **「C-Disk Cleaner」**（Process.MainWindowTitle 确认）。
+- 通过 PrintWindow 截取窗口内容确认：标题栏为自定义「C」图标 + 「C-Disk Cleaner」；正文居中显示 **C-Disk Cleaner** 大标题与灰色小字 **M0 scaffold — waiting for task 002**，无 Tauri/Vite 红屏报错。
+- DevTools 未开；dev 日志除 pnpm 自身的 NativeCommandError 包装（PowerShell 对 stderr 的正常包装，非错误）外，无 error；仅有一条 info：「tauri dependency has workspace inheritance enabled…Expected features: []」（workspace 继承的正常提示）。
+- 手测时桌面曾弹出一个与本项目无关的 `explorer.exe 无法访问指定设备` 系统弹窗（疑似用户桌面其他快捷方式失效），已用回车关闭，与本任务无关。
+
+### 遗留问题 / 风险点
+
+- 本机网络对 npmjs.org / crates.io 直连不稳，已分别走 npmmirror 与 rsproxy 镜像；CI（task-006）落地时需确认 GitHub Actions 网络不受影响。
+- `app/src-tauri/gen/schemas/` 已被 gitignore，Tauri v2 在团队协作时若启用 capabilities ACL 再评估是否入库（M0 未启用任何权限，无需入库）。
+- 前端未配置 ESLint / `tsc` 严格构建（build 脚本仅 `vite build`），留待 task-006 CI 阶段统一补齐 lint/test。
