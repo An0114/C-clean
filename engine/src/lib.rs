@@ -8,3 +8,6 @@
 pub fn hello_engine() -> &'static str {
     "engine"
 }
+
+/// 公共数据层：SQLite 连接入口与 schema 迁移（task-002）。
+pub mod db;
