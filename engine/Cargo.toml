@@ -8,3 +8,9 @@ rust-version.workspace = true
 [lib]
 name = "engine"
 path = "src/lib.rs"
+
+[dependencies]
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"

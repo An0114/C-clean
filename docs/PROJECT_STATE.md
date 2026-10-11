@@ -8,6 +8,7 @@
 ## 最近一次变更
 2026-10-11：完成 PRD / TRD / ARCHITECTURE / AGENTS / 立项决策记录全套长期基线文档，并初始化本状态白板。
 2026-10-11：task-001 完成——落地 app/engine/elevation/rules/scripts 五大目录骨架、Cargo workspace + pnpm workspace 双工作区，Tauri 2 最小空窗口（标题「C-Disk Cleaner」）端到端跑通，Cargo.lock 已入库。
+2026-10-11：task-002 完成——engine 内新建 db/ 子模块，rusqlite 0.40.2（bundled）连接入口、v1__init.sql 九张表 schema、user_version 手写迁移器，8 条集成测试全绿（含级联删除 / SET NULL / 单行表 CHECK / 迁移幂等）。
 
 ## 已完成事项
 - [x] 项目立项与仓库初始化（commit 67990f5 / 4972f9d）
@@ -20,7 +21,7 @@
 
 ## 待办事项
 - [x] 001：初始化 monorepo 目录骨架（app/ Tauri+React+Vite、engine/ Rust workspace、elevation/、rules/、scripts/），跑通最小空窗口
-- [ ] 002：落地公共数据层——SQLite 单文件 schema（settings/scan_session/cleanup_item/cleanup_task/safe_box/audit_log/rules_meta/registry_backup/cleanup_plan）与 rusqlite 连接、迁移
+- [x] 002：落地公共数据层——SQLite 单文件 schema（settings/scan_session/cleanup_item/cleanup_task/safe_box/audit_log/rules_meta/registry_backup/cleanup_plan）与 rusqlite 连接、迁移
 - [ ] 003：落地删除唯一入口 engine::delete::execute() + L3 红线白名单匹配器 + 单元测试（对 PRD P0-7 全部 L3 路径 100% 拦截）
 - [ ] 004：落地 IPC 网关骨架——统一响应信封 {code,message,data}、scan.start/cleanup.dryRun 命令、进度事件通道
 - [ ] 005：落地 rules/cache_rules.json 初始规则库 + rules_meta.json + SHA-256 校验加载逻辑
@@ -31,7 +32,7 @@
 - 决策 #1 提到"现有 5 个 PowerShell 脚本"作为 M1 兼容层，但仓库内尚无 scripts/ 实际脚本，其来源与 NDJSON 改造方案待对齐。
 
 ## 下一步计划
-派发 task-002：落地 SQLite schema 与 rusqlite 连接（settings/scan_session/cleanup_item/cleanup_task/safe_box/audit_log/rules_meta/registry_backup/cleanup_plan 九张表 + 迁移机制），在 engine 内新建 `db/` 子模块。
+派发 task-003：落地删除唯一入口 `engine::delete::execute()` + L3 红线白名单匹配器 + 单元测试（对 PRD P0-7 全部 L3 路径 100% 拦截）。
 
 ## 当前负责人 Agent
 DocsKeeper（文档与状态管家）
@@ -54,8 +55,16 @@ DocsKeeper（文档与状态管家）
 | 496568f | #task-001 | feat(tauri): 接入 app/src-tauri Tauri 2 壳并链接 engine |
 | f041803 | #task-001 | chore(scaffold): 补全 rules/ scripts/ 占位与 README 启动说明 |
 | （本次） | #task-001 | docs(state): 任务001完成，更新进度与下一步 |
+| e62b586 | #task-002 | build(deps): 为 engine 引入 rusqlite bundled 依赖 |
+| 8dea10f | #task-002 | feat(db): 新增 engine::db 模块骨架与连接入口 conn::open |
+| bac3400 | #task-002 | feat(db): 编写 v1__init.sql 落地 9 张业务表 schema |
+| d48933a | #task-002 | feat(db): 实现基于 user_version 的手写迁移器 |
+| 2ecc248 | #task-002 | test(db): 补 schema 与迁移器单元/集成测试 |
+| e6f18a1 | #task-002 | style(db): 修复 clippy needless_borrow 告警并按 rustfmt 统一格式 |
+| （本次） | #task-002 | docs(state): 任务002完成，更新进度与下一步 |
 
 ---
 变更轨迹：
 - 2026-10-11  task-000  初始化 PROJECT_STATE.md，记录立项基线完成状态与 M0 待办
 - 2026-10-11  task-001  初始化 monorepo 脚手架与 Tauri 2 最小空窗口
+- 2026-10-11  task-002  落地 SQLite schema（9 张表）+ rusqlite 连接 + user_version 迁移器
