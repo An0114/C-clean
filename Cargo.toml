@@ -1,0 +1,18 @@
+# 仓库根 Cargo workspace（M0 脚手架，task-001）
+# 三个成员：Tauri 主进程壳 / engine 核心库 / elevation 提权 exe
+[workspace]
+members = ["app/src-tauri", "engine", "elevation"]
+resolver = "2"
+
+# 统一版本元信息：子 crate 通过 `edition.workspace = true` 继承。
+# rust-version 取 "1.77" 的原因：TRD 未钉死最低 Rust 版本，
+# 1.77 是 Tauri 2 官方文档推荐的较新稳定线，既覆盖 desktop API
+# 又避免过新的语言特性影响后续协作。
+[workspace.package]
+edition = "2021"
+rust-version = "1.77"
+
+# 本任务（task-001）只允许预放 tauri 一条 workspace 依赖；
+# rusqlite / serde / jwalk 等业务依赖留给 task-002 之后按需引入。
+[workspace.dependencies]
+tauri = { version = "2", features = [] }

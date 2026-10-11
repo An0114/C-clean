@@ -71,3 +71,22 @@ C-clean/
 - **多 Agent 切分粒度：按业务模块 A~F 切分，不按技术层切分**（2026-10-11 立项决策 #7）：
   - A 应用缓存清理 / B 系统临时与日志 / C 系统组件存储（WinSxS）/ D 已卸载残留 / E 系统级大文件 / F 注册表健康；
 - 每个 Agent 独立提交，规则库 PR 合并前必须通过「误删风险评审」。
+
+## 本地启动（M0 脚手架）
+
+前置依赖（本机一次性安装即可）：
+
+```powershell
+# 1. Rust stable（rustup）
+rustc --version
+# 2. Node.js >= 20 与 pnpm >= 9（corepack enable 后即可使用 pnpm）
+node --version; pnpm --version
+# 3. WebView2 Runtime（Win11 自带）与 Microsoft C++ Build Tools
+```
+
+首次启动（仓库根目录执行）：
+
+```powershell
+pnpm install      # 安装前端 workspace 依赖
+pnpm tauri dev    # 编译 Tauri 壳、拉起 Vite dev server，弹出标题为「C-Disk Cleaner」的空窗口
+```

@@ -7,6 +7,7 @@
 
 ## 最近一次变更
 2026-10-11：完成 PRD / TRD / ARCHITECTURE / AGENTS / 立项决策记录全套长期基线文档，并初始化本状态白板。
+2026-10-11：task-001 完成——落地 app/engine/elevation/rules/scripts 五大目录骨架、Cargo workspace + pnpm workspace 双工作区，Tauri 2 最小空窗口（标题「C-Disk Cleaner」）端到端跑通，Cargo.lock 已入库。
 
 ## 已完成事项
 - [x] 项目立项与仓库初始化（commit 67990f5 / 4972f9d）
@@ -18,7 +19,7 @@
 - [x] 初始化项目状态白板 PROJECT_STATE.md（本次提交）
 
 ## 待办事项
-- [ ] 001：初始化 monorepo 目录骨架（app/ Tauri+React+Vite、engine/ Rust workspace、elevation/、rules/、scripts/），跑通最小空窗口
+- [x] 001：初始化 monorepo 目录骨架（app/ Tauri+React+Vite、engine/ Rust workspace、elevation/、rules/、scripts/），跑通最小空窗口
 - [ ] 002：落地公共数据层——SQLite 单文件 schema（settings/scan_session/cleanup_item/cleanup_task/safe_box/audit_log/rules_meta/registry_backup/cleanup_plan）与 rusqlite 连接、迁移
 - [ ] 003：落地删除唯一入口 engine::delete::execute() + L3 红线白名单匹配器 + 单元测试（对 PRD P0-7 全部 L3 路径 100% 拦截）
 - [ ] 004：落地 IPC 网关骨架——统一响应信封 {code,message,data}、scan.start/cleanup.dryRun 命令、进度事件通道
@@ -30,7 +31,7 @@
 - 决策 #1 提到"现有 5 个 PowerShell 脚本"作为 M1 兼容层，但仓库内尚无 scripts/ 实际脚本，其来源与 NDJSON 改造方案待对齐。
 
 ## 下一步计划
-派发 task-001：初始化 monorepo 脚手架与 Tauri 2 最小空窗口，建立 Rust workspace + pnpm 前端 + 目录结构，作为后续 002~006 的地基。
+派发 task-002：落地 SQLite schema 与 rusqlite 连接（settings/scan_session/cleanup_item/cleanup_task/safe_box/audit_log/rules_meta/registry_backup/cleanup_plan 九张表 + 迁移机制），在 engine 内新建 `db/` 子模块。
 
 ## 当前负责人 Agent
 DocsKeeper（文档与状态管家）
@@ -45,8 +46,16 @@ DocsKeeper（文档与状态管家）
 | 261b24f | #task-000 | docs(trd): 新增技术需求文档 v0.1 |
 | c1f027a | #task-000 | docs(arch): 新增系统架构文档 v0.1 |
 | 3a1bb2c | #task-000 | docs(agents): 新增多Agent协作与Git权限规范 |
-| （本次） | #task-000 | docs(state): 初始化项目状态白板 |
+| 09adc52 | #task-000 | docs(state): 初始化项目状态白板 |
+| bdeeea4 | #task-001 | docs(task): 新增任务001-初始化monorepo脚手架（派发基线） |
+| 42cc54f | #task-001 | chore(workspace): 初始化 Cargo workspace 与 pnpm workspace 配置 |
+| 5742151 | #task-001 | chore(scaffold): 新增 engine 空 lib 与 elevation 空 bin 占位 crate |
+| ecea8cb | #task-001 | feat(ui): 初始化 app/src Vite + React 18 + TypeScript 前端骨架 |
+| 496568f | #task-001 | feat(tauri): 接入 app/src-tauri Tauri 2 壳并链接 engine |
+| f041803 | #task-001 | chore(scaffold): 补全 rules/ scripts/ 占位与 README 启动说明 |
+| （本次） | #task-001 | docs(state): 任务001完成，更新进度与下一步 |
 
 ---
 变更轨迹：
 - 2026-10-11  task-000  初始化 PROJECT_STATE.md，记录立项基线完成状态与 M0 待办
+- 2026-10-11  task-001  初始化 monorepo 脚手架与 Tauri 2 最小空窗口

@@ -1,0 +1,10 @@
+[package]
+name = "engine"
+version = "0.1.0"
+description = "C-Disk Cleaner Rust 核心库（扫描/分级/执行/保险箱/审计，后续任务落地）"
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "engine"
+path = "src/lib.rs"

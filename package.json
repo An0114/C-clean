@@ -1,0 +1,11 @@
+{
+  "name": "cdisk-cleaner-monorepo",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@11.9.0",
+  "scripts": {
+    "dev": "pnpm --filter app dev",
+    "build": "pnpm --filter app build",
+    "tauri": "pnpm --filter app tauri"
+  }
+}

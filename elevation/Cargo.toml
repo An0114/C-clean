@@ -1,0 +1,10 @@
+[package]
+name = "elevation"
+version = "0.1.0"
+description = "独立提权 exe（M0 占位 crate，真正功能在后续任务落地）"
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "elevation"
+path = "src/main.rs"

@@ -88,3 +88,8 @@ packages/
 *.zip
 *.7z
 *.tar.gz
+
+# ---------- task-001 追加：app/src-tauri 生成产物（Tauri v2 build 期生成） ----------
+# 注：上方 src-tauri/gen/ 因含斜杠被锚定在仓库根，匹配不到 app/src-tauri/gen/，
+# 故在此显式追加锚定路径；app/src-tauri/target/ 已由全局 target/ 规则覆盖。
+app/src-tauri/gen/
