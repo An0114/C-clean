@@ -234,3 +234,63 @@ DevAgent 交付物（后续执行结果，不是本任务文档产出）：
 4. 本任务文档本身**由 DocsKeeper 在派发时**单独提交一次：
    `docs(task): 新增任务004-IPC网关骨架 (#task-004)`，
    该提交只含 `tasks/004-ipc-gateway.md` 一个文件，落在 `feature/task-004-ipc-gateway` 分支最前端（即 DevAgent 开工前的基线）。
+
+## 实现备注（DevAgent 回填，2026-10-11）
+
+### 实际改动文件清单（对照白名单）
+
+- `engine/Cargo.toml`：新增 serde 1（derive）+ serde_json 1；无其他依赖。
+- `engine/src/lib.rs`：仅新增 `pub mod ipc;` 一行。
+- `engine/src/ipc/mod.rs`、`envelope.rs`、`error_codes.rs`（新建）。
+- `engine/src/ipc/progress.rs`（新建）。
+- `engine/src/ipc/commands/mod.rs`、`scan_start.rs`、`dry_run.rs`（新建）。
+- `engine/tests/ipc_envelope.rs`（3 条）、`engine/tests/ipc_commands.rs`（7 条）。
+- `app/src-tauri/src/commands.rs`（新建）、`app/src-tauri/src/lib.rs`（State 注入 + invoke_handler 扩 3 命令）。
+- `Cargo.lock`、`docs/PROJECT_STATE.md`、本任务文件。
+- 未触碰：engine/src/db/**、engine/src/execute/**（只调用其公开 API）、app/src/**、elevation/**、rules/**、scripts/**、长期文档。
+
+### sessionId 计数器注入方式
+
+Tauri State：`tauri::Builder::default().manage(std::sync::Mutex::new(0_i64))`，command 以 `tauri::State<'_, Mutex<i64>>` 注入。纯逻辑 `handle_scan_start` 接收 `&mut i64`，与 Tauri 完全解耦，方便单测连调两次验证递增。
+
+### 「L3 拒绝时 data 不置 null」偏离说明
+
+按任务文档 §E 显式决策执行：WHITELIST_DENIED(2002) 时 data 为 `DryRunResp{total_items:0,total_bytes:0,breakdown:[],blocked_by_l3:[...]}`（用新增 `Envelope::err_with_data` 构造）。理由：前端必须看到「哪几条路径被拦、什么原因」才能展示给用户；data=null 会丢失全部明细。**待 DocsKeeper 评审时决定是否回写 TRD §5.1**（失败 data=null 仅保留给 2001/5001 等无明细场景）。
+
+### 自验命令与退出码
+
+| 命令 | 退出码 |
+|------|--------|
+| `cargo check --workspace --all-targets` | 0 |
+| `cargo clippy -p engine --all-targets -- -D warnings` | 0 |
+| `cargo clippy -p cdisk-cleaner --all-targets -- -D warnings` | 0 |
+| `cargo test -p engine` | 0（52 passed / 0 failed） |
+| `cargo fmt --all -- --check` | 0 |
+
+### cargo test -p engine 输出统计
+
+```text
+test result: ok. 9 passed; 0 failed   (lib: normalize 5 + whitelist 4)
+test result: ok. 8 passed; 0 failed   (task-002 db schema)
+test result: ok. 24 passed; 0 failed  (task-003 execute_whitelist)
+test result: ok. 7 passed; 0 failed (ipc_commands 本任务)
+test result: ok. 3 passed; 0 failed  (ipc_envelope 本任务)
+test result: ok. 1 passed; 0 failed     (hello_engine smoke)
+```
+
+### pnpm tauri dev 手测
+
+本轮未在 WebView2 devtools 实跑 invoke：两条新命令的注册、类型与信封结构已通过 workspace check + clippy + 7 条信封/命令单测固化（序列化 JSON 逐字节断言）。真实 devtools 联调（`invoke('scan_start',{scope:'full'})` → `{code:0,data:{sessionId:1}}`、`invoke('cleanup_dry_run',{itemIds:[]})` → code 2001）留待评审环境或 task-004 收尾 UI 任务补做。**此为偏差，已报备。**
+
+### 偏差清单
+
+1. Tauri command 返回 `Result<Envelope<...>, String>`：Tauri 2 规则要求「带 State 引用的 async command 必须返回 Result」，直接返回 Envelope 会编译失败；外层 Result 永远是 Ok，信封语义不变。
+2. `Envelope::err` 为泛型方法（非 `Envelope<()>` 关联函数），让各命令出参类型直接兼容。
+3. ThrottledEmitter 改为泛型 `ThrottledEmitter<E: ProgressEmitter>`（另有 `boxed()` trait 对象入口），便于测试拿到内部 VecEmitter 引用做快照断言。
+4. dryRun 用空 MockResolver：非空 itemIds 当前一律回 2001（DB 仓储未接）。
+
+### 遗留问题
+
+- 真实 Tauri `AppHandle::emit` 的 ProgressEmitter 实现未写，留待后续扫描任务接 `scan://finished` 一并落地。
+- MockResolver 替换为 DB 仓储（cleanup_item 表）留待 cleanup.execute 任务。
+- scan.start 不启动任何后台线程，真实扫描留待 engine/scan/。
