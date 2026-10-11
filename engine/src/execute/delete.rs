@@ -1,7 +1,7 @@
 //! 删除动作唯一入口（提交 2 仅骨架，串联逻辑见提交 5）。
 
-use super::normalize::NormalizedPath;
-use super::whitelist::DenialReason;
+use super::normalize::{normalize, NormalizedPath};
+use super::whitelist::{self, DenialReason};
 
 /// 真实删除器抽象：后续 safebox/platform 任务注入真实实现，
 /// 本任务只提供 [`NoopDeleter`]（测试用，不碰磁盘）。
@@ -82,12 +82,65 @@ pub enum ExecuteError {
     Internal(String),
 }
 
-/// 删除唯一入口：规范化 → 内置红线 → 动作级禁令；
-/// 任一项不通过即整体 [`ExecuteOutcome::Rejected`]，绝不调用 Deleter。
+/// 白名单拒绝信封码（ARCHITECTURE §2.3：code=2002 / audit_log: whitelist_denied）。
+pub const REJECT_CODE: u16 = 2002;
+
+/// 删除唯一入口：逐条规范化 → 跑内置红线 → 动作级禁令；
+/// 任一项不通过即整体 [`ExecuteOutcome::Rejected`]，**绝不调用 Deleter**；
+/// 全部通过返回 [`ExecuteOutcome::Allowed`]（本任务也不自动调 Deleter，
+/// 由上层 safebox/IPC 任务拿到 Allowed 后再决定是否真删）。
 pub fn execute(
-    _req: &ExecuteRequest,
+    req: &ExecuteRequest,
     _deleter: &dyn Deleter,
 ) -> Result<ExecuteOutcome, ExecuteError> {
-    // 提交 5 串联完整逻辑。
-    Err(ExecuteError::Internal("execute not implemented yet".into()))
+    let mut decisions: Vec<PathDecision> = Vec::with_capacity(req.paths.len());
+    let mut any_path_rejected = false;
+
+    // 1. 逐条路径：规范化 → 内置红线。
+    for raw in &req.paths {
+        match normalize(raw) {
+            Ok(np) => match whitelist::classify(&np) {
+                Ok(()) => decisions.push(PathDecision {
+                    input: raw.clone(),
+                    normalized: Some(np.normalized().to_string()),
+                    allowed: true,
+                    denial_reason: None,
+                }),
+                Err(reason) => {
+                    any_path_rejected = true;
+                    decisions.push(PathDecision {
+                        input: raw.clone(),
+                        normalized: Some(np.normalized().to_string()),
+                        allowed: false,
+                        denial_reason: Some(reason),
+                    });
+                }
+            },
+            // 规范化失败统一折算为 PathTraversal（任务契约）。
+            Err(_) => {
+                any_path_rejected = true;
+                decisions.push(PathDecision {
+                    input: raw.clone(),
+                    normalized: None,
+                    allowed: false,
+                    denial_reason: Some(DenialReason::PathTraversal),
+                });
+            }
+        }
+    }
+
+    // 2. 动作级禁令：任一动作被禁 → 整体拒绝。
+    let action_rejected = req
+        .actions
+        .iter()
+        .any(|a| whitelist::check_action(a).is_err());
+
+    if any_path_rejected || action_rejected {
+        return Ok(ExecuteOutcome::Rejected {
+            decisions,
+            code: REJECT_CODE,
+        });
+    }
+
+    Ok(ExecuteOutcome::Allowed { decisions })
 }
