@@ -62,8 +62,11 @@ pub fn classify(p: &NormalizedPath) -> Result<(), DenialReason> {
         return Err(DenialReason::L3SystemPath);
     }
 
-    // 2. 浏览器主目录前缀：Chrome/Edge 的 User Data、Firefox 的 Profiles。
-    if lower.contains(r"\user data\") || lower.contains(r"\mozilla\firefox\") {
+    // 2. 浏览器主目录前缀：Chrome/Edge 的 User Data（可作路径本身）、Firefox 的 Profiles。
+    if lower.contains(r"\user data\")
+        || lower.ends_with(r"\user data")
+        || lower.contains(r"\mozilla\firefox\")
+    {
         return Err(DenialReason::L3BrowserProfile);
     }
 
