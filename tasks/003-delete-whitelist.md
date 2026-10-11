@@ -227,3 +227,63 @@ DevAgent 交付物（后续执行结果，不是本任务文档产出）：
 4. 本任务文档本身**由 DocsKeeper 在派发时**单独提交一次：
    `docs(task): 新增任务003-删除唯一入口与L3白名单 (#task-003)`，
    该提交只含 `tasks/003-delete-whitelist.md` 一个文件，落在 `feature/task-003-delete-whitelist` 分支最前端（即 DevAgent 开工前的基线）。
+
+## 实现备注（DevAgent 回填，2026-10-11）
+
+### 实际改动文件清单（对照白名单）
+
+- `engine/Cargo.toml`：仅新增 `thiserror = "1"`（钉 1.x，解析为 1.0.69）；未加 serde/regex/walkdir。
+- `engine/src/lib.rs`：仅新增 `pub mod execute;` 一行。
+- `engine/src/execute/mod.rs`（新建）：模块声明 delete/normalize/whitelist。
+- `engine/src/execute/normalize.rs`（新建）：NormalizeError（thiserror）+ NormalizedPath newtype + `normalize()`。
+- `engine/src/execute/whitelist.rs`（新建）：DenialReason 六变体 + `classify()` + `check_action()`。
+- `engine/src/execute/delete.rs`（新建）：Deleter trait、NoopDeleter、ExecuteRequest/PathDecision/ExecuteOutcome/ExecuteError、`execute()` 唯一入口、`REJECT_CODE=2002`。
+- `engine/tests/execute_whitelist.rs`（新建）：24 条集成测试。
+- `Cargo.lock`：随依赖自动更新。
+- `docs/PROJECT_STATE.md`：由 `docs(state)` 提交处理。
+- 未触碰：engine/src/db/**、app/**、elevation/**、rules/、scripts/、长期文档。
+
+### 中文本地化文件夹名取舍
+
+**已纳入补充匹配**：`桌面/文档/下载/图片/视频/音乐` 与英文真名同表（PERSONAL_DIRS 12 项）。理由：Windows 显示名与 NTFS 真名可能不一致（尤其某些工具直接拿 Explorer 显示路径回传），作为补充匹配代价为零、只增拦截不漏；匹配规则仍是 `users/<用户名>/<目录>` 结构，不会误伤普通目录下的同名文件夹。
+
+### 自验命令与退出码
+
+| 命令 | 退出码 |
+|------|--------|
+| `cargo check --workspace --all-targets` | 0 |
+| `cargo clippy -p engine --all-targets -- -D warnings` | 0（首次 2 个告警已修：`Iterator::last`→`next_back`、needless borrow） |
+| `cargo test -p engine` | 0（lib 9 + db 8 + execute 24 + smoke 1 = 42 passed / 0 failed） |
+| `cargo fmt --all -- --check` | 0 |
+
+### 测试输出摘录（cargo test -p engine 末尾统计）
+
+```text
+test result: ok. 9 passed; 0 failed (lib 单元：normalize 5 + whitelist 4)
+test result: ok. 8 passed; 0 failed (task-002 db schema)
+test result: ok. 24 passed; 0 failed (execute_whitelist 集成：19 拦截 + 5 放行/行为)
+test result: ok. 1 passed; 0 failed (hello_engine smoke)
+```
+
+### grep 卫生自检结果
+
+```text
+Select-String engine\src\execute\*.rs -Pattern 'remove_file|remove_dir'
+  → 无匹配（生产代码无任何真实删除调用）
+Select-String engine\src\execute\normalize.rs,delete.rs -Pattern 'resetbase'
+  → 无匹配（/ResetBase 字面量仅存在于 whitelist.rs 拒绝分支与测试代码）
+```
+
+### 与任务文档的偏差（含原因）
+
+1. **`..` 一律直接拒绝，不做词法折叠**：任务 B.4 原文写「规范化后逃逸盘符根才拒」，但 E-14 `C:\Windows\Temp\..\..\Users\alice\Documents\bank.pdf` 明确要求规范化阶段拒（按「折叠后判逃逸」语义它折叠后是合法 C:\Users\...，会漏拒）。删除网关对「未解析上跳」没有合法用途（上游全是已解析绝对路径），故见到任何 `..` 即 TraversalEscapes，零折叠、零逃逸空间。
+2. **User Data 尾匹配**：路径恰好以 `User Data` 结尾（无后代）时原 `\user data\` 子串匹配漏掉 Edge 用例，已补 `ends_with("\user data")`。
+3. **thiserror 版本**：钉 `= "1"`（任务字面要求），cargo 解析为 1.0.69；首次 `cargo add` 拉到 2.0.21 已 amend 纠正（未 push）。
+4. **User Data 下的敏感文件测试路径**：Bookmarks/Login Data/History 用例刻意放在 User Data 之外（`C:\Temp\stolen\...`）以验证 L3BrowserSensitive 分支——在 User Data 内会先命中 L3BrowserProfile。
+5. **多一次 style 提交**：rustfmt 对 normalize.rs 的 if 换行整改，未改写历史。
+
+### 遗留问题
+
+- **UNC 路径 `\\server\share\...`**：本任务按 NotAbsolute 保守拒绝（无盘符）。网络盘通常是用户自己挂载的数据盘，L3 语义与本地盘不同，留待 task-004 之后的 platform 任务统一评估网络盘红线策略。
+- **符号链接解析**：本任务纯词法规范化，`symlink_metadata` 留待 platform 模块（防 junction 绕开白名单）。
+- **外部红线集 trait 边界**：任务要求的「重跑外部红线集」未在本任务接入（005 加载 rules/cache_rules.json 时注入），当前 execute 只跑内置红线。
