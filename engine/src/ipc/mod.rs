@@ -6,4 +6,4 @@
 pub mod commands;
 pub mod envelope;
 pub mod error_codes;
-// progress 模块见提交 3。
+pub mod progress;
