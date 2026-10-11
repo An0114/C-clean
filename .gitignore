@@ -18,9 +18,9 @@ secrets.*/
 private/
 
 # ---------- Rust / Cargo ----------
+# 注：本项目为应用（非库），Cargo.lock 需入库以保证发布可复现（2026-10-11 立项决策 #2）
 target/
 **/target/
-Cargo.lock
 *.rs.bk
 
 # ---------- Node / pnpm / 前端 ----------
