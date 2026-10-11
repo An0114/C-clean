@@ -68,8 +68,7 @@ pub fn normalize(raw: &str) -> Result<NormalizedPath, NormalizeError> {
 
     // 必须形如 `X:\...`：字母盘符 + 冒号 + 反斜杠。
     let bytes = s.as_bytes();
-    if bytes.len() < 3 || !bytes[0].is_ascii_alphabetic() || bytes[1] != b':' || bytes[2] != b'\\'
-    {
+    if bytes.len() < 3 || !bytes[0].is_ascii_alphabetic() || bytes[1] != b':' || bytes[2] != b'\\' {
         // UNC（\\server\share）等无盘符绝对路径：本任务保守拒绝，
         // 留待 platform 任务按网络盘策略再开放。
         return Err(NormalizeError::NotAbsolute);
