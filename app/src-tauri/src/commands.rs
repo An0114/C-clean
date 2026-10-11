@@ -17,15 +17,19 @@ pub async fn scan_start(
     state: tauri::State<'_, std::sync::Mutex<i64>>,
 ) -> Result<Envelope<ScanStartResp>, String> {
     let mut counter = state.lock().map_err(|e| e.to_string())?;
-    Ok(handle_scan_start(ScanStartReq { scope, target_drive }, &mut counter))
+    Ok(handle_scan_start(
+        ScanStartReq {
+            scope,
+            target_drive,
+        },
+        &mut counter,
+    ))
 }
 
 /// `cleanup.dryRun`：本任务用空 MockResolver（不接 DB），
 /// 非空 itemIds 一律回 2001；真实 resolver 注入留后续任务。
 #[tauri::command]
-pub async fn cleanup_dry_run(
-    item_ids: Vec<i64>,
-) -> Result<Envelope<DryRunResp>, String> {
+pub async fn cleanup_dry_run(item_ids: Vec<i64>) -> Result<Envelope<DryRunResp>, String> {
     let resolver = MockResolver::new(vec![]);
     Ok(handle_dry_run(DryRunReq { item_ids }, &resolver))
 }

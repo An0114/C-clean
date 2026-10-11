@@ -23,10 +23,7 @@ pub struct ScanStartResp {
 
 /// 处理 scan.start：校验入参 → 递增 sessionId → 返回信封。
 /// 不启动后台线程、不写 DB、不 emit 进度（后续任务接入）。
-pub fn handle_scan_start(
-    req: ScanStartReq,
-    next_session_id: &mut i64,
-) -> Envelope<ScanStartResp> {
+pub fn handle_scan_start(req: ScanStartReq, next_session_id: &mut i64) -> Envelope<ScanStartResp> {
     if req.scope != "full" && req.scope != "custom" {
         return Envelope::err(INTERNAL);
     }

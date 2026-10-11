@@ -83,10 +83,7 @@ pub struct DryRunResp {
 
 /// 处理 cleanup.dryRun：空清单 → 2001；任一命中 L3 → 2002（附 blocked 明细）；
 /// 全过 → 聚合返回。
-pub fn handle_dry_run(
-    req: DryRunReq,
-    resolver: &dyn ItemPathResolver,
-) -> Envelope<DryRunResp> {
+pub fn handle_dry_run(req: DryRunReq, resolver: &dyn ItemPathResolver) -> Envelope<DryRunResp> {
     if req.item_ids.is_empty() {
         return Envelope::err(DRYRUN_EMPTY);
     }

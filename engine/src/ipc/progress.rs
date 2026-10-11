@@ -58,18 +58,40 @@ impl ProgressEmitter for VecEmitter {
     }
 }
 
+/// trait 对象透传实现（让 `Box<dyn ProgressEmitter>` 也能当 emitter 用）。
+impl ProgressEmitter for Box<dyn ProgressEmitter> {
+    fn emit(&self, payload: &ScanProgress) {
+        self.as_ref().emit(payload);
+    }
+}
+
 /// 100ms 节流包装：距上次 emit <100ms 的直接丢弃，否则转发给内部 emitter。
-pub struct ThrottledEmitter {
-    inner: Box<dyn ProgressEmitter>,
+pub struct ThrottledEmitter<E: ProgressEmitter = Box<dyn ProgressEmitter>> {
+    inner: E,
     last: Mutex<Option<Instant>>,
 }
 
-impl ThrottledEmitter {
+impl<E: ProgressEmitter> ThrottledEmitter<E> {
     /// 每 100ms 最多转发一次的最小间隔。
     pub const MIN_INTERVAL_MS: u128 = 100;
 
-    /// 用任意 emitter 包装一层节流。
-    pub fn new(inner: Box<dyn ProgressEmitter>) -> Self {
+    /// 用具体类型 emitter 包装（测试可直接拿到内部引用做断言）。
+    pub fn new(inner: E) -> Self {
+        Self {
+            inner,
+            last: Mutex::new(None),
+        }
+    }
+
+    /// 取出内部 emitter 引用（测试断言用）。
+    pub fn inner(&self) -> &E {
+        &self.inner
+    }
+}
+
+impl ThrottledEmitter<Box<dyn ProgressEmitter>> {
+    /// 用 trait 对象 emitter 包装（生产代码注入用）。
+    pub fn boxed(inner: Box<dyn ProgressEmitter>) -> Self {
         Self {
             inner,
             last: Mutex::new(None),
@@ -77,18 +99,15 @@ impl ThrottledEmitter {
     }
 }
 
-impl ProgressEmitter for ThrottledEmitter {
+impl<E: ProgressEmitter> ProgressEmitter for ThrottledEmitter<E> {
     fn emit(&self, payload: &ScanProgress) {
         let now = Instant::now();
         let mut guard = self.last.lock().ok();
         let should_send = match guard.as_ref() {
-            // 锁中毒：保守放行，不吞进度。
             None => true,
             Some(g) => match &**g {
                 None => true,
-                Some(prev) => {
-                    now.duration_since(*prev).as_millis() >= Self::MIN_INTERVAL_MS
-                }
+                Some(prev) => now.duration_since(*prev).as_millis() >= Self::MIN_INTERVAL_MS,
             },
         };
         if should_send {
