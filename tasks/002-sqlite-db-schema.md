@@ -156,3 +156,64 @@ DevAgent 交付物（后续执行结果，不是本任务文档产出）：
 4. 本任务文档本身**由 DocsKeeper 在派发时**单独提交一次：
    `docs(task): 新增任务002-SQLite数据层与迁移器 (#task-002)`，
    该提交只含 `tasks/002-sqlite-db-schema.md` 一个文件，落在 `feature/task-002-sqlite-schema` 分支最前端（即 DevAgent 开工前的基线）。
+
+## 实现备注（DevAgent 回填，2026-10-11）
+
+### 实际改动文件清单（对照白名单）
+
+- `engine/Cargo.toml`：仅新增 `rusqlite = { version = "0.40.2", features = ["bundled"] }`（[dependencies]）；另加 `tempfile = "3.27.0"`（[dev-dependencies]，为 §E-12 临时目录测试所用，测试专用、非业务依赖）。
+- `engine/src/lib.rs`：仅新增 `pub mod db;` 一行，`hello_engine()` 未动。
+- `engine/src/db/mod.rs`（新建）：模块声明 + 手工 `DbError` 枚举（Io/Sqlite + Display/Error/From）。
+- `engine/src/db/conn.rs`（新建）：`open(data_root)` 连接入口。
+- `engine/src/db/migrate.rs`（新建）：`user_version` 手写迁移器。
+- `engine/src/db/migrations/v1__init.sql`（新建）：9 张表 DDL。
+- `engine/tests/db_schema.rs`（新建）：8 条集成测试。
+- `Cargo.lock`：随依赖变更自动更新。
+- `docs/PROJECT_STATE.md`：由最后一次 `docs(state)` 提交处理。
+- 未触碰：app/、elevation/、rules/、scripts/、PRD/TRD/ARCHITECTURE/AGENTS 等长期文档。
+
+### rusqlite 版本与 bundled 确认
+
+- 选用 **rusqlite v0.40.2**（`cargo add rusqlite --features bundled` 解析出的当前 crates.io stable），bundled 特性自动编译 libsqlite3-sys v0.38.2（内嵌 SQLite，无需系统 SQLite）。
+- 测试框架用 **tempfile v3.27.0**（dev-dependencies），满足 §E-12「禁止在真实 %LOCALAPPDATA 下开库」。
+
+### 自验命令与退出码（仓库根执行）
+
+| 命令 | 退出码 | 结果 |
+|------|--------|------|
+| `cargo check --workspace --all-targets` | 0 | 全 workspace 通过 |
+| `cargo clippy -p engine --all-targets -- -D warnings` | 0 | 首次报 3 个 needless_borrow，已修复后复跑 0 告警 |
+| `cargo test -p engine` | 0 | 9 passed / 0 failed（8 条新测试 + 1 条既有 smoke） |
+| `cargo fmt --all -- --check` | 0 | 首次有 1 处格式 diff，`cargo fmt --all` 后复跑通过 |
+
+注：本机初始未装 clippy/rustfmt 组件，且直连 static.rust-lang.org TLS 断流，改用 rsproxy 镜像 `rustup component add clippy rustfmt` 安装；cargo 拉包仍用会话级 `CARGO_HTTP_CHECK_REVOKE=false` 绕过 schannel 吊销离线错误，未改全局配置。
+
+### 8 条测试用例输出（cargo test -p engine 摘录）
+
+```text
+running 8 tests
+test creates_all_9_business_tables ... ok
+test foreign_keys_pragma_on ... ok
+test rules_meta_rejects_id_not_1 ... ok
+test user_version_bumped_to_1 ... ok
+test opens_and_creates_db_file ... ok
+test cleanup_item_cascades_with_session ... ok
+test registry_backup_sets_null_on_task_delete ... ok
+test migration_is_idempotent ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+```
+
+### 与任务文档的偏差（含原因）
+
+1. **tempfile 落入 [dev-dependencies]**：任务约束 §A-2 说「[dependencies] 仅新增 rusqlite 一条」，未禁止 dev-dependencies；而 §E-12 强制要求 `tempfile::tempdir()`，二者并存，故测试专用依赖放 dev-dependencies，未污染业务依赖树。
+2. **错误类型未用 thiserror**：按约束手工实现 `DbError`（Io/Sqlite 两变体 + From 转换），零额外依赖。
+3. **迁移文件用 `include_str!` 编译期内嵌**：任务 §C-6 描述「按文件名字典序找 v{N+1}__*.sql」。本任务仅 v1 一个迁移，且为避免运行时文件查找路径插值（§D-11），采用静态有序表 `static MIGRATIONS: &[(u32, &str)]`，语义等价于字典序；后续 v2 起按版本号追加一行即可。
+4. **rusqlite 0.40 错误变体匹配**：早期草稿用了已移除的 `IntegrityViolation`/`ConstraintViolation` 变体，最终改为匹配 `Error::SqliteFailure` 且 `e.code == ErrorCode::ConstraintViolation`（覆盖 CHECK/NOT NULL/UNIQUE/FK 全部 SQLITE_CONSTRAINT_*）。
+5. **多一次 style 提交**：clippy/fmt 修复跨 conn.rs、migrate.rs、db_schema.rs 三个已提交文件，未改写历史提交，单独落 `style(db)` 提交。
+
+### 遗留问题 / 字段对齐说明
+
+- TRD §4 数据字典字段已逐字段抄入 v1__init.sql：`cleanup_task` 的 `session_id` 可空（TRD 未标 NOT NULL），`safe_box.source_task_id` 未指定 ON DELETE 动作（保持默认 NO ACTION，与 ER 图一致）；`audit_log` 无外键（自由日志表）；`rules_meta` 单行 `CHECK(id = 1)` 已落地。
+- `sqlite_sequence`（AUTOINCREMENT 自动产生）被测试的 `name NOT LIKE 'sqlite_%'` 排除，9 张业务表计数正确。
+- 未做任何业务 CRUD、IPC 接线（留给 003/004）。
