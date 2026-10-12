@@ -186,7 +186,7 @@ impl<'conn> Deleter for SafeBoxDeleter<'conn> {
     }
 }
 
-/// 判断是否为跨盘 rename（Windows 上 ERROR_NOT_SAME_DEVICE = 17）。
+/// 判断是否为跨盘 rename（Windows ERROR_NOT_SAME_DEVICE=17；Linux EXDEV=18）。
 fn is_cross_device(e: &io::Error) -> bool {
-    e.raw_os_error() == Some(17) || e.kind() == io::ErrorKind::CrossesDevices
+    matches!(e.raw_os_error(), Some(17) | Some(18))
 }
