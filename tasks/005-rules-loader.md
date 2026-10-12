@@ -246,3 +246,52 @@ DevAgent 交付物（后续执行结果，不是本任务文档产出）：
 4. 本任务文档本身**由 DocsKeeper 在派发时**单独提交一次：
    `docs(task): 新增任务005-规则库与SHA256校验加载器 (#task-005)`，
    该提交只含 `tasks/005-rules-loader.md` 一个文件，落在 `feature/task-005-rules-loader` 分支最前端（即 DevAgent 开工前的基线）。
+
+## 实现备注（DevAgent 回填，2026-10-12）
+
+### 实际改动文件清单（对照白名单）
+- `rules/cache_rules.json`（新建，照抄 TRD §4.10 npm_cache + 4 条红线）。
+- `rules/rules_meta.json`（新建，checksum 现场 Get-FileHash 算出回填）。
+- `engine/Cargo.toml`（仅 +sha2 0.10 / +hex 0.4）、`Cargo.lock`。
+- `engine/src/lib.rs`（仅 +`pub mod rules;`）。
+- `engine/src/rules/`：mod.rs / models.rs / env_expand.rs / loader.rs（新建）。
+- `engine/src/execute/whitelist.rs`：**仅新增** `classify_with_external()`（第 99~119 行），`classify()` / 常量 / `check_action()` 一字未动。
+- `engine/tests/rules_loader.rs`（新建，9 条集成用例）。
+- `docs/PROJECT_STATE.md`、本任务文件。
+- 未触碰：db/**、app/**、elevation/**、scripts/**、PRD/TRD/ARCHITECTURE 长期文档；未引入 reqwest/tokio；未硬编码规则内容到 Rust。
+
+### Get-FileHash 与 rules_meta.checksum 对照
+```
+(Get-FileHash rules\cache_rules.json -Algorithm SHA256).Hash.ToLower()
+  = bec1ab744ce2c3adab2c20e5397715340d9ffb35f8f733fcd410b3670aaebfd9
+rules_meta.json.checksum_sha256
+  = bec1ab744ce2c3adab2c20e5397715340d9ffb35f8f733fcd410b3670aaebfd9
+MATCH=True（逐字符一致）
+```
+
+### 自验命令与退出码
+| 命令 | 退出码 |
+|------|--------|
+| `cargo check --workspace --all-targets` | 0 |
+| `cargo clippy -p engine --all-targets -- -D warnings` | 0（首次 while-let-on-iterator 告警已修为 `for nc in chars.by_ref()`） |
+| `cargo test -p engine` | 0 |
+| `cargo fmt --all -- --check` | 0（先 `cargo fmt --all` 落盘） |
+
+### cargo test -p engine 输出
+```text
+12 passed  lib（含 env_expand 新增 3 条）
+8 passed   db schema（task-002 无回退）
+24 passed  execute_whitelist（task-003 无回退）
+7 passed   ipc_commands（task-004 无回退）
+3 passed   ipc_envelope
+9 passed   rules_loader（本任务 §G 全覆盖）
+1 passed   hello_engine
+```
+
+### 偏差说明
+- 外部红线命中统一归为 `DenialReason::L3SystemPath`（未给枚举加新变体，遵守「whitelist.rs 仅新增函数」约束）；若后续审计需要区分内置/外部，再拆变体（已在 task-010 待办内）。
+- `ExpandError` 新增第三变体 `TildeMasquerade(String)`（`~foo` 拒绝），任务文档未指定变体名，按测试断言对齐。
+
+### 遗留问题
+- rules_meta 落 DB（rules_meta 表）、GitHub Raw 联网拉取、`rules.checkUpdate/applyUpdate` IPC 命令：留待后续规则更新任务（对应 task-010 / M1 规则模块）。
+- `external_deny_list` 当前直接喂 `classify_with_external` 前缀匹配；真实接入 cleanup.dryRun 由后续 cleanup.execute 任务完成。
