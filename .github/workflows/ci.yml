@@ -45,3 +45,24 @@ jobs:
 
       - name: 前端构建
         run: pnpm --filter app build
+
+      # 规则库自洽守卫：合并前挡住「手改 cache_rules.json 忘了更新 rules_meta.json」。
+      # 注意：比对的是 checkout 出来的 LF 规范字节（windows runner 默认 autocrlf=false），
+      # 与 task-005 运行时 loader 的校验互为冗余。
+      - name: 规则库 SHA-256 校验
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash rules/cache_rules.json -Algorithm SHA256).Hash.ToLower()
+          $meta = Get-Content rules/rules_meta.json -Raw | ConvertFrom-Json
+          if ($hash -ne $meta.checksum_sha256) {
+            Write-Error "checksum mismatch: expected $($meta.checksum_sha256), got $hash"
+            exit 1
+          }
+          Write-Host "rules checksum OK: $hash"
+
+      - name: 规则库 JSON 合法性
+        shell: pwsh
+        run: |
+          Get-Content rules/cache_rules.json -Raw | ConvertFrom-Json | Out-Null
+          Get-Content rules/rules_meta.json -Raw | ConvertFrom-Json | Out-Null
+          Write-Host "rules JSON parse OK"
