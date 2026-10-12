@@ -190,3 +190,99 @@ impl<'conn> Deleter for SafeBoxDeleter<'conn> {
 fn is_cross_device(e: &io::Error) -> bool {
     matches!(e.raw_os_error(), Some(17) | Some(18))
 }
+
+// ===================== task-017: restore =====================
+
+/// 恢复结果。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RestoreResult {
+    pub safe_box_id: i64,
+    pub original_path: String,
+    pub size_bytes: u64,
+}
+
+/// restore 错误（与任务书 §A 对齐；按真实 schema 适配）。
+#[derive(Debug, thiserror::Error)]
+pub enum RestoreError {
+    #[error("保险箱条目不存在或已被永久剔除: id={0}")]
+    NotFound(i64),
+    #[error("原路径已被占用，拒绝覆盖: {0}")]
+    TargetOccupied(String),
+    #[error("原父目录不存在，请先手动创建: {0}")]
+    ParentMissing(String),
+    #[error("IO 错误: {0}")]
+    Io(String),
+    #[error("DB 错误: {0}")]
+    Db(String),
+}
+
+/// 按 id 把文件从保险箱 rename 回 original_path，删 safe_box 行，写 audit_log。
+///
+/// 与任务书 §A 的偏差（按 v1__init.sql 真实 schema 适配）：
+/// - 查询条件用 `status='in_box'`（不是 `purged_at IS NULL`）；
+/// - 路径字段用 `safe_rel_path`（相对 box_dir），由调用方传 box_dir 拼绝对路径；
+/// - audit_log 字段为 ts/actor/action/target/detail/result，映射 event_type→action='restore'。
+pub fn restore_from_safe_box(
+    conn: &Connection,
+    box_dir: &Path,
+    safe_box_id: i64,
+) -> Result<RestoreResult, RestoreError> {
+    // 1. 查行
+    let row: (String, String, i64) = conn
+        .query_row(
+            "SELECT original_path, safe_rel_path, size_bytes
+             FROM safe_box WHERE id=?1 AND status='in_box'",
+            [safe_box_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .map_err(|_| RestoreError::NotFound(safe_box_id))?;
+    let (original_path, rel, size_bytes) = row;
+
+    let orig = Path::new(&original_path);
+    let box_abs = box_dir.join(&rel);
+
+    // 2. 原路径已被占用 → 拒
+    if orig.exists() {
+        return Err(RestoreError::TargetOccupied(original_path));
+    }
+    // 3. 父目录必须存在
+    match orig.parent() {
+        Some(p) if !p.exists() => {
+            return Err(RestoreError::ParentMissing(p.to_string_lossy().into()))
+        }
+        _ => {}
+    }
+
+    // 4. rename box → original
+    std::fs::rename(&box_abs, orig)
+        .map_err(|e| RestoreError::Io(format!("rename {box_abs:?} -> {orig:?}: {e}")))?;
+
+    // 5. 删行
+    conn.execute("DELETE FROM safe_box WHERE id=?1", [safe_box_id])
+        .map_err(|e| RestoreError::Db(format!("delete safe_box row: {e}")))?;
+
+    // 6. audit_log
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let detail = serde_json::json!({
+        "safe_box_id": safe_box_id,
+        "size_bytes": size_bytes,
+        "from": rel,
+    })
+    .to_string();
+    conn.execute(
+        "INSERT INTO audit_log (ts, actor, action, target, detail, result)
+         VALUES (?1, 'user', 'restore', ?2, ?3, 'success')",
+        params![now, original_path, detail],
+    )
+    .map_err(|e| RestoreError::Db(format!("insert audit_log: {e}")))?;
+
+    Ok(RestoreResult {
+        safe_box_id,
+        original_path,
+        size_bytes: size_bytes as u64,
+    })
+}

@@ -165,3 +165,28 @@ pub async fn cleanup_execute(
     );
     Ok(Envelope::ok(summary))
 }
+
+/// `safe_box.restore`：按 safe_box id 把文件从保险箱 rename 回原路径。
+///
+/// task-017：业务错误码映射（不新增错误码）：
+/// - `TargetOccupied` → 2003 FILE_OCCUPIED（最接近：目标已被占用）；
+/// - `NotFound` / `ParentMissing` / `Io` / `Db` → 5001 INTERNAL（前端 toast 兜底）。
+#[tauri::command]
+pub async fn safe_box_restore(
+    safe_box_id: i64,
+) -> Result<Envelope<engine::execute::safe_box::RestoreResult>, String> {
+    let data_root = std::env::current_dir().map_err(|e| e.to_string())?;
+    let conn = engine::db::conn::open(&data_root).map_err(|e| e.to_string())?;
+    let box_dir = data_root.join("safe_box");
+
+    match engine::execute::safe_box::restore_from_safe_box(&conn, &box_dir, safe_box_id) {
+        Ok(r) => Ok(Envelope::ok(r)),
+        Err(engine::execute::safe_box::RestoreError::TargetOccupied(_)) => {
+            Ok(Envelope::err(engine::ipc::error_codes::FILE_OCCUPIED))
+        }
+        Err(e) => {
+            eprintln!("[safe_box_restore] id={safe_box_id} failed: {e}");
+            Ok(Envelope::err(INTERNAL))
+        }
+    }
+}
