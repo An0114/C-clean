@@ -10,5 +10,5 @@ pub mod loader;
 pub mod models;
 
 pub use env_expand::{expand, ExpandError};
-pub use loader::{load, LoadError, LoadedRules};
+pub use loader::{external_deny_list, load, LoadError, LoadedRules};
 pub use models::{CacheRules, RuleEntry, RulesMeta};

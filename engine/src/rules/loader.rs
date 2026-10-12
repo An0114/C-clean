@@ -89,3 +89,16 @@ pub fn load(rules_dir: &Path) -> Result<LoadedRules, LoadError> {
 
     Ok(LoadedRules { rules, meta })
 }
+
+/// 返回展开后的外部 L3 红线绝对路径列表（task-005 §F）。
+///
+/// 由加载流程保证所有 `whitelist_deny` 条目均可展开，此处 unwrap 不会失败；
+/// 交给 `crate::execute::whitelist::classify_with_external` 与内置红线取并集。
+pub fn external_deny_list(loaded: &LoadedRules) -> Vec<String> {
+    loaded
+        .rules
+        .whitelist_deny
+        .iter()
+        .filter_map(|raw| env_expand::expand(raw).ok())
+        .collect()
+}
