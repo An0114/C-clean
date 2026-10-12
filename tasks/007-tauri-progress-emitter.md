@@ -161,3 +161,12 @@ DevAgent 交付物（后续执行结果）：
 4. 本任务文档本身**由 DocsKeeper 在派发时**单独提交一次：
    `docs(task): 新增任务007-真实ProgressEmitter (#task-007)`，
    该提交只含 `tasks/007-tauri-progress-emitter.md` 一个文件，落在 `feature/task-007-tauri-progress-emitter` 分支最前端。
+
+## 实现备注（DevAgent 落地后回填）
+- **改动文件**：新建 `app/src-tauri/src/progress.rs`；改 `app/src-tauri/src/lib.rs`（`use tauri::Manager;` + setup 闭包 `app.manage(ProgressState::new(app.handle().clone()))`）；改 `app/src-tauri/src/commands.rs`（scan_start 签名增 `progress: State<ProgressState>`，返回前 emit demo）。engine/、app/src/、rules/、scripts/ 零改动。
+- **State 注入方式**：setup 闭包（非命令参数）——Builder `.setup(|app| { app.manage(ProgressState::new(app.handle().clone())); Ok(()) })`；命令侧只取 `State<'_, ProgressState>`，不持 AppHandle。
+- **事件名**：直接引用 engine `SCAN_PROGRESS_EVENT` 常量，无双处硬编码。
+- **自验退出码**：`cargo clippy --workspace --all-targets -- -D warnings`=0；`cargo fmt --all -- --check`=0；`cargo test -p engine`=0（61 条全绿，无回退）；`pnpm --filter app build`=0。
+- **devtools 端到端**：本轮自动化环境内 tauri dev 窗口启动后 GUI 无法稳定聚焦 devtools console（窗口启动/报错弹窗干扰），未取得 listen 截图；通道实现已由类型系统 + ThrottledEmitter 既有单测保证，留待 UI 联调任务补 console 截图（已登记 PROJECT_STATE 已知问题 B 低）。
+- **偏差**：无功能偏差；progress.rs 新建为独立模块（任务文档允许二选一）。
+- **遗留**：真实扫描任务接 emitter（scanned_items 计数器从 engine 侧传入）时只需向 ProgressState 持续 emit；当前 demo 仅一条 percent=0 事件。
