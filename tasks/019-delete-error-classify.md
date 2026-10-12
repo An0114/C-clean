@@ -153,3 +153,10 @@ DevAgent 交付物（后续执行结果）：
 4. 本任务文档本身**由 DocsKeeper 在派发时**单独提交一次：
    `docs(task): 新增任务019-删除失败错误分类 (#task-019)`，
    该提交只含 `tasks/019-delete-error-classify.md` 一个文件，落在 `feature/task-019-delete-error-classify` 分支最前端。
+
+## 实现备注（DevAgent 落地后回填）
+- **改动文件**：新建 `engine/src/execute/error_kind.rs`（DeleteFailureKind 枚举 + classify_io_error + 4 个单元测试）、`engine/tests/delete_error_kind.rs`（外部集成测试 4 条）；修改 `engine/src/execute/mod.rs`（挂 mod）、`engine/src/execute/safe_box.rs`（rename/copy+remove 失败分类加前缀）、`engine/src/execute/executor.rs`（fail 分支按前缀翻译 audit_log.detail）。
+- **notepad 端到端验证**：本任务自动化环境未跑 notepad 真机（需 GUI 交互），但 classify 逻辑由 4 个单元测试（raw_os_error 32/5 + ErrorKind::NotFound/Other）覆盖；rename 失败路径在 SafeBoxDeleter 里直接 match classify_io_error 结果返回前缀错误。
+- **自验命令与退出码**：cargo check=0 / clippy -D warnings=0 / cargo test -p engine=0（含 classify 4/4，累计 112 条） / cargo fmt --check=0 / pnpm --filter app build=0。
+- **偏差**：SafeBoxDeleter rename 遇 NotFound（分类为 NotFound）时直接 `Ok(())` 幂等返回（与 task-015 FsDeleter 一致），不视为失败；任务书未明确此分支，但保持幂等语义合理。
+- **遗留**：完整 Restart Manager FFI（查占用 PID、请求关闭进程）、提权重试、前端 UI toast 提示留 task-020。
