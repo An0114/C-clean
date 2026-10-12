@@ -20,3 +20,6 @@ pub mod ipc;
 
 /// 规则库：静态 JSON 模型、环境变量白名单展开、SHA-256 校验加载（task-005）。
 pub mod rules;
+
+/// 扫描子系统：消费 ps1 NDJSON 行协议，spawn 子进程、写 cleanup_item、emit 进度（task-012）。
+pub mod scan;
