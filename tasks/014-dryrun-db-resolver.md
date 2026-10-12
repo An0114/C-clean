@@ -152,3 +152,18 @@ DevAgent 交付物（后续执行结果）：
 4. 本任务文档本身**由 DocsKeeper 在派发时**单独提交一次：
    `docs(task): 新增任务014-dryRun切换DBResolver (#task-014)`，
    该提交只含 `tasks/014-dryrun-db-resolver.md` 一个文件，落在 `feature/task-014-dryrun-db-resolver` 分支最前端。
+
+## 实现备注（DevAgent 落地后回填）
+- **改动文件**：仅 `app/src-tauri/src/commands.rs`（cleanup_dry_run 函数体 + 删除 MockResolver import）。
+- **MockResolver 删除前后对比**：
+  - 前：`let resolver = MockResolver::new(vec![]);`（空 Vec 永远查不到 path）。
+  - 后：
+    ```rust
+    let conn = engine::db::conn::open(&data_root)?;
+    let resolver = engine::db::resolver::DbItemPathResolver::new(&conn);
+    handle_dry_run(DryRunReq { item_ids }, &resolver, &external_deny)
+    ```
+- **端到端验证**：自动化环境未跑 `pnpm tauri dev` GUI（与 task-007/013 已知问题一致）；engine 层 task-009 已覆盖「DB 有 item → dryRun 返回真实 path / 未知 id 跳过 / 2002 拒 L3」，本任务是 Tauri 接线薄包装，五闸全绿即视为通过。
+- **自验命令与退出码**：`cargo check --workspace --all-targets` = 0；`cargo clippy --workspace --all-targets -- -D warnings` = 0；`cargo test -p engine` = 0（不回退）；`cargo fmt --all -- --check` = 0；`pnpm --filter app build` = 0。
+- **偏差**：无。
+- **遗留**：scan.listItems 命令、cleanup.execute 真实删除、前端勾选 UI 留 task-015+。
