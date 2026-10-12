@@ -87,7 +87,7 @@ fn scan_start_rejects_bad_drive() {
 #[test]
 fn dry_run_empty_item_ids_returns_2001() {
     let resolver = MockResolver::new(vec![]);
-    let r = handle_dry_run(DryRunReq { item_ids: vec![] }, &resolver);
+    let r = handle_dry_run(DryRunReq { item_ids: vec![] }, &resolver, &[]);
     assert_eq!(r.code, 2001);
     assert!(r.data.is_none());
 }
@@ -115,6 +115,7 @@ fn dry_run_all_resolved_pass_returns_ok() {
             item_ids: vec![1, 2],
         },
         &resolver,
+        &[],
     );
     assert_eq!(r.code, 0);
     let data = r.data.unwrap();
@@ -133,7 +134,7 @@ fn dry_run_l3_path_returns_2002() {
         category: "user".into(),
         size_bytes: 42,
     }]);
-    let r = handle_dry_run(DryRunReq { item_ids: vec![7] }, &resolver);
+    let r = handle_dry_run(DryRunReq { item_ids: vec![7] }, &resolver, &[]);
     assert_eq!(r.code, 2002);
     let data = r.data.unwrap(); // 显式偏离：L3 拒绝 data 不置 null
     assert_eq!(data.blocked_by_l3.len(), 1);

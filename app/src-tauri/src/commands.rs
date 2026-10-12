@@ -7,9 +7,24 @@
 use engine::ipc::commands::dry_run::{handle_dry_run, DryRunReq, DryRunResp, MockResolver};
 use engine::ipc::commands::scan_start::{handle_scan_start, ScanStartReq, ScanStartResp};
 use engine::ipc::envelope::Envelope;
+use engine::ipc::error_codes::INTERNAL;
 use engine::ipc::progress::{ProgressEmitter, ScanProgress};
+use engine::rules::external_deny_list;
+use engine::rules::loader::load as load_rules;
 
 use crate::progress::ProgressState;
+
+/// 加载 rules/ 并取出已展开的外部红线绝对路径列表。
+///
+/// 开发期硬编码仓库根 `rules/`（`current_dir`）；M1 打包后改为 Tauri 资源目录。
+/// 加载失败（checksum 不匹配 / IO / JSON 错）一律保守返回 Err，由调用方转 5001。
+fn load_external_deny() -> Result<Vec<String>, String> {
+    let rules_dir = std::env::current_dir()
+        .map_err(|e| e.to_string())?
+        .join("rules");
+    let loaded = load_rules(&rules_dir).map_err(|e| format!("rules load failed: {e}"))?;
+    Ok(external_deny_list(&loaded))
+}
 
 /// `scan.start`：立即返回递增 sessionId（本任务不真启动扫描）。
 /// sessionId 计数器存于 Tauri State（Mutex<i64>）。
@@ -52,10 +67,18 @@ pub async fn scan_start(
     Ok(envelope)
 }
 
-/// `cleanup.dryRun`：本任务用空 MockResolver（不接 DB），
-/// 非空 itemIds 一律回 2001；真实 resolver 注入留后续任务。
+/// `cleanup.dryRun`：加载 rules/ 外部红线后跑 dryRun；rules 加载失败返 5001（保守拒绝）。
 #[tauri::command]
 pub async fn cleanup_dry_run(item_ids: Vec<i64>) -> Result<Envelope<DryRunResp>, String> {
+    // 加载失败（checksum 不匹配等）→ 保守返回 5001，不静默放行。
+    let external_deny = match load_external_deny() {
+        Ok(v) => v,
+        Err(_) => return Ok(Envelope::err(INTERNAL)),
+    };
     let resolver = MockResolver::new(vec![]);
-    Ok(handle_dry_run(DryRunReq { item_ids }, &resolver))
+    Ok(handle_dry_run(
+        DryRunReq { item_ids },
+        &resolver,
+        &external_deny,
+    ))
 }
