@@ -3,7 +3,7 @@
 > **特别声明**：本文件是项目唯一真实数据源，也是「每次任务结束必更新、必单独提交」的文件。后续所有 Agent 必须遵守：任何任务完成后都要先更新本文件，再单独提交一次（commit message 形如 `docs(state): ... (#task-00X)`），不得与业务代码混在同一个 commit。
 
 ## 当前目标
-M1 业务模块 A 进行中：task-012 Rust 侧 ps1 NDJSON 消费器已就绪，下一步把 ScanRunner 接到 Tauri scan.start 命令。
+M1 业务模块 A 进行中：task-013 scan.start 端到端已通，下一步切真实 resolver / 补 scan.listItems。
 
 ## 最近一次变更
 2026-10-11：完成 PRD / TRD / ARCHITECTURE / AGENTS / 立项决策记录全套长期基线文档，并初始化本状态白板。
@@ -19,6 +19,7 @@ M1 业务模块 A 进行中：task-012 Rust 侧 ps1 NDJSON 消费器已就绪，
 2026-10-12：task-010 完成——`handle_dry_run` 签名加 `external_deny: &[String]`，内部换 `classify_with_external`；`cleanup_dry_run` Tauri command 启动时 `current_dir()/rules` 加载规则库，`external_deny_list` 注入，加载失败保守返 5001；3 条新集成测试全绿（tempdir 自算 SHA-256 配 meta）。
 2026-10-12：task-011 完成——从零产出 `scripts/PROTOCOL.md`（item/done 两种 NDJSON 事件 schema）+ 5 个扫描脚本（temp/windows_update/prefetch/browser_cache/dev_cache），全部 `#requires -Version 5.1`、UTF-8 无 BOM、stdout 只出 NDJSON、跳过 LinkType、不删除；`smoke_test.ps1` 实跑 5 脚本逐行 ConvertFrom-Json 全绿（temp=154/wu=6/prefetch=0/browser=10/dev=33 行）。M1 前置清理清单收官。
 2026-10-12：task-012 完成——`engine::scan` 模块上线：`NdjsonEvent` serde 枚举（item/done + deny_unknown_fields）、`parse_line` 单行解析器；`ScanRunner` spawn `powershell.exe -File`，逐行写 `cleanup_item`（risk_level int→L0/L1/L2 映射、description 空串兜底）并 emit 进度；3 条假 ps1 集成测试全绿（含坏行跳过 / exit 1 无 done 报错）。
+2026-10-12：task-013 完成——新增 `ScanOrchestrator`（硬编码 5 个 ps1 串跑、失败不中断、全失败才报错）；Tauri `scan_start` 命令真接通：建 scan_session、跑 orchestrator、回写 status='completed'/'failed'、返回真实 session_id。4 条 orchestrator 集成测试全绿；cargo check/clippy/test/fmt + pnpm build 全绿。
 
 ## 已完成事项
 - [x] 项目立项与仓库初始化（commit 67990f5 / 4972f9d）
@@ -42,6 +43,7 @@ M1 业务模块 A 进行中：task-012 Rust 侧 ps1 NDJSON 消费器已就绪，
 - [x] 010：外部红线集注入——rules JSON 加载后与内置 L3 红线取并集（依赖 task-005；约 0.5 人天）
 - [x] 011：ps1 兼容层来源对齐与 NDJSON 改造（scripts/ 五个脚本；约 1 人天）
 - [x] 012：Rust 侧 ps1 NDJSON 消费器——parser + ScanRunner（spawn/写库/emit）
+- [x] 013：Tauri scan.start 真接通——Orchestrator 串跑 5 ps1 + 真实 session + 回写 status
 
 ## 已知问题
 - [B 低] task-009 `DbItemPathResolver` 已就绪并被 dryRun 单测端到端覆盖，但 Tauri 命令 `cleanup.dryRun` 仍注入 `MockResolver`（真实扫描还没产生 cleanup_item 数据）；切换时机留给 M1 扫描任务。
@@ -52,7 +54,7 @@ M1 业务模块 A 进行中：task-012 Rust 侧 ps1 NDJSON 消费器已就绪，
 - [B 低] task-006 CI 未接 Dependabot / cargo audit / npm audit（任务边界明确不做）；package.json 的 lint/test 为 echo 占位，CI 也不跑这两个命令，待前端组件落地（ESLint/Vitest）后再启用。CI 仅 windows-latest 单平台，跨平台矩阵（macOS/Linux）本项目明确不做；NSIS 出包矩阵未配，留待打包任务。
 
 ## 下一步计划
-派发 task-013：把 ScanRunner 接到 Tauri scan.start 命令——spawn 5 个 ps1 串跑、写真实 session、前端 listen scan://progress 端到端。
+派发 task-014：cleanup.dryRun 切换 MockResolver → DbItemPathResolver（现在 cleanup_item 有真实数据了）。
 
 ## 当前负责人 Agent
 DocsKeeper（文档与状态管家）
@@ -137,6 +139,10 @@ DocsKeeper（文档与状态管家）
 | 3096cc7 | #task-012 | feat(scan): ScanRunner——spawn powershell、写 cleanup_item、emit |
 | 4222d83 | #task-012 | test(scan): parser 与 runner 集成测试（假 ps1） |
 | （本次） | #task-012 | docs(state): 任务012完成，Rust 侧 ps1 NDJSON 消费器就绪 |
+| eb46fe9 | #task-013 | feat(scan): ScanOrchestrator 串跑 5 个 ps1 并汇总 |
+| be8bd23 | #task-013 | feat(tauri): scan_start 真接通——建 session/跑 Orchestrator/回写 status |
+| 8918c8f | #task-013 | test(scan): Orchestrator 集成测试（4 条） |
+| （本次） | #task-013 | docs(state): 任务013完成，scan.start 端到端跑通真实扫描 |
 
 ---
 变更轨迹：
@@ -162,3 +168,4 @@ DocsKeeper（文档与状态管家）
 - 2026-10-12  task-011  评审前清障：实跑冒烟测试 5/5 通过（temp=157/win_update=6/prefetch=0/browser=13/dev=33），cargo check exit 0；无第一档修复项
 - 2026-10-12  task-012  Rust 侧 ps1 NDJSON 消费器（parser + runner）落地，单测覆盖
 - 2026-10-12  task-012  评审前清障：独立复跑 clippy/fmt/test 全绿（88 条，含 ps1 spawn 3/3）；无第一档修复项；Tauri 接线/5脚本编排/scan.cancel 留 task-013
+- 2026-10-12  task-013  scan.start 端到端接线：5 ps1 串跑 + 真实 session + 前端 listen
