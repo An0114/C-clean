@@ -15,7 +15,10 @@ fn run(paths: Vec<String>, actions: Vec<String>) -> (bool, Option<String>) {
         ExecuteOutcome::Allowed { .. } => (true, None),
         ExecuteOutcome::Rejected { decisions, code } => {
             assert_eq!(code, REJECT_CODE);
-            let last = decisions.iter().filter_map(|d| d.denial_reason.clone()).last();
+            let last = decisions
+                .iter()
+                .filter_map(|d| d.denial_reason.clone())
+                .next_back();
             (false, Some(format!("{last:?}")))
         }
     }
@@ -50,16 +53,27 @@ fn resolve_mklink_junction() {
         .arg(&target)
         .output()
         .expect("mklink /J");
-    assert!(out.status.success(), "mklink 输出: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "mklink 输出: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     let np = normalize(link.join("secret.txt").to_string_lossy().as_ref()).unwrap();
     let r = resolve_to_real(&np).expect("resolve junction");
     assert!(
-        r.real.to_lowercase().replace('/', "\\").contains("real_docs"),
+        r.real
+            .to_lowercase()
+            .replace('/', "\\")
+            .contains("real_docs"),
         "real 应落到 real_docs: {}",
         r.real
     );
-    assert!(r.hop_count >= 1, "junction 重定向 hop 至少 1: {}", r.hop_count);
+    assert!(
+        r.hop_count >= 1,
+        "junction 重定向 hop 至少 1: {}",
+        r.hop_count
+    );
 }
 
 /// 路径不存在 → ResolveError::NotExists。
@@ -74,10 +88,11 @@ fn resolve_nonexistent_path_returns_not_exists() {
     }
 }
 
-/// junction 指向被外部红线标记的目录 → execute 整体拒绝（2002），NoopDeleter 不被调用。
+/// junction 重定向后，tempdir 内 fake_docs 不命中内置 L3（内置只认 users/<user>/documents），
+/// 验证 resolve 成功后不误杀；真正外部红线拦截留 task-010 由 classify_with_external 验收。
 #[cfg(windows)]
 #[test]
-fn junction_pointing_to_external_redline_is_rejected() {
+fn junction_resolves_to_fake_docs_and_is_allowed_when_not_on_builtin_redline() {
     let dir = tempfile::tempdir().unwrap();
     let fake = dir.path().join("fake_docs");
     std::fs::create_dir(&fake).unwrap();
@@ -97,13 +112,37 @@ fn junction_pointing_to_external_redline_is_rejected() {
     let r = resolve_to_real(&np).expect("resolve junction");
     assert!(r.real.to_lowercase().contains("fake_docs"));
 
-    // 注意：本任务内置 L3 匹配 users/<user>/<personal>，tempdir 下 fake_docs 不会命中内置红线；
-    // 这里验证「resolve 成功 + 输入路径不命中内置红线」时不会误杀，
-    // 而 junction 重定向保护的真实价值在 task-010 外部红线接入时由 classify_with_external 验收。
-    // 本用例至少保证：junction 路径解析后 execute 不因 resolve 失败而误拒（allowed 或由外部红线拒）。
-    let (allowed, _) = run(vec![link.join("secret.txt").to_string_lossy().to_string()], vec![]);
-    // fake_docs 不在 users/<name>/documents 结构下 → 内置红线放行 → allowed=true。
-    assert!(allowed, "tempdir 内非红线 junction 应放行，实际拒绝原因已记录供审计");
+    // tempdir 内非红线 junction 应放行（内置 L3 不匹配）。
+    let (allowed, _) = run(
+        vec![link.join("secret.txt").to_string_lossy().to_string()],
+        vec![],
+    );
+    assert!(
+        allowed,
+        "tempdir 内非红线 junction 应放行，实际拒绝原因已记录供审计"
+    );
+}
+
+/// resolve 失败（如 UNC）时 execute 整体拒绝且 NoopDeleter 绝不被调用（反证）。
+#[test]
+fn resolve_error_blocks_delete_does_not_invoke_deleter() {
+    let req = ExecuteRequest {
+        paths: vec![r"\\127.0.0.1\C$\share\file.txt".to_string()],
+        actions: vec![],
+    };
+    let deleter = NoopDeleter::default();
+    let outcome = execute(&req, &deleter).expect("execute");
+    match outcome {
+        ExecuteOutcome::Rejected { .. } => {
+            // 关键反证：被拒路径不得触发 Deleter。
+            assert!(
+                deleter.recorded().is_empty(),
+                "resolve 失败被拒时 NoopDeleter 不应被调用，实际记录: {:?}",
+                deleter.recorded()
+            );
+        }
+        other => panic!("UNC 路径应被拒绝为 Rejected，实际: {other:?}"),
+    }
 }
 
 /// 一个实际存在、不在红线上的普通文件，execute 应放行且 NoopDeleter 记录路径。
