@@ -205,3 +205,4 @@ DocsKeeper（文档与状态管家）
 - 2026-10-12  task-016  safe_box 5GB FIFO 保险箱落地，删除不再直接 remove_file
 - 2026-10-12  task-016  评审前清障：safe_box 测试加全局串行锁——QUOTA_BYTES 是进程级 AtomicU64，并行测试互相覆盖导致 evicts_oldest 偶发失败；clippy/test 99 条全绿
 - 2026-10-12  task-017  safe_box restore 闭环，用户后悔可恢复文件
+- 2026-10-12  task-017  评审前清障：独立复跑 clippy/fmt/test 全绿（104 条，含 restore 5/5）；确认 restore 逻辑正确（TargetOccupied/ParentMissing/rename/delete row/audit_log），无第一档修复项
