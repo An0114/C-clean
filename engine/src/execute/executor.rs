@@ -52,12 +52,15 @@ struct BatchSummary {
 /// - NotFound（DB 里没有这个 id）→ skip，不写 audit_log（任务书要求「不影响其他 item」）；
 /// - L3 命中 → audit_log result='denied'，denial_reason 填具体原因；
 /// - deleter 失败 → audit_log result='fail'，detail 带错误文案。
-pub fn execute_items(
+pub fn execute_items<'a, F>(
     item_ids: &[i64],
     conn: &Connection,
     external_deny: &[String],
-    deleter: &dyn Deleter,
-) -> ExecuteSummary {
+    mut deleter_factory: F,
+) -> ExecuteSummary
+where
+    F: FnMut(i64) -> Box<dyn Deleter + 'a>,
+{
     let mut results = Vec::with_capacity(item_ids.len());
     let mut summary = BatchSummary {
         freed_bytes: 0i64,
@@ -158,10 +161,11 @@ pub fn execute_items(
             continue;
         }
 
-        // 3. 真实删除
+        // 3. 真实删除（per-item 构造 deleter，SafeBoxDeleter 需要绑定 item_id/source_task_id）
         let bytes_before = std::fs::metadata(np.normalized())
             .map(|m| m.len())
             .unwrap_or(0);
+        let deleter = deleter_factory(id);
         match deleter.delete_file(&np) {
             Ok(()) => {
                 summary.success += 1;

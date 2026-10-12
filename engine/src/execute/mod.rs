@@ -9,4 +9,5 @@ pub mod executor;
 pub mod fs_deleter;
 pub mod normalize;
 pub mod resolve;
+pub mod safe_box;
 pub mod whitelist;

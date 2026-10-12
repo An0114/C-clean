@@ -150,9 +150,18 @@ pub async fn cleanup_execute(
     };
     let data_root = std::env::current_dir().map_err(|e| e.to_string())?;
     let conn = engine::db::conn::open(&data_root).map_err(|e| e.to_string())?;
-    let deleter = engine::execute::fs_deleter::FsDeleter;
+    let box_dir = data_root.join("safe_box");
+    std::fs::create_dir_all(&box_dir).map_err(|e| e.to_string())?;
 
-    let summary =
-        engine::execute::executor::execute_items(&item_ids, &conn, &external_deny, &deleter);
+    let summary = engine::execute::executor::execute_items(
+        &item_ids,
+        &conn,
+        &external_deny,
+        |_item_id| -> Box<dyn engine::execute::delete::Deleter + '_> {
+            Box::new(engine::execute::safe_box::SafeBoxDeleter::new(
+                &box_dir, &conn, None,
+            ))
+        },
+    );
     Ok(Envelope::ok(summary))
 }
