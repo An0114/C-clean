@@ -174,3 +174,4 @@ DocsKeeper（文档与状态管家）
 - 2026-10-12  task-013  scan.start 端到端接线：5 ps1 串跑 + 真实 session + 前端 listen
 - 2026-10-12  task-013  评审前清障：独立复跑 clippy/fmt/test 全绿（92 条，含 orchestrator 4/4）；修正 scan_start doc 注释（同步执行+last_insert_rowid，非 spawn_blocking/RETURNING）；devtools console 截图仍留 UI 联调
 - 2026-10-12  task-014  cleanup.dryRun 切换 DbItemPathResolver，dryRun 闭环真实数据
+- 2026-10-12  task-014  评审前清障：独立复跑 clippy/fmt/test 全绿（92 条不回退）；确认 MockResolver import 已删、DbItemPathResolver 接线薄包装无偏差；无第一档修复项
