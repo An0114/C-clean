@@ -1,0 +1,8 @@
+[toolchain]
+# 固定走 stable 通道（本机安装的 stable 即 1.90.0；精确版本号无法通过
+# rustup 别名匹配，CI 的 dtolnay/rust-toolchain@stable 也会自动读本文件）。
+# CI 与本地共用同一份工具链定义，fmt/clippy/test 行为可复现（TRD「构建可复现」）。
+channel = "stable"
+components = ["rustfmt", "clippy"]
+targets = []
+profile = "minimal"
