@@ -44,9 +44,9 @@ fn validate_scan_input(scope: &str, target_drive: &Option<String>) -> Result<(),
 ///
 /// 1. 入参校验；
 /// 2. 打开（必要时自动迁移）SQLite 库；
-/// 3. `INSERT INTO scan_session ... RETURNING id` 拿真实 session_id；
-/// 4. `spawn_blocking` 内串跑 5 个 ps1（`ScanOrchestrator::run_all`），
-///    item 行写 cleanup_item、并通过 ProgressState emit 进度；
+/// 3. INSERT scan_session 拿真实 session_id（last_insert_rowid）；
+/// 4. 串跑 5 个 ps1（ScanOrchestrator::run_all），item 写 cleanup_item、emit 进度；
+///    注：M1 dev 期直接同步执行，后续 scan.cancel 引入时再改 spawn_blocking 线程模型；
 /// 5. 回写 scan_session.status='completed'/'failed'；
 /// 6. 返回真实 session_id。
 #[tauri::command]
