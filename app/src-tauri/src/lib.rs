@@ -26,7 +26,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             ping,
             commands::scan_start,
-            commands::cleanup_dry_run
+            commands::cleanup_dry_run,
+            commands::cleanup_execute
         ])
         .run(tauri::generate_context!())
         .expect("error while running C-Disk Cleaner");

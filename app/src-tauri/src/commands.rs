@@ -131,3 +131,28 @@ pub async fn cleanup_dry_run(item_ids: Vec<i64>) -> Result<Envelope<DryRunResp>,
         &external_deny,
     ))
 }
+
+/// `cleanup.execute`：dryRun 通过后用户确认 → 真删文件。
+///
+/// task-015：对每个 id 再查 DB、再过一次白名单（防 dryRun→execute 之间路径被改），
+/// 用 `FsDeleter`（std::fs::remove_file）真删；成功/失败都落 audit_log，
+/// 一次调用写一行 cleanup_task 聚合。
+#[tauri::command]
+pub async fn cleanup_execute(
+    item_ids: Vec<i64>,
+) -> Result<Envelope<engine::execute::executor::ExecuteSummary>, String> {
+    if item_ids.is_empty() {
+        return Ok(Envelope::err(engine::ipc::error_codes::DRYRUN_EMPTY));
+    }
+    let external_deny = match load_external_deny() {
+        Ok(v) => v,
+        Err(_) => return Ok(Envelope::err(INTERNAL)),
+    };
+    let data_root = std::env::current_dir().map_err(|e| e.to_string())?;
+    let conn = engine::db::conn::open(&data_root).map_err(|e| e.to_string())?;
+    let deleter = engine::execute::fs_deleter::FsDeleter;
+
+    let summary =
+        engine::execute::executor::execute_items(&item_ids, &conn, &external_deny, &deleter);
+    Ok(Envelope::ok(summary))
+}
