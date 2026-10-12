@@ -47,12 +47,14 @@ jobs:
         run: pnpm --filter app build
 
       # 规则库自洽守卫：合并前挡住「手改 cache_rules.json 忘了更新 rules_meta.json」。
-      # 注意：比对的是 checkout 出来的 LF 规范字节（windows runner 默认 autocrlf=false），
-      # 与 task-005 运行时 loader 的校验互为冗余。
+      # windows runner 带 autocrlf=true，checkout 出来的文件可能是 CRLF；
+      # 这里先归一为 LF 再算哈希，与 git blob / rules_meta.json 的 LF 口径对齐。
       - name: 规则库 SHA-256 校验
         shell: pwsh
         run: |
-          $hash = (Get-FileHash rules/cache_rules.json -Algorithm SHA256).Hash.ToLower()
+          $text = [IO.File]::ReadAllText('rules/cache_rules.json') -replace "`r`n", "`n"
+          $sha = [System.Security.Cryptography.SHA256]::Create()
+          $hash = ($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($text)) | ForEach-Object { $_.ToString('x2') }) -join ''
           $meta = Get-Content rules/rules_meta.json -Raw | ConvertFrom-Json
           if ($hash -ne $meta.checksum_sha256) {
             Write-Error "checksum mismatch: expected $($meta.checksum_sha256), got $hash"
