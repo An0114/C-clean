@@ -4,7 +4,7 @@
 //! 业务判定全部在 engine::ipc::commands 里，方便纯内存单测。
 //! （Tauri 2 规则：带 State 引用的 async command 必须返回 Result。）
 
-use engine::ipc::commands::dry_run::{handle_dry_run, DryRunReq, DryRunResp, MockResolver};
+use engine::ipc::commands::dry_run::{handle_dry_run, DryRunReq, DryRunResp};
 use engine::ipc::envelope::Envelope;
 use engine::ipc::error_codes::INTERNAL;
 use engine::rules::external_deny_list;
@@ -108,7 +108,10 @@ pub async fn scan_start(
     ))
 }
 
-/// `cleanup.dryRun`：加载 rules/ 外部红线后跑 dryRun；rules 加载失败返 5001（保守拒绝）。
+/// `cleanup.dryRun`：加载 rules/ 外部红线 + 打开真实 DB，按 id 从 cleanup_item 取路径跑 dryRun。
+///
+/// task-014：把 MockResolver 换成 `DbItemPathResolver`——scan_start（task-013）已经
+/// 把真实扫描结果写进 cleanup_item，这里按前端传的 itemIds 反查路径，再走白名单。
 #[tauri::command]
 pub async fn cleanup_dry_run(item_ids: Vec<i64>) -> Result<Envelope<DryRunResp>, String> {
     // 加载失败（checksum 不匹配等）→ 保守返回 5001，不静默放行。
@@ -116,7 +119,12 @@ pub async fn cleanup_dry_run(item_ids: Vec<i64>) -> Result<Envelope<DryRunResp>,
         Ok(v) => v,
         Err(_) => return Ok(Envelope::err(INTERNAL)),
     };
-    let resolver = MockResolver::new(vec![]);
+
+    // 与 scan_start 同一个 data_dir（开发期 current_dir；打包后改 app_data_dir）。
+    let data_root = std::env::current_dir().map_err(|e| e.to_string())?;
+    let conn = engine::db::conn::open(&data_root).map_err(|e| e.to_string())?;
+    let resolver = engine::db::resolver::DbItemPathResolver::new(&conn);
+
     Ok(handle_dry_run(
         DryRunReq { item_ids },
         &resolver,
