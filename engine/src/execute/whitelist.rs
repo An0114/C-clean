@@ -96,6 +96,24 @@ pub fn check_action(action: &str) -> Result<(), DenialReason> {
     Ok(())
 }
 
+/// 内置红线 + 外部红线并集匹配（task-005 §F 最小扩展）。
+///
+/// 先跑内置 [`classify`]（行为不变），再跑 `external` 前缀匹配：
+/// 外部红线只能**新增**拒绝，不能放宽内置红线。`external` 元素为已展开的
+/// 绝对路径（反斜杠），比较大小写不敏感，要求路径等于该前缀或以 `\` 延伸。
+/// 外部命中统一归为 [`DenialReason::L3SystemPath`]（外部硬编码红线桶）。
+pub fn classify_with_external(p: &NormalizedPath, external: &[String]) -> Result<(), DenialReason> {
+    classify(p)?;
+    let lower = p.normalized().to_lowercase();
+    for ext in external {
+        let ext_lower = ext.to_lowercase();
+        if lower == ext_lower || lower.starts_with(&format!("{ext_lower}\\")) {
+            return Err(DenialReason::L3SystemPath);
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

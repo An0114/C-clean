@@ -17,3 +17,6 @@ pub mod execute;
 
 /// IPC 网关：统一信封、命令纯逻辑、进度事件通道（task-004）。
 pub mod ipc;
+
+/// 规则库：静态 JSON 模型、环境变量白名单展开、SHA-256 校验加载（task-005）。
+pub mod rules;
