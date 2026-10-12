@@ -148,3 +148,11 @@ DevAgent 交付物（后续执行结果）：
 4. 本任务文档本身**由 DocsKeeper 在派发时**单独提交一次：
    `docs(task): 新增任务020-who_is_locking (#task-020)`，
    该提交只含 `tasks/020-who-is-locking.md` 一个文件，落在 `feature/task-020-who-is-locking` 分支最前端。
+
+## 实现备注（DevAgent 落地后回填）
+- **改动文件**：新建 `engine/src/execute/locking.rs`（LockingProcess + who_is_locking + Windows 四件套 FFI + 非 Windows 空实现）、`engine/tests/locking_who_is_locking.rs`（空锁必跑 + notepad `#[ignore]` 手动用例）；修改 `engine/Cargo.toml`（cfg(windows) windows 0.58）、`engine/src/execute/mod.rs`（挂 mod）。
+- **windows crate 实际 features**：`Win32_Foundation` + `Win32_System_RestartManager`。**任务书写的 `Win32_WindowsProgramming` 在 windows 0.58 中不存在，已去掉**（偏差，不影响功能）。
+- **关键工程偏差**：windows 0.58 的 RmXxx 返回 `WIN32_ERROR`（不是 `windows::core::Result`），需 `.ok()` 转 Result 或直接比较 code；session handle 是 `u32`（不是 HANDLE）；RmRegisterResources 第二个参数是 `Option<&[PCWSTR]>` 切片。
+- **notepad 端到端测试**：DevAgent 本地未强制重跑 notepad 真机（`#[ignore]`），空锁测试 CI 必跑全绿。
+- **自验命令与退出码**：cargo check --workspace --all-targets=0 / clippy -D warnings=0 / cargo test -p engine=0（116+1=117 条） / cargo fmt --check=0 / pnpm --filter app build=0。
+- **遗留**：RmShutdown/RmRestart（请求关闭进程）、Tauri 命令接线、前端 toast 提示、cleanup.execute 自动调用本函数填 audit_log.detail 留 task-021+。
