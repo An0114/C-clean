@@ -203,3 +203,20 @@ DevAgent 交付物（后续执行结果）：
 4. 本任务文档本身**由 DocsKeeper 在派发时**单独提交一次：
    `docs(task): 新增任务015-cleanup.execute真实删除 (#task-015)`，
    该提交只含 `tasks/015-cleanup-execute.md` 一个文件，落在 `feature/task-015-cleanup-execute` 分支最前端。
+
+## 实现备注（DevAgent 落地后回填）
+- **改动文件**：新建 `engine/src/execute/fs_deleter.rs`、`engine/src/execute/executor.rs`、`engine/tests/execute_items.rs`；修改 `engine/src/execute/mod.rs`（挂 mod）、`app/src-tauri/src/commands.rs`（cleanup_execute）、`app/src-tauri/src/lib.rs`（注册）。
+- **schema 偏差（重要）**：任务书 §B 给的 `cleanup_task(item_id/action/status/bytes_freed/executed_at)` 与 `audit_log(event_type/path/created_at)` 列名与 v1__init.sql 实际不一致。实际：
+  - `cleanup_task` 是批量任务行（session_id / started_at / finished_at / disk_before/after / freed_bytes / success/fail/skip_count / dry_run_snapshot / safebox_enabled）——**一次 execute_items 调用写一行**，聚合计数；
+  - `audit_log` 字段为 ts / actor / action / target / detail / result / denial_reason——按任务书语义映射：event_type→action（permanent_delete）、path→target、created_at→ts、detail JSON 包 item_id/bytes/err。
+- **FsDeleter 错误语义**：
+  - NotFound → Ok(()) 幂等（已删过就算成功）；
+  - PermissionDenied / SharingViolation / 其他 IO → Err("remove_file <path>: <io error>")；
+  - 对目录直接 Err（task-015 只删文件）。
+- **白名单二次校验**：execute_items 内部对每个 path 重新 `normalize + classify_with_external`（与 dry_run 同函数），不依赖 `delete::execute()`（该函数设计上只做判定不触发 deleter，且不接收 external_deny 参数）。
+- **端到端验证**：自动化环境未跑 `pnpm tauri dev` GUI（与 task-007/013/014 已知问题一致）；由 4 条集成测试（tempdir 真文件）等价覆盖。
+- **自验命令与退出码**：`cargo check --workspace --all-targets` = 0；`cargo clippy --workspace --all-targets -- -D warnings` = 0；`cargo test -p engine` = 0（92+4 全绿）；`cargo fmt --all -- --check` = 0；`pnpm --filter app build` = 0。
+- **偏差**：
+  - Tauri 侧 `app/src-tauri` 未直接依赖 serde，因此 `ExecResult` / `ExecuteSummary` 直接在 engine 层 derive Serialize 并由命令返回 `Envelope<ExecuteSummary>`，未在 commands.rs 另造响应结构。
+  - rusqlite `params!` 不支持 u64，freed_bytes 用 i64 绑定；size_bytes 在 ExecResult 里仍为 u64（JSON 序列化用）。
+- **遗留**：保险箱（safe_box 5GB FIFO）、Restart Manager（文件占用重试）、目录删除、批量进度事件、elevation 提权留 task-016+。
