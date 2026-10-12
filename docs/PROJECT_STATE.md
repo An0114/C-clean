@@ -214,3 +214,4 @@ DocsKeeper（文档与状态管家）
 - 2026-10-12  task-017  safe_box restore 闭环，用户后悔可恢复文件
 - 2026-10-12  task-017  评审前清障：独立复跑 clippy/fmt/test 全绿（104 条，含 restore 5/5）；确认 restore 逻辑正确（TargetOccupied/ParentMissing/rename/delete row/audit_log），无第一档修复项
 - 2026-10-12  task-018  safe_box.list 命令就绪，前端 UI 可列出保险箱条目
+- 2026-10-12  task-018  评审前清障：独立复跑 clippy/fmt/test 全绿（108 条，含 list 4/4）；确认 list 查询正确（status='in_box' 过滤、quarantined_at DESC、size_bytes i64→u64），无第一档修复项
