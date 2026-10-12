@@ -174,3 +174,15 @@ DevAgent 交付物（后续执行结果）：
 4. 本任务文档本身**由 DocsKeeper 在派发时**单独提交一次：
    `docs(task): 新增任务017-safe_box-restore (#task-017)`，
    该提交只含 `tasks/017-safe-box-restore.md` 一个文件，落在 `feature/task-017-safe-box-restore` 分支最前端。
+
+## 实现备注（DevAgent 落地后回填）
+- **改动文件**：`engine/src/execute/safe_box.rs`（追加 RestoreResult/RestoreError/restore_from_safe_box）、`engine/tests/safe_box_restore.rs`（新建 5 用例）、`app/src-tauri/src/commands.rs`（新增 safe_box_restore 命令）、`app/src-tauri/src/lib.rs`（注册）、`docs/PROJECT_STATE.md`。
+- **schema 偏差**（按 v1__init.sql 真实列适配）：
+  - 查询条件：`status='in_box'`（任务书写 `purged_at IS NULL`）；
+  - 路径字段：`safe_rel_path`（相对 box_dir，任务书写 `box_path` 绝对路径）——故函数签名加了 `box_dir: &Path` 参数；
+  - audit_log 字段：`ts/actor/action/target/detail/result`（任务书写 `event_type/path/created_at`），映射 action='restore'、target=original_path、actor='user'、result='success'、detail=JSON。
+- **业务错误码映射**（不新增错误码）：
+  - `TargetOccupied` → 2003 FILE_OCCUPIED（最接近：目标已被占用）；
+  - `NotFound` / `ParentMissing` / `Io` / `Db` → 5001 INTERNAL（前端 toast 兜底，详情 eprintln）。
+- **自验命令与退出码**：cargo check=0 / clippy -D warnings=0 / cargo test -p engine=0（含 restore 5/5，累计 104 条） / cargo fmt --check=0 / pnpm --filter app build=0。
+- **遗留**：safe_box.list（前端 UI 用）、批量恢复、原父目录自动 mkdir、restored_at 审计列——留 task-018+。
