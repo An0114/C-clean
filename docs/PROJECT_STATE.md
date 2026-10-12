@@ -3,7 +3,7 @@
 > **特别声明**：本文件是项目唯一真实数据源，也是「每次任务结束必更新、必单独提交」的文件。后续所有 Agent 必须遵守：任何任务完成后都要先更新本文件，再单独提交一次（commit message 形如 `docs(state): ... (#task-00X)`），不得与业务代码混在同一个 commit。
 
 ## 当前目标
-M1 前置清理（task-007~011）全部完成，正式进入 M1 业务模块 A~F 开发（A=扫描器，将消费 ps1 NDJSON）。
+M1 业务模块 A 进行中：task-012 Rust 侧 ps1 NDJSON 消费器已就绪，下一步把 ScanRunner 接到 Tauri scan.start 命令。
 
 ## 最近一次变更
 2026-10-11：完成 PRD / TRD / ARCHITECTURE / AGENTS / 立项决策记录全套长期基线文档，并初始化本状态白板。
@@ -18,6 +18,7 @@ M1 前置清理（task-007~011）全部完成，正式进入 M1 业务模块 A~F
 2026-10-12：task-009 完成——新增 `engine::db::resolver::DbItemPathResolver`（持有 `&Connection`，参数化按 id 查 `cleanup_item`，查不到跳过、SQL 失败返回空 Vec + eprintln）；4 条集成测试全绿（空库/匹配/未知 id/dryRun 端到端 2002）。Tauri 命令仍用 MockResolver，切换留 M1 扫描任务。
 2026-10-12：task-010 完成——`handle_dry_run` 签名加 `external_deny: &[String]`，内部换 `classify_with_external`；`cleanup_dry_run` Tauri command 启动时 `current_dir()/rules` 加载规则库，`external_deny_list` 注入，加载失败保守返 5001；3 条新集成测试全绿（tempdir 自算 SHA-256 配 meta）。
 2026-10-12：task-011 完成——从零产出 `scripts/PROTOCOL.md`（item/done 两种 NDJSON 事件 schema）+ 5 个扫描脚本（temp/windows_update/prefetch/browser_cache/dev_cache），全部 `#requires -Version 5.1`、UTF-8 无 BOM、stdout 只出 NDJSON、跳过 LinkType、不删除；`smoke_test.ps1` 实跑 5 脚本逐行 ConvertFrom-Json 全绿（temp=154/wu=6/prefetch=0/browser=10/dev=33 行）。M1 前置清理清单收官。
+2026-10-12：task-012 完成——`engine::scan` 模块上线：`NdjsonEvent` serde 枚举（item/done + deny_unknown_fields）、`parse_line` 单行解析器；`ScanRunner` spawn `powershell.exe -File`，逐行写 `cleanup_item`（risk_level int→L0/L1/L2 映射、description 空串兜底）并 emit 进度；3 条假 ps1 集成测试全绿（含坏行跳过 / exit 1 无 done 报错）。
 
 ## 已完成事项
 - [x] 项目立项与仓库初始化（commit 67990f5 / 4972f9d）
@@ -40,9 +41,9 @@ M1 前置清理（task-007~011）全部完成，正式进入 M1 业务模块 A~F
 - [x] 009：DB 版 ItemPathResolver——cleanup_item 表按 id 取路径/大小/模块，替换 MockResolver（依赖 task-002、cleanup.execute；约 1 人天）
 - [x] 010：外部红线集注入——rules JSON 加载后与内置 L3 红线取并集（依赖 task-005；约 0.5 人天）
 - [x] 011：ps1 兼容层来源对齐与 NDJSON 改造（scripts/ 五个脚本；约 1 人天）
+- [x] 012：Rust 侧 ps1 NDJSON 消费器——parser + ScanRunner（spawn/写库/emit）
 
 ## 已知问题
-- [B 低] task-011 ps1 已可独立产出合法 NDJSON，但 Rust 侧消费器（spawn 子进程 / 逐行读 stdout / 写 cleanup_item 表 / emit 进度）尚未实现，留 M1-A 任务；CI 跑 ps1 冒烟测试也未接入。
 - [B 低] task-009 `DbItemPathResolver` 已就绪并被 dryRun 单测端到端覆盖，但 Tauri 命令 `cleanup.dryRun` 仍注入 `MockResolver`（真实扫描还没产生 cleanup_item 数据）；切换时机留给 M1 扫描任务。
 - [B 低] UNC 路径 `\\server\share\...` task-008 评估结论：**沿用保守拒绝**（normalize 层 NotAbsolute + resolve 层 Io 双保险）；网络盘 L3 红线策略留待真实 NAS/企业盘场景出现时再开。
 - [B 低] task-007 WebView2 devtools console 的 `listen('scan://progress')` 真机截图未在本轮自动化环境内取得（tauri dev 窗口启动后 GUI 自动化无法稳定聚焦 console）；通道本身已由编译期类型 + engine 节流单测保证，留待 UI 联调任务补截图。
@@ -51,7 +52,7 @@ M1 前置清理（task-007~011）全部完成，正式进入 M1 业务模块 A~F
 - [B 低] task-006 CI 未接 Dependabot / cargo audit / npm audit（任务边界明确不做）；package.json 的 lint/test 为 echo 占位，CI 也不跑这两个命令，待前端组件落地（ESLint/Vitest）后再启用。CI 仅 windows-latest 单平台，跨平台矩阵（macOS/Linux）本项目明确不做；NSIS 出包矩阵未配，留待打包任务。
 
 ## 下一步计划
-派发 M1 业务模块 A：Rust 主进程 spawn ps1 子进程、逐行收 NDJSON、写 cleanup_item 表、emit scan://progress。
+派发 task-013：把 ScanRunner 接到 Tauri scan.start 命令——spawn 5 个 ps1 串跑、写真实 session、前端 listen scan://progress 端到端。
 
 ## 当前负责人 Agent
 DocsKeeper（文档与状态管家）
@@ -132,6 +133,10 @@ DocsKeeper（文档与状态管家）
 | 22d1e37 | #task-011 | feat(scripts): scan_prefetch / scan_browser_cache / scan_dev_cache |
 | e7c06e4 | #task-011 | test(scripts): 5 脚本 NDJSON 冒烟全绿 |
 | （本次） | #task-011 | docs(state): 任务011完成，M1 前置清理清单全部就绪 |
+| 0e5e35e | #task-012 | feat(scan): NdjsonEvent serde 模型与 parse_line 单行解析器 |
+| 3096cc7 | #task-012 | feat(scan): ScanRunner——spawn powershell、写 cleanup_item、emit |
+| 4222d83 | #task-012 | test(scan): parser 与 runner 集成测试（假 ps1） |
+| （本次） | #task-012 | docs(state): 任务012完成，Rust 侧 ps1 NDJSON 消费器就绪 |
 
 ---
 变更轨迹：
@@ -155,3 +160,4 @@ DocsKeeper（文档与状态管家）
 - 2026-10-12  task-010  评审前清障：修正外部红线集成用例（原用 %USERPROFILE%\Videos 命中的是内置 L3 而非外部红线），改用 %LOCALAPPDATA%\SomeSensitiveCache 并断言 L3SystemPath，证明外部红线独立生效；clippy/test 全绿
 - 2026-10-12  task-011  ps1 兼容层从零编写（5 脚本 + NDJSON 协议），M1 前置清理收官
 - 2026-10-12  task-011  评审前清障：实跑冒烟测试 5/5 通过（temp=157/win_update=6/prefetch=0/browser=13/dev=33），cargo check exit 0；无第一档修复项
+- 2026-10-12  task-012  Rust 侧 ps1 NDJSON 消费器（parser + runner）落地，单测覆盖
