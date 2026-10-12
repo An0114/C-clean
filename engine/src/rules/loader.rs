@@ -43,18 +43,40 @@ fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(hasher.finalize())
 }
 
+/// 把 CRLF（`\r\n`）归一为 LF（`\n`）。
+///
+/// `rules_meta.checksum_sha256` 存的是 LF 字节流的哈希；而 Windows 上
+/// git `autocrlf` 或编辑器可能把磁盘文件写成 CRLF。这里与 CI 守卫步骤
+/// 做同样的归一，保证运行时校验口径与存储口径一致，不因行尾差异误判篡改。
+fn to_lf(bytes: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\r' && i + 1 < bytes.len() && bytes[i + 1] == b'\n' {
+            out.push(b'\n');
+            i += 2;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
 /// 从 `<rules_dir>` 加载并校验规则库。
 ///
 /// 目录约定：`cache_rules.json` 与 `rules_meta.json` 同目录。
 pub fn load(rules_dir: &Path) -> Result<LoadedRules, LoadError> {
     // 1. 读两文件字节。
-    let cache_bytes = std::fs::read(rules_dir.join("cache_rules.json"))?;
+    let cache_raw = std::fs::read(rules_dir.join("cache_rules.json"))?;
     let meta_bytes = std::fs::read(rules_dir.join("rules_meta.json"))?;
 
     // 2. 反序列化 meta（meta 结构本身简单，不参与 checksum 校验）。
     let meta: RulesMeta = serde_json::from_slice(&meta_bytes)?;
 
-    // 3. 算 cache 的 SHA-256，与 meta 严格比对（大小写敏感，必须小写）。
+    // 3. 归一 CRLF→LF 后再算 SHA-256，与 meta.checksum_sha256 严格比对
+    //    （大小写敏感，必须小写）。行尾归一与 CI 守卫步骤一致。
+    let cache_bytes = to_lf(&cache_raw);
     let actual = sha256_hex(&cache_bytes);
     if actual != meta.checksum_sha256 {
         return Err(LoadError::ChecksumMismatch {
@@ -63,7 +85,7 @@ pub fn load(rules_dir: &Path) -> Result<LoadedRules, LoadError> {
         });
     }
 
-    // 4. 反序列化 cache。
+    // 4. 反序列化 cache（用归一后的字节，JSON 解析不关心行尾）。
     let rules: CacheRules = serde_json::from_slice(&cache_bytes)?;
 
     // 5. L3 检查：任一可清理条目 risk_level == "L3" 即拒绝。

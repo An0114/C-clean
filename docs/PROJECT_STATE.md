@@ -3,7 +3,7 @@
 > **特别声明**：本文件是项目唯一真实数据源，也是「每次任务结束必更新、必单独提交」的文件。后续所有 Agent 必须遵守：任何任务完成后都要先更新本文件，再单独提交一次（commit message 形如 `docs(state): ... (#task-00X)`），不得与业务代码混在同一个 commit。
 
 ## 当前目标
-完成 M0 阶段：初始化 Tauri 2 + Rust + React monorepo 脚手架，跑通最小可运行窗口与公共底座（SQLite schema、白名单删除入口、IPC 网关、规则库加载），为 M1 六大业务模块（A~F）并行开发打好地基。
+M0 公共底座已就绪（task-001~006 全部完成、PR #1 CI 全绿），进入 M1 业务模块 A~F 并行开发阶段。
 
 ## 最近一次变更
 2026-10-11：完成 PRD / TRD / ARCHITECTURE / AGENTS / 立项决策记录全套长期基线文档，并初始化本状态白板。
@@ -12,6 +12,7 @@
 2026-10-11：task-003 完成——engine 内新建 execute/ 子模块：Windows 路径规范化器（反斜杠归一、大写盘符、`..` 一律拒）、内置 L3 红线路径匹配器（个人目录/浏览器数据/系统路径/动作级禁令）、`delete::execute()` 唯一入口（全拒不调 Deleter，拒绝信封码 2002）；24 条集成测试 + 9 条单元测试全绿。
 2026-10-11：task-004 完成——engine 内新建 ipc/ 子模块：统一响应信封 `{code,message,data}`、TRD §5.3 全 13 个错误码、`scan.start`（递增 sessionId 入参校验）/ `cleanup.dryRun`（接 task-003 白名单 + MockResolver）纯逻辑、ProgressEmitter trait + 100ms 节流；app/src-tauri 注册两条命令。**显式偏离 TRD §5.1：L3 拒绝（2002）时 data 不置 null，回传 blocked_by_l3 明细**；7+3 条新测试全绿（engine 累计 52 条）。
 2026-10-12：task-005 完成——落地 `rules/cache_rules.json`（npm_cache 示例 + 4 条外部红线）与配对 `rules_meta.json`（真实 SHA-256）；engine 新建 rules/ 子模块：serde 模型 / 白名单环境变量展开（5 变量 + `~`）/ SHA-256 校验加载器（篡改即拒不写盘）/ `classify_with_external` 与内置红线取并集；9 条集成测试全绿（engine 累计 61 条）。
+2026-10-12：task-006 完成——M0 收官。新增 `rust-toolchain.toml`（channel=stable + rustfmt/clippy）与 `.github/workflows/ci.yml`：windows-latest 单 job 跑五道闸（fmt --check → clippy -D warnings → cargo test → pnpm install --frozen-lockfile → pnpm --filter app build），另加 rules/*.json SHA-256（去 CR 归一 LF）与 JSON 合法性两个自洽守卫；app/package.json 补 lint/test echo 占位。PR #1 触发 GitHub Actions 实测经 2 轮修复（Node 20→22、pnpm 9→11；checksum 去 CR）后 ci #3 全绿（5m56s）。M0 公共底座（001~006）全部就绪。
 
 ## 已完成事项
 - [x] 项目立项与仓库初始化（commit 67990f5 / 4972f9d）
@@ -28,7 +29,7 @@
 - [x] 003：落地删除唯一入口 engine::execute::delete::execute() + L3 红线白名单匹配器 + 单元测试（对 PRD P0-7 全部 L3 路径 100% 拦截）
 - [x] 004：落地 IPC 网关骨架——统一响应信封 {code,message,data}、scan.start/cleanup.dryRun 命令、进度事件通道
 - [x] 005：落地 rules/cache_rules.json 初始规则库 + rules_meta.json + SHA-256 校验加载逻辑
-- [ ] 006：搭好 CI（GitHub Actions：cargo clippy/fmt/test + pnpm lint/test + 规则 JSON schema 校验）
+- [x] 006：搭好 CI（GitHub Actions：cargo clippy/fmt/test + pnpm lint/test + 规则 JSON schema 校验）
 - [ ] 007：真实 ProgressEmitter（AppHandle::emit）——scan://progress 真机可被前端 listen 收到（依赖 task-004、真实扫描任务；约 1 人天）
 - [ ] 008：symlink/junction 解析防绕开——规范化器接 symlink_metadata，junction 指向 L3 时一并拒（依赖 task-003、platform 模块；约 1 人天）
 - [ ] 009：DB 版 ItemPathResolver——cleanup_item 表按 id 取路径/大小/模块，替换 MockResolver（依赖 task-002、cleanup.execute；约 1 人天）
@@ -41,9 +42,10 @@
 - [B 低] task-005 `rules_meta` 落 DB（rules_meta 表运行时持久化）、GitHub Raw 联网拉取、`rules.checkUpdate`/`rules.applyUpdate` IPC 命令未做——本任务明确「不联网 / 不写 DB / 不接 Tauri command」，留待 M1 规则更新任务。补偿：静态 rules_meta.json 已含真实 SHA-256，loader 校验逻辑单测覆盖。
 - [B 低] task-005 `cleanup.dryRun` 当前仅跑内置 `classify()`，外部 `whitelist_deny` 红线尚未接线（`classify_with_external` + `external_deny_list` 已就绪并有并集单测），待 task-010「外部红线集注入」接入。
 - [B 低] task-005 外部红线命中统一记为 `DenialReason::L3SystemPath`（遵守「whitelist.rs 仅新增函数、不改枚举/常量」约束）；后续审计若需区分内置/外部红线来源，再拆 DenialReason 变体。
+- [B 低] task-006 CI 未接 Dependabot / cargo audit / npm audit（任务边界明确不做）；package.json 的 lint/test 为 echo 占位，CI 也不跑这两个命令，待前端组件落地（ESLint/Vitest）后再启用。CI 仅 windows-latest 单平台，跨平台矩阵（macOS/Linux）本项目明确不做；NSIS 出包矩阵未配，留待打包任务。
 
 ## 下一步计划
-派发 task-006：搭好 GitHub Actions CI（cargo clippy/fmt/test + pnpm lint/test + 规则 JSON schema 与 SHA-256 校验）。
+M1 启动：从 A 应用缓存扫描 / B 系统临时与日志模块开始；前置决策点——DB 仓储 ItemPathResolver 真实实现、audit_log 写入落库、rules.checkUpdate 联网拉取（GitHub Raw + SHA-256）。
 
 ## 当前负责人 Agent
 DocsKeeper（文档与状态管家）
@@ -97,6 +99,13 @@ DocsKeeper（文档与状态管家）
 | ccf6c69 | #task-005 | feat(rules): 把 whitelist_deny 接入白名单匹配器，与内置红线取并集 |
 | 480022d | #task-005 | test(rules): 补 JSON 反序列化、变量展开、篡改拒绝、并集生效测试 |
 | （本次） | #task-005 | docs(state): 任务005完成，更新进度与下一步 |
+| 7ce5578 | #task-006 | chore(ci): 新增 rust-toolchain.toml 固定 Rust 工具链版本 |
+| 565353e | #task-006 | chore(ci): 新增 GitHub Actions CI 工作流（fmt/clippy/test + pnpm build） |
+| ce08901 | #task-006 | chore(ci): 在 CI 追加 rules/*.json SHA-256 与 JSON 合法性校验 |
+| 95771fb | #task-006 | chore(ci): 在 app/package.json 补 lint/test 占位脚本 |
+| e6e1505 | #task-006 | fix(ci): Node 22 + pnpm 11，对齐本地工具链（修 ERR_UNKNOWN_BUILTIN_MODULE） |
+| 6ad5296 | #task-006 | fix(ci): checksum 校验先去 CR 归一 LF（windows runner autocrlf mismatch） |
+| （本次） | #task-006 | docs(state): 任务006完成，M0 阶段收官 |
 
 ---
 变更轨迹：
@@ -108,3 +117,5 @@ DocsKeeper（文档与状态管家）
 - 2026-10-12  debt-cleanup-批次001  A类口径回写 TRD §5.1（2002 data 例外）与 task-003 B.4（.. 一律拒）；拆出 task-007~011；B类已知限制登记
 - 2026-10-12  task-005  落地初始规则库与 SHA-256 校验加载器
 - 2026-10-12  task-005  评审前清障：独立复跑 cargo check/clippy/fmt/test 全绿、复核 checksum 一致；无第一档修复项；3 条第三档延期项登记入已知问题
+- 2026-10-12  task-006  搭好 GitHub Actions CI（windows-latest 五道闸 + 规则自洽守卫），PR #1 经 2 轮修复后全绿，M0 阶段收官
+- 2026-10-12  task-006  评审前清障：发现 loader.rs 算 checksum 未做 CRLF→LF 归一（Windows autocrlf 会把合法 rules 误判篡改），已修复并补 CRLF 容忍用例；M0 遗留 5 项均已登记已知问题

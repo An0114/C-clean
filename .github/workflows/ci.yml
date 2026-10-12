@@ -1,0 +1,70 @@
+# C-Disk Cleaner CI（task-006）。
+# 项目「完全不做 macOS/Linux」，只在 windows-latest 上跑五道闸：
+# fmt → clippy -D warnings → cargo test → pnpm install --frozen-lockfile → pnpm build。
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Setup Node + pnpm 11（对齐本地 Node 22 / pnpm 11）
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: corepack enable; corepack prepare pnpm@11 --activate
+
+      - name: Setup Rust（自动读取 rust-toolchain.toml）
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Rustfmt 检查
+        run: cargo fmt --all -- --check
+
+      - name: Clippy（warning 即 fail）
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Rust 测试
+        run: cargo test --workspace
+
+      - name: 前端安装（frozen lockfile）
+        run: pnpm install --frozen-lockfile
+
+      - name: 前端构建
+        run: pnpm --filter app build
+
+      # 规则库自洽守卫：合并前挡住「手改 cache_rules.json 忘了更新 rules_meta.json」。
+      # windows runner 带 autocrlf=true，checkout 出来的文件可能是 CRLF；
+      # 这里先归一为 LF 再算哈希，与 git blob / rules_meta.json 的 LF 口径对齐。
+      - name: 规则库 SHA-256 校验
+        shell: pwsh
+        run: |
+          $text = [IO.File]::ReadAllText('rules/cache_rules.json') -replace "`r`n", "`n"
+          $sha = [System.Security.Cryptography.SHA256]::Create()
+          $hash = ($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($text)) | ForEach-Object { $_.ToString('x2') }) -join ''
+          $meta = Get-Content rules/rules_meta.json -Raw | ConvertFrom-Json
+          if ($hash -ne $meta.checksum_sha256) {
+            Write-Error "checksum mismatch: expected $($meta.checksum_sha256), got $hash"
+            exit 1
+          }
+          Write-Host "rules checksum OK: $hash"
+
+      - name: 规则库 JSON 合法性
+        shell: pwsh
+        run: |
+          Get-Content rules/cache_rules.json -Raw | ConvertFrom-Json | Out-Null
+          Get-Content rules/rules_meta.json -Raw | ConvertFrom-Json | Out-Null
+          Write-Host "rules JSON parse OK"
