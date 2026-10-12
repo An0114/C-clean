@@ -210,3 +210,12 @@ DevAgent 交付物（后续执行结果）：
 4. 本任务文档本身**由 DocsKeeper 在派发时**单独提交一次：
    `docs(task): 新增任务012-Rust侧ps1 NDJSON消费器 (#task-012)`，
    该提交只含 `tasks/012-ps1-ndjson-runner.md` 一个文件，落在 `feature/task-012-ps1-ndjson-runner` 分支最前端。
+
+## 实现备注（DevAgent 落地后回填）
+- **改动文件**：`engine/src/scan/{mod,parser,runner}.rs`（新建）、`engine/src/lib.rs`（挂 `pub mod scan;`）、`engine/tests/scan_runner.rs`（新建）。
+- **ps1 spawn 实际行为**：`powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <script>` 启动耗时约 0.3~0.5s；exit code 语义按任务约定：见到 done 即视为成功（即使 exit≠0），未见到 done 且 exit≠0 才报 `RunError::ScriptFailed`。
+- **DB INSERT 失败取舍**：视为致命（`RunError::Db`）直接 return，避免往表里灌半份数据；行级 JSON 解析失败才跳过该行（eprintln）。
+- **schema 偏差**：任务书 §C 给的 INSERT 列是 `discovered_at`，但 v1__init.sql 实际没有该列，未使用；`risk_level` DB 端是 TEXT（L0/L1/L2），ps1 协议给 int，runner 内做映射；`description` NOT NULL 但 ps1 协议未提供，runner 给空串兜底。`ScanProgress.percent` 是 u8，任务书写 -1 未知，实际给 0（编排脚本跑完再换算百分比）。
+- **自验命令与退出码**：`cargo check --workspace --all-targets` = 0；`cargo clippy --workspace --all-targets -- -D warnings` = 0；`cargo test -p engine` = 0；`cargo fmt --all -- --check` = 0（首次 fmt 有差异已 `cargo fmt --all` 修正）。
+- **测试结果**：parser 5 条（item/done/missing/unknown/bad json）+ runner 3 条（inserts_items_and_emits / skips_bad_lines / script_failure_without_done），共 8 条全绿。
+- **遗留**：Tauri command 接线、5 脚本串跑编排、scan.cancel 留 task-013。
