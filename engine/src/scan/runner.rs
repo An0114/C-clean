@@ -107,13 +107,9 @@ impl<'conn, 'emitter> ScanRunner<'conn, 'emitter> {
                     size_bytes,
                     risk_level,
                 }) => {
-                    if let Err(e) = self.insert_item(
-                        &module_code,
-                        &category,
-                        &path,
-                        size_bytes,
-                        risk_level,
-                    ) {
+                    if let Err(e) =
+                        self.insert_item(&module_code, &category, &path, size_bytes, risk_level)
+                    {
                         // DB 错视为致命：不继续往表里灌半份数据。
                         return Err(RunError::Db(e));
                     }
