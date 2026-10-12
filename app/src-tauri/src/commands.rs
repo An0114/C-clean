@@ -190,3 +190,24 @@ pub async fn safe_box_restore(
         }
     }
 }
+
+/// `safe_box.list`：列出当前保险箱里所有未剔除条目（前端 UI 用）。
+#[tauri::command]
+pub async fn safe_box_list() -> Result<Envelope<engine::execute::safe_box::SafeBoxListResp>, String>
+{
+    let data_root = std::env::current_dir().map_err(|e| e.to_string())?;
+    let conn = match engine::db::conn::open(&data_root) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[safe_box_list] open db: {e}");
+            return Ok(Envelope::err(INTERNAL));
+        }
+    };
+    match engine::execute::safe_box::list_safe_box(&conn) {
+        Ok(r) => Ok(Envelope::ok(r)),
+        Err(e) => {
+            eprintln!("[safe_box_list] list: {e}");
+            Ok(Envelope::err(INTERNAL))
+        }
+    }
+}
