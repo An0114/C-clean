@@ -6,6 +6,8 @@
 mod commands;
 pub mod progress;
 
+use tauri::Manager;
+
 /// 空命令：返回 engine 占位字符串，供前端联调时验证 IPC 通路。
 #[tauri::command]
 fn ping() -> &'static str {
@@ -16,6 +18,11 @@ fn ping() -> &'static str {
 pub fn run() {
     tauri::Builder::default()
         .manage(std::sync::Mutex::new(0_i64))
+        // task-007：在 setup 闭包里拿 AppHandle，构造全局进度 State 并注入。
+        .setup(|app| {
+            app.manage(progress::ProgressState::new(app.handle().clone()));
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             ping,
             commands::scan_start,
