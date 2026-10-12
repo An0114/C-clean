@@ -41,9 +41,13 @@ fn who_is_locking_windows(path: &str) -> Result<Vec<LockingProcess>, String> {
     let mut session_handle: u32 = 0;
     let mut session_key = [0u16; 33];
     unsafe {
-        RmStartSession(&mut session_handle, 0, windows::core::PWSTR(session_key.as_mut_ptr()))
-            .ok()
-            .map_err(|e| format!("RmStartSession: {e}"))?;
+        RmStartSession(
+            &mut session_handle,
+            0,
+            windows::core::PWSTR(session_key.as_mut_ptr()),
+        )
+        .ok()
+        .map_err(|e| format!("RmStartSession: {e}"))?;
     }
 
     // 2. 注册文件资源
@@ -51,7 +55,9 @@ fn who_is_locking_windows(path: &str) -> Result<Vec<LockingProcess>, String> {
     let pwstr = PCWSTR(path_w.as_ptr());
     let files = [pwstr];
     if let Err(e) = unsafe { RmRegisterResources(session_handle, Some(&files), None, None) }.ok() {
-        unsafe { let _ = RmEndSession(session_handle); }
+        unsafe {
+            let _ = RmEndSession(session_handle);
+        }
         return Err(format!("RmRegisterResources: {e}"));
     }
 
@@ -72,7 +78,9 @@ fn who_is_locking_windows(path: &str) -> Result<Vec<LockingProcess>, String> {
     if let Err(e) = probe.ok() {
         let code = e.code().0 as u32;
         if code != 234 {
-            unsafe { let _ = RmEndSession(session_handle); }
+            unsafe {
+                let _ = RmEndSession(session_handle);
+            }
             return Err(format!("RmGetList (probe, code={code}): {e}"));
         }
     }
@@ -93,17 +101,21 @@ fn who_is_locking_windows(path: &str) -> Result<Vec<LockingProcess>, String> {
         }
         .ok()
         {
-            unsafe { let _ = RmEndSession(session_handle); }
+            unsafe {
+                let _ = RmEndSession(session_handle);
+            }
             return Err(format!("RmGetList (fetch): {e}"));
         }
 
         for i in 0..n_proc_info as usize {
-            let p = unsafe {
-                &*(buf.as_ptr().add(i * size) as *const RM_PROCESS_INFO)
-            };
+            let p = unsafe { &*(buf.as_ptr().add(i * size) as *const RM_PROCESS_INFO) };
             let app_name = u16_to_string(&p.strAppName);
             let svc_raw = u16_to_string(&p.strServiceShortName);
-            let service_name = if svc_raw.is_empty() { None } else { Some(svc_raw) };
+            let service_name = if svc_raw.is_empty() {
+                None
+            } else {
+                Some(svc_raw)
+            };
             out.push(LockingProcess {
                 pid: p.Process.dwProcessId,
                 app_name,
@@ -113,7 +125,9 @@ fn who_is_locking_windows(path: &str) -> Result<Vec<LockingProcess>, String> {
     }
 
     // 4. 释放会话
-    unsafe { let _ = RmEndSession(session_handle); }
+    unsafe {
+        let _ = RmEndSession(session_handle);
+    }
 
     Ok(out)
 }

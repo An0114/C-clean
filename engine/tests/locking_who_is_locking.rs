@@ -35,7 +35,9 @@ fn who_is_locking_notepad_locks_file() {
     println!("notepad result: {result:?}");
     assert!(!result.is_empty(), "expected notepad to lock the file");
     assert!(
-        result.iter().any(|lp| lp.app_name.to_lowercase().contains("notepad")),
+        result
+            .iter()
+            .any(|lp| lp.app_name.to_lowercase().contains("notepad")),
         "expected an entry whose app_name contains notepad, got {result:?}"
     );
 
