@@ -28,10 +28,15 @@
 - [x] 004：落地 IPC 网关骨架——统一响应信封 {code,message,data}、scan.start/cleanup.dryRun 命令、进度事件通道
 - [ ] 005：落地 rules/cache_rules.json 初始规则库 + rules_meta.json + SHA-256 校验加载逻辑
 - [ ] 006：搭好 CI（GitHub Actions：cargo clippy/fmt/test + pnpm lint/test + 规则 JSON schema 校验）
+- [ ] 007：真实 ProgressEmitter（AppHandle::emit）——scan://progress 真机可被前端 listen 收到（依赖 task-004、真实扫描任务；约 1 人天）
+- [ ] 008：symlink/junction 解析防绕开——规范化器接 symlink_metadata，junction 指向 L3 时一并拒（依赖 task-003、platform 模块；约 1 人天）
+- [ ] 009：DB 版 ItemPathResolver——cleanup_item 表按 id 取路径/大小/模块，替换 MockResolver（依赖 task-002、cleanup.execute；约 1 人天）
+- [ ] 010：外部红线集注入——rules JSON 加载后与内置 L3 红线取并集（依赖 task-005；约 0.5 人天）
+- [ ] 011：ps1 兼容层来源对齐与 NDJSON 改造（scripts/ 五个脚本；约 1 人天）
 
 ## 已知问题
-- 本地 main 领先 origin/main 共 7 个提交（自 4972f9d 起的文档基线均未 push），M0 启动前需确认远端同步策略。
-- 决策 #1 提到"现有 5 个 PowerShell 脚本"作为 M1 兼容层，但仓库内尚无 scripts/ 实际脚本，其来源与 NDJSON 改造方案待对齐。
+- [B 中] task-004 未做 WebView2 devtools 真机 `invoke('scan_start'/'cleanup_dry_run')` 联调（以信封序列化逐字节单测 + clippy 替代），留待 UI 联调任务补做。
+- [B 中] UNC 路径 `\\server\share\...` 当前一律按 NotAbsolute 保守拒绝，网络盘 L3 红线策略未定（由 task-008 顺带评估）。
 
 ## 下一步计划
 派发 task-005：落地 rules/cache_rules.json 初始规则库 + rules_meta.json + SHA-256 校验加载逻辑。
@@ -88,3 +93,4 @@ DocsKeeper（文档与状态管家）
 - 2026-10-11  task-002  落地 SQLite schema（9 张表）+ rusqlite 连接 + user_version 迁移器
 - 2026-10-11  task-003  落地删除唯一入口与 L3 白名单匹配器
 - 2026-10-11  task-004  落地 IPC 网关骨架（信封/错误码/scan.start/cleanup.dryRun/进度事件）
+- 2026-10-12  debt-cleanup-批次001  A类口径回写 TRD §5.1（2002 data 例外）与 task-003 B.4（.. 一律拒）；拆出 task-007~011；B类已知限制登记
