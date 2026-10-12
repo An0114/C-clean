@@ -276,6 +276,7 @@
 
 - `code = 0` 成功；非 0 见 §5.3 错误码。
 - `data` 结构随命令定义；失败时 `data` 为 `null`，`message` 为可展示给用户的中文短句。
+  - **唯一例外（task-004 口径回写，debt-cleanup 批次001）**：`code = 2002`（WHITELIST_DENIED）时 `data` **不置 null**，而是携带 `DryRunResp{totalItems:0,totalBytes:0,breakdown:[],blockedByL3:[...]}`——前端必须拿到「哪几条路径被拦、什么原因」才能展示；其余错误码（2001/5001 等）仍保持 `data=null`。
 - 流式进度通过事件推送，不走返回值。
 
 ### 5.2 IPC 命令清单（前端 → Rust 核心）
