@@ -32,7 +32,7 @@ const BROWSER_SENSITIVE_FILES: [&str; 3] = ["bookmarks", "login data", "history"
 ///
 /// `PathTraversal` 表示规范化阶段已拒绝（不会出现在 execute 返回的路径决策里，
 /// 仅作为枚举保留，便于上层把「规范化失败」与「命中 L3」区分统计）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DenialReason {
     /// 桌面 / 文档 / 下载 / 图片 / 视频 / 音乐（含中文本地化文件夹名）。
     L3PersonalDir,
@@ -46,6 +46,8 @@ pub enum DenialReason {
     L3ReservedAction,
     /// 规范化阶段已拒（枚举保留，正常不出现在返回结果中）。
     PathTraversal,
+    /// 真实路径解析失败（task-008：canonicalize / junction 解析 / UNC 等）。
+    ResolveFailed(String),
 }
 
 /// 对一条已规范化路径跑全部内置红线；通过返回 Ok(())，命中返回对应拒绝原因。
