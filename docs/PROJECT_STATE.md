@@ -38,6 +38,9 @@
 ## 已知问题
 - [B 中] task-004 未做 WebView2 devtools 真机 `invoke('scan_start'/'cleanup_dry_run')` 联调（以信封序列化逐字节单测 + clippy 替代），留待 UI 联调任务补做。
 - [B 中] UNC 路径 `\\server\share\...` 当前一律按 NotAbsolute 保守拒绝，网络盘 L3 红线策略未定（由 task-008 顺带评估）。
+- [B 低] task-005 `rules_meta` 落 DB（rules_meta 表运行时持久化）、GitHub Raw 联网拉取、`rules.checkUpdate`/`rules.applyUpdate` IPC 命令未做——本任务明确「不联网 / 不写 DB / 不接 Tauri command」，留待 M1 规则更新任务。补偿：静态 rules_meta.json 已含真实 SHA-256，loader 校验逻辑单测覆盖。
+- [B 低] task-005 `cleanup.dryRun` 当前仅跑内置 `classify()`，外部 `whitelist_deny` 红线尚未接线（`classify_with_external` + `external_deny_list` 已就绪并有并集单测），待 task-010「外部红线集注入」接入。
+- [B 低] task-005 外部红线命中统一记为 `DenialReason::L3SystemPath`（遵守「whitelist.rs 仅新增函数、不改枚举/常量」约束）；后续审计若需区分内置/外部红线来源，再拆 DenialReason 变体。
 
 ## 下一步计划
 派发 task-006：搭好 GitHub Actions CI（cargo clippy/fmt/test + pnpm lint/test + 规则 JSON schema 与 SHA-256 校验）。
@@ -104,3 +107,4 @@ DocsKeeper（文档与状态管家）
 - 2026-10-11  task-004  落地 IPC 网关骨架（信封/错误码/scan.start/cleanup.dryRun/进度事件）
 - 2026-10-12  debt-cleanup-批次001  A类口径回写 TRD §5.1（2002 data 例外）与 task-003 B.4（.. 一律拒）；拆出 task-007~011；B类已知限制登记
 - 2026-10-12  task-005  落地初始规则库与 SHA-256 校验加载器
+- 2026-10-12  task-005  评审前清障：独立复跑 cargo check/clippy/fmt/test 全绿、复核 checksum 一致；无第一档修复项；3 条第三档延期项登记入已知问题
