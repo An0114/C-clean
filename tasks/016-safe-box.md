@@ -179,3 +179,14 @@ DevAgent 交付物（后续执行结果）：
 4. 本任务文档本身**由 DocsKeeper 在派发时**单独提交一次：
    `docs(task): 新增任务016-safe-box保险箱 (#task-016)`，
    该提交只含 `tasks/016-safe-box.md` 一个文件，落在 `feature/task-016-safe-box` 分支最前端。
+
+## 实现备注（DevAgent 落地后回填）
+- **改动文件**：新建 `engine/src/execute/safe_box.rs`、`engine/tests/safe_box.rs`；修改 `engine/src/execute/mod.rs`（挂 mod）、`engine/src/execute/executor.rs`（签名改 deleter 工厂闭包）、`app/src-tauri/src/commands.rs`（cleanup_execute 切 SafeBoxDeleter）、`engine/tests/execute_items.rs`（适配新签名）。
+- **schema 偏差**：任务书 §A 给的 safe_box 列名（session_id/item_id/box_path/moved_at/purged_at）与 v1__init.sql 实际不一致，按真实列适配：
+  - 真实列：original_path / safe_rel_path / size_bytes / quarantined_at / expires_at / status / source_task_id；
+  - 映射：moved_at→quarantined_at；purged_at→status='purged'；box_path→safe_rel_path（相对 box_dir）；item_id/session_id 由 source_task_id（指向批量 cleanup_task 行）承载，当前命令传 None。
+- **跨盘 rename 策略**：`fs::rename` 失败时检查 `raw_os_error()`（Windows=17 / Linux=18），命中则 fallback 到 `fs::copy` + `fs::remove_file`；CI 单盘未实测跨盘用例。
+- **quota 测试常量覆盖**：用 `AtomicU64` 静态 `QUOTA_BYTES` + `pub fn set_quota_for_test(v)`，测试直接调用（不依赖 `#[cfg(test)]` 污染生产代码）；测试结束后不重置（单进程内顺序执行，每个用例自己 set）。
+- **Deleter trait 签名偏差**：任务书写 `delete_file(&self, &str) -> Result<u64, String>`，实际 trait 是 `delete_file(&NormalizedPath) -> Result<(), String>`；bytes_freed 由 executor 在调用前用 `fs::metadata` 取。
+- **自验命令与退出码**：`cargo check`=0 / `clippy -D warnings`=0（修一次 MSRV 1.85 CrossesDevices 后） / `cargo test -p engine`=0（96+3 全绿） / `cargo fmt --check`=0 / `pnpm --filter app build`=0。
+- **遗留**：restore 命令、TTL 自动清空、原子性（rename 成功但 DB 写失败）、跨盘 copy 重试、目录删除留 task-017+。
