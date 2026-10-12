@@ -1,0 +1,24 @@
+{
+  "version": "1.0.0",
+  "modules": {
+    "A": [
+      {
+        "id": "npm_cache",
+        "category": "npm_cache",
+        "display_name": "npm 缓存",
+        "paths": ["%LOCALAPPDATA%\\npm-cache", "~/.npm/_cacache"],
+        "risk_level": "L1",
+        "description": "npm 包下载缓存",
+        "impact_note": "删除后下次安装依赖重新下载",
+        "rebuild_note": "自动重建",
+        "elevated": false
+      }
+    ]
+  },
+  "whitelist_deny": [
+    "%USERPROFILE%\\Desktop",
+    "%USERPROFILE%\\Documents",
+    "C:\\Windows\\System32",
+    "C:\\pagefile.sys"
+  ]
+}
