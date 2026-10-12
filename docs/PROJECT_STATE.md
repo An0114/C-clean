@@ -119,8 +119,8 @@ DocsKeeper（文档与状态管家）
 | 7f253af | #task-008 | style(execute): cargo fmt 统一格式 |
 | （本次） | #task-008 | docs(state): 任务008完成，symlink/junction 防绕开 |
 | 9ec8224 | #task-009 | feat(db): 新增 DbItemPathResolver 实现 ItemPathResolver trait |
-| a535b6e | #task-009 | test(db): 补 DbItemPathResolver 集成测试（含 dryRun 端到端） |
-| （本次） | #task-009 | docs(state): 任务009完成，真实 DB resolver 就绪 |
+| 47b542f | #task-009 | test(db): 补 DbItemPathResolver 集成测试（含 dryRun 端到端） |
+| 6bc9fb2 | #task-009 | docs(state): 任务009完成，真实 DB resolver 就绪 |
 
 ---
 变更轨迹：
@@ -139,3 +139,4 @@ DocsKeeper（文档与状态管家）
 - 2026-10-12  task-008  junction/symlink 真实路径解析接入 delete 唯一入口（canonicalize + 对真实路径二次 L3 判定）
 - 2026-10-12  task-008  评审前清障：修正 junction 测试名与断言矛盾（原名为 rejected 实断言 allowed），补 resolve 失败不调 NoopDeleter 反证用例；clippy/test 全绿
 - 2026-10-12  task-009  DB 版 ItemPathResolver 落地并单测覆盖
+- 2026-10-12  task-009  评审前清障：独立复跑 clippy/fmt/test 全绿（77 条），修正提交表 hash 笔误（test commit a535b6e→47b542f）；无第一档代码修复项
