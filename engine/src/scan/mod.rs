@@ -4,8 +4,10 @@
 //! - `runner`：spawn `powershell.exe -File <script>`，逐行读 stdout，
 //!   item 行写 `cleanup_item` 表并 emit 进度，done 行结束。
 
+pub mod orchestrator;
 pub mod parser;
 pub mod runner;
 
+pub use orchestrator::{OrchestratorError, OrchestratorSummary, ScanOrchestrator};
 pub use parser::{NdjsonEvent, ParseError};
 pub use runner::{RunError, ScanRunner, ScanSummary};

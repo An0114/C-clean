@@ -5,12 +5,11 @@
 //! （Tauri 2 规则：带 State 引用的 async command 必须返回 Result。）
 
 use engine::ipc::commands::dry_run::{handle_dry_run, DryRunReq, DryRunResp, MockResolver};
-use engine::ipc::commands::scan_start::{handle_scan_start, ScanStartReq, ScanStartResp};
 use engine::ipc::envelope::Envelope;
 use engine::ipc::error_codes::INTERNAL;
-use engine::ipc::progress::{ProgressEmitter, ScanProgress};
 use engine::rules::external_deny_list;
 use engine::rules::loader::load as load_rules;
+use engine::scan::ScanOrchestrator;
 
 use crate::progress::ProgressState;
 
@@ -26,45 +25,87 @@ fn load_external_deny() -> Result<Vec<String>, String> {
     Ok(external_deny_list(&loaded))
 }
 
-/// `scan.start`：立即返回递增 sessionId（本任务不真启动扫描）。
-/// sessionId 计数器存于 Tauri State（Mutex<i64>）。
+/// 入参校验：scope ∈ {full, custom}；target_drive 形如 "C:"。
+/// 与 engine::ipc::commands::scan_start::handle_scan_start 的规则保持一致。
+fn validate_scan_input(scope: &str, target_drive: &Option<String>) -> Result<(), ()> {
+    if scope != "full" && scope != "custom" {
+        return Err(());
+    }
+    if let Some(drive) = target_drive {
+        let b = drive.as_bytes();
+        if !(b.len() == 2 && b[0].is_ascii_alphabetic() && b[1] == b':') {
+            return Err(());
+        }
+    }
+    Ok(())
+}
+
+/// `scan.start`：task-013 起真接通扫描。
 ///
-/// task-007：校验通过后、返回前向 ProgressState emit 一条
-/// `percent=0, current_path="starting"` 的 demo 进度，证明 scan://progress 通道通。
+/// 1. 入参校验；
+/// 2. 打开（必要时自动迁移）SQLite 库；
+/// 3. INSERT scan_session 拿真实 session_id（last_insert_rowid）；
+/// 4. 串跑 5 个 ps1（ScanOrchestrator::run_all），item 写 cleanup_item、emit 进度；
+///    注：M1 dev 期直接同步执行，后续 scan.cancel 引入时再改 spawn_blocking 线程模型；
+/// 5. 回写 scan_session.status='completed'/'failed'；
+/// 6. 返回真实 session_id。
 #[tauri::command]
 pub async fn scan_start(
     scope: String,
     target_drive: Option<String>,
-    state: tauri::State<'_, std::sync::Mutex<i64>>,
     progress: tauri::State<'_, ProgressState>,
-) -> Result<Envelope<ScanStartResp>, String> {
-    let mut counter = state.lock().map_err(|e| e.to_string())?;
-    let envelope = handle_scan_start(
-        ScanStartReq {
-            scope,
-            target_drive,
-        },
-        &mut counter,
-    );
-
-    // demo 进度：sessionId 取信封 data 里的真实值；成功才 emit，失败也不影响返回。
-    if let Ok(session_id) = envelope
-        .data
-        .as_ref()
-        .map(|d| d.session_id)
-        .ok_or("no data")
-    {
-        if let Ok(g) = progress.0.lock() {
-            g.emit(&ScanProgress {
-                session_id,
-                percent: 0,
-                current_path: "starting".to_string(),
-                scanned_items: 0,
-            });
-        }
+    app: tauri::AppHandle,
+) -> Result<Envelope<engine::ipc::commands::scan_start::ScanStartResp>, String> {
+    if validate_scan_input(&scope, &target_drive).is_err() {
+        return Ok(Envelope::err(INTERNAL));
     }
 
-    Ok(envelope)
+    // DB 数据根：开发期用 current_dir（与 rules/、scripts/ 一致）；
+    // 打包后改为 `app.path().app_data_dir()`。
+    let data_root = std::env::current_dir().map_err(|e| e.to_string())?;
+    let scripts_dir = data_root.join("scripts");
+
+    // 注：task-013 暂未用 spawn_blocking——5 个 ps1 串跑约数秒，M1 dev 期
+    // 在 async command 里直接同步执行可接受；后续引入 scan.cancel 时再改线程模型。
+    let conn = engine::db::conn::open(&data_root).map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT INTO scan_session (started_at, status, scope) VALUES (unixepoch(), 'running', ?1)",
+        [scope.as_str()],
+    )
+    .map_err(|e| e.to_string())?;
+    let session_id = conn.last_insert_rowid();
+
+    let emitter_guard = progress.0.lock().map_err(|e| e.to_string())?;
+    let orch = ScanOrchestrator::new(session_id, &conn, &*emitter_guard);
+    let outcome = orch.run_all(&scripts_dir);
+    drop(emitter_guard);
+
+    let status = match &outcome {
+        Ok(_) => "completed",
+        Err(_) => "failed",
+    };
+    conn.execute(
+        "UPDATE scan_session SET status = ?1, finished_at = unixepoch() WHERE id = ?2",
+        (&status, &session_id),
+    )
+    .map_err(|e| e.to_string())?;
+
+    let msg = match outcome {
+        Ok(s) => format!(
+            "items={} bytes={} ok=[{}] failed=[{}]",
+            s.total_items,
+            s.total_bytes,
+            s.scripts_succeeded.join(","),
+            s.scripts_failed.join(",")
+        ),
+        Err(e) => format!("orchestrator failed: {e}"),
+    };
+    eprintln!("[scan_start] session={session_id} {msg}");
+    let _ = &app; // 预留：打包后用 app.path() 切数据目录。
+
+    Ok(Envelope::ok(
+        engine::ipc::commands::scan_start::ScanStartResp { session_id },
+    ))
 }
 
 /// `cleanup.dryRun`：加载 rules/ 外部红线后跑 dryRun；rules 加载失败返 5001（保守拒绝）。
