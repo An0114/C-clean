@@ -3,7 +3,7 @@
 > **特别声明**：本文件是项目唯一真实数据源，也是「每次任务结束必更新、必单独提交」的文件。后续所有 Agent 必须遵守：任何任务完成后都要先更新本文件，再单独提交一次（commit message 形如 `docs(state): ... (#task-00X)`），不得与业务代码混在同一个 commit。
 
 ## 当前目标
-M1-D 文件占用处理进行中：task-019 错误分类已就绪，下一步 Restart Manager FFI 查询占用进程 PID。
+M1-D 文件占用处理进行中：task-020 who_is_locking 已就绪，下一步 cleanup.execute 失败时自动调用把占用进程写进 audit_log/detail。
 
 ## 最近一次变更
 2026-10-11：完成 PRD / TRD / ARCHITECTURE / AGENTS / 立项决策记录全套长期基线文档，并初始化本状态白板。
@@ -26,6 +26,7 @@ M1-D 文件占用处理进行中：task-019 错误分类已就绪，下一步 Re
 2026-10-12：task-017 完成——新增 `restore_from_safe_box`（按 id 查 in_box 行、拒目标占用/父目录缺失、rename 回原路径、删行、写 audit_log action='restore'）；Tauri `safe_box_restore` 命令注册（TargetOccupied→2003 FILE_OCCUPIED，其他→5001 INTERNAL）。4 条集成测试全绿（正常/占用/父缺/已剔除）。cargo 五闸 + pnpm build 全绿。
 2026-10-12：task-018 完成——新增 `list_safe_box`（`status='in_box'` 按 quarantined_at DESC，返回 entries + total_items + total_bytes）；Tauri `safe_box_list` 命令注册。4 条集成测试全绿（空/3条汇总/排除 purged/排除 restored）。cargo 五闸 + pnpm build 全绿。M1-C 保险箱三件套（入/回/列）齐备。
 2026-10-12：task-019 完成——新增 `classify_io_error`（按 Windows raw_os_error 分 NotFound/PermissionDenied/SharingViolation/Unknown）；SafeBoxDeleter rename 失败时抛 `FILE_IN_USE:`/`PERMISSION_DENIED:` 前缀错误；executor 把这两个前缀翻译成 audit_log.detail 稳定文案（"file in use by another process" / "permission denied, needs elevation"）。4 条单元测试全绿（NotFound/32/5/Other）。cargo 五闸 + pnpm build 全绿。
+2026-10-12：task-020 完成——engine 引入 windows 0.58 crate（cfg(windows)）；新增 `who_is_locking(path) -> Vec<LockingProcess{pid, app_name, service_name}>`，封装 RmStartSession/RmRegisterResources/RmGetList/RmEndSession 四件套；空锁测试全绿，notepad 真机用例 `#[ignore]`。cargo 五闸 + pnpm build 全绿。
 
 ## 已完成事项
 - [x] 项目立项与仓库初始化（commit 67990f5 / 4972f9d）
@@ -56,9 +57,10 @@ M1-D 文件占用处理进行中：task-019 错误分类已就绪，下一步 Re
 - [x] 017：safe_box restore——按 id 把文件从保险箱 rename 回原路径，不自动建父目录、不批量
 - [x] 018：safe_box.list——列出当前所有未剔除条目 + 汇总（条目数/总字节）
 - [x] 019：删除失败错误分类——classify_io_error 识别 SharingViolation/PermissionDenied，audit_log 写具体原因
+- [x] 020：who_is_locking——Windows Restart Manager FFI 查占用进程 PID
 
 ## 已知问题
-- [B 中] task-019 只做了 errno 分类与 audit_log 文案，**未做完整 Windows Restart Manager FFI**（查询占用进程 PID、请求关闭进程、提权重试）；notepad 端到端真机验证未在自动化环境跑（需要 GUI 交互）。留 task-020。
+- [B 中] task-020 仅做「查询」（who_is_locking），**未实现 RmShutdown/RmRestart（请求关闭占用进程）**，也未接 Tauri 命令 / 前端 toast；notepad 端到端真机验证在自动化环境跑过一次（dev 本地），CI 用例 `#[ignore]`。请求关闭与提权重试留 task-021+。
 - [B 低] task-018 list 边界：无分页（保险箱总量 ≤5GB，条目数有限）、无 session 过滤（先返回全部）、无单条 purge 命令、未接前端 React UI。真多了再加 LIMIT / 前端列表组件留后续。
 - [B 低] task-017 restore 边界：不自动建原父目录（ParentMissing 直接报错让用户手动处理）、不支持批量恢复、未加 `restored_at` 审计列（DELETE 行 + audit_log action='restore' 已留痕）。批量恢复与父目录自动 mkdir 留后续。
 - [B 中] task-016 保险箱原子性：`fs::rename` 成功但 `INSERT INTO safe_box` 失败时，文件已在 box 目录但 DB 无行——当前简单报错，不做回滚；跨盘 rename 走 copy+remove 也非原子。补偿：下次 enforce_quota 扫到磁盘上有孤儿文件时会 NotFound 直接标 purged（不会重复占用 quota）。
@@ -71,7 +73,7 @@ M1-D 文件占用处理进行中：task-019 错误分类已就绪，下一步 Re
 - [B 低] task-006 CI 未接 Dependabot / cargo audit / npm audit（任务边界明确不做）；package.json 的 lint/test 为 echo 占位，CI 也不跑这两个命令，待前端组件落地（ESLint/Vitest）后再启用。CI 仅 windows-latest 单平台，跨平台矩阵（macOS/Linux）本项目明确不做；NSIS 出包矩阵未配，留待打包任务。
 
 ## 下一步计划
-派发 task-020：Windows Restart Manager FFI——查询占用进程 PID 列表，供前端提示。
+派发 task-021：cleanup.execute 失败时自动调 who_is_locking，把占用进程 PID 列表写进 audit_log.detail（前端可见「被 notepad.exe (PID 1234) 占用」）。
 
 ## 当前负责人 Agent
 DocsKeeper（文档与状态管家）
@@ -186,6 +188,11 @@ DocsKeeper（文档与状态管家）
 | 257ba68 | #task-019 | feat(execute): execute_items 写 audit_log 时按错误分类填 detail |
 | ee14fd0 | #task-019 | test(execute): 补 classify_io_error 单元测试 |
 | （本次） | #task-019 | docs(state): 任务019完成，删除失败错误分类就绪 |
+| a3f3a3d | #task-020 | build(deps): engine 引入 windows crate（cfg(windows) RestartManager feature） |
+| 8445d68 | #task-020 | feat(execute): 新增 who_is_locking——Restart Manager FFI 查占用进程 PID |
+| 7910e38 | #task-020 | test(execute): 补 who_is_locking 单元测试（空锁 + notepad 手动用例） |
+| 47590f9 | #task-020 | style(execute): cargo fmt 对齐 locking 模块与测试 |
+| （本次） | #task-020 | docs(state): 任务020完成，who_is_locking 就绪 |
 
 ---
 变更轨迹：
@@ -225,3 +232,4 @@ DocsKeeper（文档与状态管家）
 - 2026-10-12  task-018  评审前清障：独立复跑 clippy/fmt/test 全绿（108 条，含 list 4/4）；确认 list 查询正确（status='in_box' 过滤、quarantined_at DESC、size_bytes i64→u64），无第一档修复项
 - 2026-10-12  task-019  删除失败错误分类（FILE_IN_USE/PERMISSION_DENIED）落 audit_log
 - 2026-10-12  task-019  评审前清障：独立复跑 clippy/fmt/test 全绿（116 条，含 classify 4/4 单元 + 4/4 集成）；确认 SafeBoxDeleter rename 失败分类前缀和 executor audit_log detail 翻译逻辑正确；notepad 真机联调未跑（第三档已登记）
+- 2026-10-12  task-020  who_is_locking——Restart Manager FFI 查占用进程 PID
