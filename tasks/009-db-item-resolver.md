@@ -138,3 +138,10 @@ DevAgent 交付物（后续执行结果）：
 4. 本任务文档本身**由 DocsKeeper 在派发时**单独提交一次：
    `docs(task): 新增任务009-DB版ItemPathResolver (#task-009)`，
    该提交只含 `tasks/009-db-item-resolver.md` 一个文件，落在 `feature/task-009-db-item-resolver` 分支最前端。
+
+## 实现备注（DevAgent 落地后回填）
+- **改动文件**：新建 `engine/src/db/resolver.rs`（`DbItemPathResolver<'conn>` 持有 `&rusqlite::Connection`）；`engine/src/db/mod.rs` 加 `pub mod resolver;`；新建集成测试 `engine/tests/db_resolver.rs`（4 用例）。
+- **DB 查询失败取舍**：trait 签名无 Result，按任务建议「返回空 Vec + eprintln! 临时日志」，不 propagrate、不 panic；prepare 失败直接空 Vec，单行 QueryReturnedNoRows 跳过，其他 SQL 错误 eprintln 后继续下一个 id。
+- **自验命令与退出码**：`cargo check --workspace --all-targets`=0；`cargo clippy --workspace --all-targets -- -D warnings`=0；`cargo fmt --all -- --check`=0；`cargo test -p engine`=0（10 个 test target 全 ok，含新增 db_resolver 4/4）。
+- **偏差**：scan_session 插入时显式给了 `status='running', scope='full'`（schema NOT NULL）；size_bytes DB 为 INTEGER(i64)，读出后 `max(0) as u64` 对齐 ResolvedItem。
+- **遗留问题**：Tauri 命令何时把 MockResolver 换成 DbItemPathResolver——等 M1 A 模块真实扫描写入 cleanup_item 后，在接线任务中切换。
