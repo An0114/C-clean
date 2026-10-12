@@ -8,6 +8,7 @@ pub mod delete;
 pub mod error_kind;
 pub mod executor;
 pub mod fs_deleter;
+pub mod locking;
 pub mod normalize;
 pub mod resolve;
 pub mod safe_box;
