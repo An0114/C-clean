@@ -4,6 +4,7 @@
 //! sessionId 计数器用简单的 `Mutex<i64>` State 注入（task-004）。
 
 mod commands;
+pub mod progress;
 
 /// 空命令：返回 engine 占位字符串，供前端联调时验证 IPC 通路。
 #[tauri::command]
