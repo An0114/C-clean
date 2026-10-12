@@ -12,7 +12,10 @@ fn last_denial(paths: Vec<String>, actions: Vec<String>) -> (bool, Option<Denial
         ExecuteOutcome::Allowed { .. } => (true, None),
         ExecuteOutcome::Rejected { decisions, code } => {
             assert_eq!(code, REJECT_CODE, "拒绝信封码必须为 2002");
-            let reason = decisions.iter().filter_map(|d| d.denial_reason).next_back();
+            let reason = decisions
+                .iter()
+                .filter_map(|d| d.denial_reason.clone())
+                .next_back();
             (false, reason)
         }
     }
