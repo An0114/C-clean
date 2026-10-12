@@ -134,3 +134,12 @@ DevAgent 交付物（后续执行结果）：
 4. 本任务文档本身**由 DocsKeeper 在派发时**单独提交一次：
    `docs(task): 新增任务018-safe_box-list (#task-018)`，
    该提交只含 `tasks/018-safe-box-list.md` 一个文件，落在 `feature/task-018-safe-box-list` 分支最前端。
+
+## 实现备注（DevAgent 落地后回填）
+- **改动文件**：`engine/src/execute/safe_box.rs`（追加 SafeBoxEntry/SafeBoxListResp/list_safe_box）、`engine/tests/safe_box_list.rs`（新建 4 用例）、`app/src-tauri/src/commands.rs`（新增 safe_box_list）、`app/src-tauri/src/lib.rs`（注册）、`docs/PROJECT_STATE.md`。
+- **schema 偏差**（按 v1__init.sql 真实列适配）：
+  - 过滤条件：`status='in_box'`（任务书写 `purged_at IS NULL`）；
+  - 时间列：`quarantined_at`（任务书写 `moved_at`），struct 字段名保持 `quarantined_at` 以贴合 schema；
+  - size_bytes 绑定 i64 后转 u64（真实列 INTEGER 可正可负但业务上非负）。
+- **自验命令与退出码**：cargo check=0 / clippy -D warnings=0 / cargo test -p engine=0（含 list 4/4，累计 108 条） / cargo fmt --check=0 / pnpm --filter app build=0。
+- **遗留**：分页、按 session 过滤、单条 purge 命令、前端 React 列表 UI 留后续。
