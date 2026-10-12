@@ -6,4 +6,5 @@
 
 pub mod delete;
 pub mod normalize;
+pub mod resolve;
 pub mod whitelist;
