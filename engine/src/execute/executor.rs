@@ -181,7 +181,16 @@ where
             }
             Err(e) => {
                 summary.fail += 1;
-                write_audit(conn, now, &path, id, bytes_before, "fail", &e);
+                // task-019：把 deleter 抛出的 FILE_IN_USE / PERMISSION_DENIED 前缀翻译成
+                // audit_log.detail 稳定文案，方便前端 toast 直接展示。
+                let detail = if e.starts_with("FILE_IN_USE:") {
+                    "file in use by another process".to_string()
+                } else if e.starts_with("PERMISSION_DENIED:") {
+                    "permission denied, needs elevation".to_string()
+                } else {
+                    e.clone()
+                };
+                write_audit(conn, now, &path, id, bytes_before, "fail", &detail);
                 results.push(ExecResult {
                     item_id: id,
                     path,
