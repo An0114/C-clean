@@ -84,6 +84,7 @@ fn resolver_dry_run_end_to_end() {
             item_ids: vec![1, 2],
         },
         &resolver as &dyn ItemPathResolver,
+        &[],
     );
     // WHITELIST_DENIED = 2002。
     assert_eq!(env.code, 2002, "L3 命中必须 2002: {env:?}");

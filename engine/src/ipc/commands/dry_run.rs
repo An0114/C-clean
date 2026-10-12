@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use super::super::envelope::Envelope;
 use super::super::error_codes::{DRYRUN_EMPTY, WHITELIST_DENIED};
 use crate::execute::normalize::normalize;
-use crate::execute::whitelist::classify;
+use crate::execute::whitelist::classify_with_external;
 
 /// 解析后的条目（resolver 的输出）。
 #[derive(Debug, Clone)]
@@ -81,9 +81,13 @@ pub struct DryRunResp {
     pub blocked_by_l3: Vec<BlockedItem>,
 }
 
-/// 处理 cleanup.dryRun：空清单 → 2001；任一命中 L3 → 2002（附 blocked 明细）；
-/// 全过 → 聚合返回。
-pub fn handle_dry_run(req: DryRunReq, resolver: &dyn ItemPathResolver) -> Envelope<DryRunResp> {
+/// 处理 cleanup.dryRun：空清单 → 2001；任一命中（内置 L3 ∪ 外部红线）→ 2002（附 blocked 明细）；
+/// 全过 → 聚合返回。`external_deny` 为已展开的绝对路径黑名单（来自 rules JSON）。
+pub fn handle_dry_run(
+    req: DryRunReq,
+    resolver: &dyn ItemPathResolver,
+    external_deny: &[String],
+) -> Envelope<DryRunResp> {
     if req.item_ids.is_empty() {
         return Envelope::err(DRYRUN_EMPTY);
     }
@@ -92,12 +96,12 @@ pub fn handle_dry_run(req: DryRunReq, resolver: &dyn ItemPathResolver) -> Envelo
         return Envelope::err(DRYRUN_EMPTY);
     }
 
-    // 逐条跑 task-003 白名单；规范化失败按 PathTraversal 记为被拦。
+    // 逐条跑 task-003 白名单（内置 L3 ∪ 外部红线）；规范化失败按 PathTraversal 记为被拦。
     let mut blocked: Vec<BlockedItem> = Vec::new();
     let mut pass: Vec<&ResolvedItem> = Vec::new();
     for item in &resolved {
         match normalize(&item.path) {
-            Ok(np) => match classify(&np) {
+            Ok(np) => match classify_with_external(&np, external_deny) {
                 Ok(()) => pass.push(item),
                 Err(reason) => blocked.push(BlockedItem {
                     item_id: item.item_id,
