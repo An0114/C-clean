@@ -5,6 +5,7 @@
 //!   item 行写 `cleanup_item` 表并 emit 进度，done 行结束。
 
 pub mod parser;
-// runner 在 commit 2 落地。
+pub mod runner;
 
 pub use parser::{NdjsonEvent, ParseError};
+pub use runner::{RunError, ScanRunner, ScanSummary};
