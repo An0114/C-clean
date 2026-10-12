@@ -161,11 +161,10 @@ where
             continue;
         }
 
-        // 3. 真实删除
+        // 3. 真实删除（per-item 构造 deleter，SafeBoxDeleter 需要绑定 item_id/source_task_id）
         let bytes_before = std::fs::metadata(np.normalized())
             .map(|m| m.len())
             .unwrap_or(0);
-        // 3. 真实删除（per-item 构造 deleter，SafeBoxDeleter 需要绑定 item_id/source_task_id）
         let deleter = deleter_factory(id);
         match deleter.delete_file(&np) {
             Ok(()) => {

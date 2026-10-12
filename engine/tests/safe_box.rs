@@ -1,9 +1,14 @@
 //! task-016 集成测试：SafeBoxDeleter 移入保险箱 + quota FIFO 剔除。
 
+use std::sync::Mutex;
+
 use engine::db::conn::open;
 use engine::execute::delete::Deleter;
 use engine::execute::normalize::normalize;
 use engine::execute::safe_box::{set_quota_for_test, SafeBoxDeleter};
+
+/// 全局串行锁：QUOTA_BYTES 是进程级 AtomicU64，并行测试会互相覆盖 quota 值。
+static TEST_LOCK: Mutex<()> = Mutex::new(());
 
 fn setup() -> (tempfile::TempDir, rusqlite::Connection, std::path::PathBuf) {
     let dir = tempfile::tempdir().unwrap();
@@ -19,6 +24,7 @@ fn setup() -> (tempfile::TempDir, rusqlite::Connection, std::path::PathBuf) {
 
 #[test]
 fn safe_box_moves_file_and_writes_row() {
+    let _guard = TEST_LOCK.lock().unwrap();
     let (dir, conn, box_dir) = setup();
     let src = dir.path().join("a.tmp");
     std::fs::write(&src, vec![0u8; 100]).unwrap();
@@ -48,6 +54,7 @@ fn safe_box_moves_file_and_writes_row() {
 
 #[test]
 fn safe_box_enforce_quota_noop_when_under_quota() {
+    let _guard = TEST_LOCK.lock().unwrap();
     let (_dir, conn, box_dir) = setup();
     set_quota_for_test(1024 * 1024); // 1 MB，测试下不会触发
     let deleter = SafeBoxDeleter::new(&box_dir, &conn, None);
@@ -57,6 +64,7 @@ fn safe_box_enforce_quota_noop_when_under_quota() {
 
 #[test]
 fn safe_box_quota_evicts_oldest() {
+    let _guard = TEST_LOCK.lock().unwrap();
     let (dir, conn, box_dir) = setup();
     set_quota_for_test(300); // 4 个 100 字节文件，第 4 个触发剔除
 
