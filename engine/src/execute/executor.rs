@@ -13,10 +13,12 @@ use rusqlite::Connection;
 
 use crate::execute::delete::Deleter;
 use crate::execute::normalize::normalize;
+use crate::execute::resolve::resolve_to_real;
 use crate::execute::whitelist::classify_with_external;
 
 /// 单条 item 的执行结果（返回给 Tauri / 测试断言）。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ExecResult {
     pub item_id: i64,
     pub path: String,
@@ -24,6 +26,16 @@ pub struct ExecResult {
     pub bytes_freed: u64,
     /// 失败原因；成功为 None。
     pub error: Option<String>,
+}
+
+/// 一次 execute_items 调用的汇总（返回给 Tauri）。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecuteSummary {
+    pub results: Vec<ExecResult>,
+    pub deleted_count: u64,
+    pub failed_count: u64,
+    pub bytes_freed_total: u64,
 }
 
 /// 一次 execute_items 调用的聚合（写 cleanup_task 用）。
@@ -45,7 +57,7 @@ pub fn execute_items(
     conn: &Connection,
     external_deny: &[String],
     deleter: &dyn Deleter,
-) -> Vec<ExecResult> {
+) -> ExecuteSummary {
     let mut results = Vec::with_capacity(item_ids.len());
     let mut summary = BatchSummary {
         freed_bytes: 0i64,
@@ -93,7 +105,9 @@ pub fn execute_items(
                 }
             };
 
-        // 2. 再过白名单（规范化 → 内置 L3 ∪ 外部红线）
+        // 2. 再过白名单（规范化 → 真实路径解析 → 内置 L3 ∪ 外部红线）
+        //    task-008：必须对 canonicalize 后的真实路径做 L3 判定，
+        //    否则 junction/symlink 可把 Temp 里的指针重定向到 Desktop 而绕过红线。
         let np = match normalize(&path) {
             Ok(np) => np,
             Err(_) => {
@@ -109,7 +123,28 @@ pub fn execute_items(
                 continue;
             }
         };
-        if let Err(reason) = classify_with_external(&np, external_deny) {
+        // 解析真实路径；NotExists 时回退到输入路径分类（幂等重删已删文件）。
+        let classify_target = match resolve_to_real(&np) {
+            Ok(resolved) => match normalize(&resolved.real) {
+                Ok(real_np) => real_np,
+                Err(_) => np.clone(),
+            },
+            Err(crate::execute::resolve::ResolveError::NotExists(_)) => np.clone(),
+            Err(e) => {
+                summary.fail += 1;
+                let reason = format!("ResolveFailed({e})");
+                write_audit(conn, now, &path, id, 0, "denied", &reason);
+                results.push(ExecResult {
+                    item_id: id,
+                    path,
+                    deleted: false,
+                    bytes_freed: 0,
+                    error: Some(format!("blocked by L3: {reason}")),
+                });
+                continue;
+            }
+        };
+        if let Err(reason) = classify_with_external(&classify_target, external_deny) {
             let reason_str = format!("{reason:?}");
             summary.fail += 1;
             write_audit(conn, now, &path, id, 0, "denied", &reason_str);
@@ -171,7 +206,16 @@ pub fn execute_items(
         );
     }
 
-    results
+    let deleted_count = results.iter().filter(|r| r.deleted).count() as u64;
+    let failed_count = results.iter().filter(|r| !r.deleted).count() as u64;
+    let bytes_freed_total: u64 = results.iter().map(|r| r.bytes_freed).sum();
+
+    ExecuteSummary {
+        results,
+        deleted_count,
+        failed_count,
+        bytes_freed_total,
+    }
 }
 
 fn now_unix() -> i64 {
