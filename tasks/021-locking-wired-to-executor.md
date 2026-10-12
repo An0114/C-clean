@@ -131,3 +131,14 @@ DevAgent 交付物（后续执行结果）：
 4. 本任务文档本身**由 DocsKeeper 在派发时**单独提交一次：
    `docs(task): 新增任务021-占用进程自动接线 (#task-021)`，
    该提交只含 `tasks/021-locking-wired-to-executor.md` 一个文件，落在 `feature/task-021-locking-wired-to-executor` 分支最前端。
+
+## 实现备注（DevAgent 落地后回填）
+- **改动文件**：修改 `engine/src/execute/executor.rs`（ExecResult 加 `locking_processes` 字段；FILE_IN_USE 分支自动调 `who_is_locking` 拼 detail）；新建 `engine/tests/execute_locking_integration.rs`（2 条 CI + 1 条 notepad `#[ignore]`）。
+- **关键逻辑**：deleter 返回 `Err` 时按前缀分流：
+  - `FILE_IN_USE:` → 调 `who_is_locking(&path)`；非空则 detail = `"file in use by: <app> (PID <pid>), ..."`，locking_processes 填结果；空或 RM 失败则 detail 回退 `"file in use by another process (unable to identify process)"`。
+  - `PERMISSION_DENIED:` → 走 task-019 旧文案，**不调 who_is_locking**（已用 mock deleter 单测验证）。
+  - 其他错误 → 原文兜底。
+- **notepad 端到端测试**：DevAgent 本地未强制重跑 notepad 真机（`#[ignore]`）；CI 两条（空锁 + PERMISSION_DENIED 不触发）全绿。
+- **自验命令与退出码**：cargo check=0 / clippy -D warnings=0 / cargo test -p engine=0（117+2=119 条） / cargo fmt --check=0 / pnpm --filter app build=0。
+- **偏差**：任务书未要求额外 style commit，但 clippy 报 `if let Some(_) = ...` redundant pattern match，已在单独 style commit 修掉；不影响功能。
+- **遗留**：RmShutdown/RmRestart（请求关闭进程）、前端 UI toast 展示留 task-022+。
