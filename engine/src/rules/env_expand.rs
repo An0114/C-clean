@@ -40,7 +40,8 @@ pub fn expand(input: &str) -> Result<String, ExpandError> {
         if !rest.is_empty() && !rest.starts_with('\\') && !rest.starts_with('/') {
             return Err(ExpandError::TildeMasquerade(input.to_string()));
         }
-        let home = std::env::var("USERPROFILE").map_err(|_| ExpandError::VarUnset("USERPROFILE".into()))?;
+        let home = std::env::var("USERPROFILE")
+            .map_err(|_| ExpandError::VarUnset("USERPROFILE".into()))?;
         // 先把 `~` 整体替换为 home（后续 %var% 扫描再处理其余部分）。
         format!("{home}{rest}")
     } else {
@@ -58,7 +59,7 @@ pub fn expand(input: &str) -> Result<String, ExpandError> {
         // 读 %VAR% 直到下一个 %。
         let mut name = String::new();
         let mut closed = false;
-        while let Some(nc) = chars.next() {
+        for nc in chars.by_ref() {
             if nc == '%' {
                 closed = true;
                 break;
@@ -89,13 +90,22 @@ mod tests {
 
     #[test]
     fn unknown_var_rejected() {
-        assert_eq!(expand(r"%WINDIR%\Temp").unwrap_err(), ExpandError::UnknownVar("WINDIR".into()));
-        assert_eq!(expand(r"%ProgramFiles%\App").unwrap_err(), ExpandError::UnknownVar("ProgramFiles".into()));
+        assert_eq!(
+            expand(r"%WINDIR%\Temp").unwrap_err(),
+            ExpandError::UnknownVar("WINDIR".into())
+        );
+        assert_eq!(
+            expand(r"%ProgramFiles%\App").unwrap_err(),
+            ExpandError::UnknownVar("ProgramFiles".into())
+        );
     }
 
     #[test]
     fn tilde_masquerade_rejected() {
-        assert_eq!(expand("~foo").unwrap_err(), ExpandError::TildeMasquerade("~foo".into()));
+        assert_eq!(
+            expand("~foo").unwrap_err(),
+            ExpandError::TildeMasquerade("~foo".into())
+        );
     }
 
     #[test]
