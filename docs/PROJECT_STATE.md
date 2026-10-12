@@ -146,3 +146,4 @@ DocsKeeper（文档与状态管家）
 - 2026-10-12  task-009  DB 版 ItemPathResolver 落地并单测覆盖
 - 2026-10-12  task-009  评审前清障：独立复跑 clippy/fmt/test 全绿（77 条），修正提交表 hash 笔误（test commit a535b6e→47b542f）；无第一档代码修复项
 - 2026-10-12  task-010  外部 whitelist_deny 接入 cleanup.dryRun
+- 2026-10-12  task-010  评审前清障：修正外部红线集成用例（原用 %USERPROFILE%\Videos 命中的是内置 L3 而非外部红线），改用 %LOCALAPPDATA%\SomeSensitiveCache 并断言 L3SystemPath，证明外部红线独立生效；clippy/test 全绿
