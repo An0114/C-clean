@@ -9,6 +9,9 @@ use engine::ipc::envelope::Envelope;
 use engine::ipc::error_codes::INTERNAL;
 use engine::rules::external_deny_list;
 use engine::rules::loader::load as load_rules;
+use engine::rules::meta_store::{get_active_rules_meta, upsert_active_rules_meta};
+use engine::rules::remote::fetch_remote_meta;
+use engine::rules::{CheckUpdateResp, REMOTE_RULES_META_URL};
 use engine::scan::ScanOrchestrator;
 
 use crate::progress::ProgressState;
@@ -210,4 +213,64 @@ pub async fn safe_box_list() -> Result<Envelope<engine::execute::safe_box::SafeB
             Ok(Envelope::err(INTERNAL))
         }
     }
+}
+
+/// `rules.checkUpdate`：比对本地 rules_meta 与远端 GitHub Raw 版本（不下载替换）。
+///
+/// task-022：
+/// 1. 加载本地 rules/ → 拿到 version / checksum_sha256；
+/// 2. upsert 到 rules_meta 单行表（幂等）；
+/// 3. GET 远端 rules_meta.json；
+/// 4. 比对 sha256 返 has_update。
+#[tauri::command]
+pub async fn rules_check_update() -> Result<Envelope<CheckUpdateResp>, String> {
+    let data_root = std::env::current_dir().map_err(|e| e.to_string())?;
+    let rules_dir = data_root.join("rules");
+
+    // 1. 加载本地规则（含 SHA-256 校验）。
+    let local = match load_rules(&rules_dir) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("[rules_check_update] load local: {e}");
+            return Ok(Envelope::err(INTERNAL));
+        }
+    };
+    let local_version = local.meta.version.clone();
+    let local_sha = local.meta.checksum_sha256.clone();
+
+    // 2. DB upsert（幂等）。
+    let conn = match engine::db::conn::open(&data_root) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[rules_check_update] open db: {e}");
+            return Ok(Envelope::err(INTERNAL));
+        }
+    };
+    if let Err(e) = upsert_active_rules_meta(
+        &conn,
+        &local_version,
+        &local_sha,
+        REMOTE_RULES_META_URL,
+    ) {
+        eprintln!("[rules_check_update] upsert: {e}");
+        return Ok(Envelope::err(INTERNAL));
+    }
+    let _ = get_active_rules_meta(&conn); // 留作后续扩展；当前直接用 local_*。
+
+    // 3. 拉远端。
+    let remote = match fetch_remote_meta() {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("[rules_check_update] fetch remote: {e}");
+            return Ok(Envelope::err(INTERNAL));
+        }
+    };
+
+    Ok(Envelope::ok(CheckUpdateResp {
+        has_update: local_sha != remote.checksum_sha256,
+        current_version: local_version,
+        remote_version: remote.version,
+        current_sha256: local_sha,
+        remote_sha256: remote.checksum_sha256,
+    }))
 }

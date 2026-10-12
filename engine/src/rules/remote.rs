@@ -12,6 +12,17 @@ pub struct RemoteRulesMeta {
     pub checksum_sha256: String,
 }
 
+/// `rules.checkUpdate` 命令的响应体（透传给前端）。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckUpdateResp {
+    pub has_update: bool,
+    pub current_version: String,
+    pub remote_version: String,
+    pub current_sha256: String,
+    pub remote_sha256: String,
+}
+
 /// GET 远端 rules_meta.json 并反序列化为 [`RemoteRulesMeta`]。
 ///
 /// 失败（网络不通 / 非 2xx / JSON 错）统一包装为 `Err(String)`，不做重试。

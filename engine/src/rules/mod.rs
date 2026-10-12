@@ -15,3 +15,4 @@ pub use env_expand::{expand, ExpandError};
 pub use loader::{external_deny_list, load, LoadError, LoadedRules};
 pub use meta_store::{get_active_rules_meta, upsert_active_rules_meta, RulesMetaRow};
 pub use models::{CacheRules, RuleEntry, RulesMeta};
+pub use remote::{fetch_remote_meta, CheckUpdateResp, RemoteRulesMeta, REMOTE_RULES_META_URL};
