@@ -194,17 +194,14 @@ where
                 // audit_log.detail 稳定文案，方便前端 toast 直接展示。
                 // task-021：FILE_IN_USE 时自动调 who_is_locking 查占用进程列表，
                 // 拼进 detail 并填到 ExecResult.locking_processes 返回给前端。
-                let (detail, locking) = if let Some(_) = e.strip_prefix("FILE_IN_USE:") {
+                let (detail, locking) = if e.starts_with("FILE_IN_USE:") {
                     match who_is_locking(&path) {
                         Ok(procs) if !procs.is_empty() => {
                             let names: Vec<String> = procs
                                 .iter()
                                 .map(|p| format!("{} (PID {})", p.app_name, p.pid))
                                 .collect();
-                            (
-                                format!("file in use by: {}", names.join(", ")),
-                                procs,
-                            )
+                            (format!("file in use by: {}", names.join(", ")), procs)
                         }
                         _ => (
                             "file in use by another process (unable to identify process)"

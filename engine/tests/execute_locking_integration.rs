@@ -65,16 +65,11 @@ fn execute_items_permission_denied_skips_who_is_locking() {
     let id = insert_item(&conn, sid, p.to_str().unwrap());
 
     // Mock deleter 抛 PERMISSION_DENIED 前缀错误——不应触发 who_is_locking。
-    let summary = execute_items(
-        &[id],
-        &conn,
-        &[],
-        |_id| {
-            Box::new(MockDeleter {
-                err: Some("PERMISSION_DENIED: mock".into()),
-            })
-        },
-    );
+    let summary = execute_items(&[id], &conn, &[], |_id| {
+        Box::new(MockDeleter {
+            err: Some("PERMISSION_DENIED: mock".into()),
+        })
+    });
     assert_eq!(summary.failed_count, 1);
     assert!(summary.results[0].locking_processes.is_empty());
     // audit_log detail 走 task-019 文案
@@ -85,7 +80,10 @@ fn execute_items_permission_denied_skips_who_is_locking() {
             |r| r.get(0),
         )
         .unwrap();
-    assert!(detail.contains("permission denied, needs elevation"), "detail={detail}");
+    assert!(
+        detail.contains("permission denied, needs elevation"),
+        "detail={detail}"
+    );
 }
 
 #[test]
@@ -107,8 +105,7 @@ fn execute_items_locked_file_reports_processes() {
     println!("summary: {summary:?}");
     assert_eq!(summary.failed_count, 1);
     assert!(!summary.results[0].locking_processes.is_empty());
-    assert!(summary
-        .results[0]
+    assert!(summary.results[0]
         .locking_processes
         .iter()
         .any(|lp| lp.app_name.to_lowercase().contains("notepad")));
