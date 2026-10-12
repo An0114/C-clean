@@ -16,6 +16,7 @@ M0 公共底座已就绪（task-001~006 全部完成、PR #1 CI 全绿），进�
 2026-10-12：task-007 完成——真实进度通道落地：新增 `app/src-tauri/src/progress.rs`（`TauriProgressEmitter` 包装 `AppHandle`，emit 失败仅吞；`ProgressState = Mutex<ThrottledEmitter<TauriProgressEmitter>>`）；Builder 的 setup 闭包内 `app.manage(...)` 注入；`scan_start` 命令返回前按真实 sessionId emit 一条 `percent=0, current_path="starting"` demo 进度。engine trait 零改动；cargo clippy/fmt/test、pnpm build 全绿。devtools listen 真机复核见任务实现备注。
 2026-10-12：task-008 完成——新增 `engine::execute::resolve`（`resolve_to_real`：canonicalize 去 `\\?\` 前缀、UNC 保守拒、NotExists/Io/LoopDetected 三态错误）；delete 流程改为 normalize → resolve → 对**真实路径**再过 normalize+classify；新增 `DenialReason::ResolveFailed(String)`；NotExists 时回退对输入字符串判 L3（非存在路径不放宽红线、也不误杀 L1 单测）。6 条新集成测试（tempfile + mklink /J junction）全绿，engine 累计 67 条。
 2026-10-12：task-009 完成——新增 `engine::db::resolver::DbItemPathResolver`（持有 `&Connection`，参数化按 id 查 `cleanup_item`，查不到跳过、SQL 失败返回空 Vec + eprintln）；4 条集成测试全绿（空库/匹配/未知 id/dryRun 端到端 2002）。Tauri 命令仍用 MockResolver，切换留 M1 扫描任务。
+2026-10-12：task-010 完成——`handle_dry_run` 签名加 `external_deny: &[String]`，内部换 `classify_with_external`；`cleanup_dry_run` Tauri command 启动时 `current_dir()/rules` 加载规则库，`external_deny_list` 注入，加载失败保守返 5001；3 条新集成测试全绿（tempdir 自算 SHA-256 配 meta）。
 
 ## 已完成事项
 - [x] 项目立项与仓库初始化（commit 67990f5 / 4972f9d）
@@ -36,7 +37,7 @@ M0 公共底座已就绪（task-001~006 全部完成、PR #1 CI 全绿），进�
 - [x] 007：真实 ProgressEmitter（AppHandle::emit）——scan://progress 真机可被前端 listen 收到（依赖 task-004、真实扫描任务；约 1 人天）
 - [x] 008：symlink/junction 解析防绕开——规范化器接 symlink_metadata，junction 指向 L3 时一并拒（依赖 task-003、platform 模块；约 1 人天）
 - [x] 009：DB 版 ItemPathResolver——cleanup_item 表按 id 取路径/大小/模块，替换 MockResolver（依赖 task-002、cleanup.execute；约 1 人天）
-- [ ] 010：外部红线集注入——rules JSON 加载后与内置 L3 红线取并集（依赖 task-005；约 0.5 人天）
+- [x] 010：外部红线集注入——rules JSON 加载后与内置 L3 红线取并集（依赖 task-005；约 0.5 人天）
 - [ ] 011：ps1 兼容层来源对齐与 NDJSON 改造（scripts/ 五个脚本；约 1 人天）
 
 ## 已知问题
@@ -44,12 +45,11 @@ M0 公共底座已就绪（task-001~006 全部完成、PR #1 CI 全绿），进�
 - [B 低] UNC 路径 `\\server\share\...` task-008 评估结论：**沿用保守拒绝**（normalize 层 NotAbsolute + resolve 层 Io 双保险）；网络盘 L3 红线策略留待真实 NAS/企业盘场景出现时再开。
 - [B 低] task-007 WebView2 devtools console 的 `listen('scan://progress')` 真机截图未在本轮自动化环境内取得（tauri dev 窗口启动后 GUI 自动化无法稳定聚焦 console）；通道本身已由编译期类型 + engine 节流单测保证，留待 UI 联调任务补截图。
 - [B 低] task-005 `rules_meta` 落 DB（rules_meta 表运行时持久化）、GitHub Raw 联网拉取、`rules.checkUpdate`/`rules.applyUpdate` IPC 命令未做——本任务明确「不联网 / 不写 DB / 不接 Tauri command」，留待 M1 规则更新任务。补偿：静态 rules_meta.json 已含真实 SHA-256，loader 校验逻辑单测覆盖。
-- [B 低] task-005 `cleanup.dryRun` 当前仅跑内置 `classify()`，外部 `whitelist_deny` 红线尚未接线（`classify_with_external` + `external_deny_list` 已就绪并有并集单测），待 task-010「外部红线集注入」接入。
 - [B 低] task-005 外部红线命中统一记为 `DenialReason::L3SystemPath`（遵守「whitelist.rs 仅新增函数、不改枚举/常量」约束）；后续审计若需区分内置/外部红线来源，再拆 DenialReason 变体。
 - [B 低] task-006 CI 未接 Dependabot / cargo audit / npm audit（任务边界明确不做）；package.json 的 lint/test 为 echo 占位，CI 也不跑这两个命令，待前端组件落地（ESLint/Vitest）后再启用。CI 仅 windows-latest 单平台，跨平台矩阵（macOS/Linux）本项目明确不做；NSIS 出包矩阵未配，留待打包任务。
 
 ## 下一步计划
-派发 task-010：外部红线集注入——rules JSON 加载后与内置 L3 红线取并集，接入 cleanup.dryRun。
+派发 task-011：ps1 兼容层来源对齐与 NDJSON 改造（scripts/ 五个脚本）。
 
 ## 当前负责人 Agent
 DocsKeeper（文档与状态管家）
@@ -121,6 +121,11 @@ DocsKeeper（文档与状态管家）
 | 9ec8224 | #task-009 | feat(db): 新增 DbItemPathResolver 实现 ItemPathResolver trait |
 | 47b542f | #task-009 | test(db): 补 DbItemPathResolver 集成测试（含 dryRun 端到端） |
 | 6bc9fb2 | #task-009 | docs(state): 任务009完成，真实 DB resolver 就绪 |
+| （本次） | #task-009 | docs(task): 回填任务009实现备注 |
+| 4346211 | #task-010 | feat(ipc): handle_dry_run 加 external_deny 参数，换 classify_with_external |
+| 28738fb | #task-010 | feat(tauri): cleanup_dry_run 加载 rules/ 注入外部红线，失败返 5001 |
+| 6caf900 | #task-010 | test(ipc): 外部红线接入 dryRun 端到端单测 |
+| （本次） | #task-010 | docs(state): 任务010完成，外部红线集已接入 dryRun |
 
 ---
 变更轨迹：
@@ -140,3 +145,4 @@ DocsKeeper（文档与状态管家）
 - 2026-10-12  task-008  评审前清障：修正 junction 测试名与断言矛盾（原名为 rejected 实断言 allowed），补 resolve 失败不调 NoopDeleter 反证用例；clippy/test 全绿
 - 2026-10-12  task-009  DB 版 ItemPathResolver 落地并单测覆盖
 - 2026-10-12  task-009  评审前清障：独立复跑 clippy/fmt/test 全绿（77 条），修正提交表 hash 笔误（test commit a535b6e→47b542f）；无第一档代码修复项
+- 2026-10-12  task-010  外部 whitelist_deny 接入 cleanup.dryRun
