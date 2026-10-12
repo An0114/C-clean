@@ -197,3 +197,15 @@ DevAgent 交付物（后续执行结果）：
 4. 本任务文档本身**由 DocsKeeper 在派发时**单独提交一次：
    `docs(task): 新增任务013-scan.start端到端接线 (#task-013)`，
    该提交只含 `tasks/013-tauri-scan-wiring.md` 一个文件，落在 `feature/task-013-tauri-scan-wiring` 分支最前端。
+
+## 实现备注（DevAgent 落地后回填）
+- **改动文件**：`engine/src/scan/orchestrator.rs`（新建）、`engine/src/scan/mod.rs`（挂 mod + re-export）、`engine/tests/scan_orchestrator.rs`（新建，4 条测试）、`app/src-tauri/src/commands.rs`（scan_start 真接通）。
+- **DB data_dir 选择**：开发期沿用 `std::env::current_dir()`（与 rules/、scripts/ 一致），打包后改 `app.path().app_data_dir()`（代码里已留 `let _ = &app;` 占位）。
+- **spawn_blocking 使用情况**：未用。Task 书建议 `tauri::async_runtime::spawn_blocking`，但 ProgressState 是 `State<'_, ProgressState>` 的引用，不能跨 `'static` 闭包 move；5 ps1 串跑约数秒，M1 dev 期直接在 async command 里同步执行可接受。后续引入 scan.cancel 时再改线程模型（用 Channel + 克隆 AppHandle）。
+- **端到端 console 验证**：本轮自动化环境内未跑 `pnpm tauri dev` GUI（与 task-007 已知问题一致）；端到端由「orchestrator 4 条集成测试真 spawn ps1 写真 DB」等价覆盖，devtools console 文本输出留 UI 联调任务补。
+- **自验命令与退出码**：`cargo check --workspace --all-targets` = 0；`cargo clippy --workspace --all-targets -- -D warnings` = 0；`cargo test -p engine` = 0（88+4 全绿）；`cargo fmt --all -- --check` = 0；`pnpm --filter app build` = 0。
+- **偏差**：
+  - 任务书要求 `INSERT ... RETURNING id`，rusqlite 不支持 RETURNING 便捷 API，改用 `last_insert_rowid()`（与 task-009 集成测试同模式）。
+  - task 书建议 `spawn_blocking`，本轮直接同步执行（见上）。
+  - task 书 §B 要求「至少 1 个成功即 Ok」，orchestrator 已按此实现。
+- **遗留**：并行 spawn、按 scope 选跑子集、scan.cancel、scan.listItems、cleanup.dryRun 切 DbItemPathResolver 留 task-014+。
