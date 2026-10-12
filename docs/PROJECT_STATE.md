@@ -3,7 +3,7 @@
 > **特别声明**：本文件是项目唯一真实数据源，也是「每次任务结束必更新、必单独提交」的文件。后续所有 Agent 必须遵守：任何任务完成后都要先更新本文件，再单独提交一次（commit message 形如 `docs(state): ... (#task-00X)`），不得与业务代码混在同一个 commit。
 
 ## 当前目标
-M1 业务模块 C（保险箱）进行中：task-016 5GB FIFO 保险箱已落地，下一步 restore 命令。
+M1 业务模块 C（保险箱）进行中：task-017 restore 已闭环，下一步 safe_box.list 命令。
 
 ## 最近一次变更
 2026-10-11：完成 PRD / TRD / ARCHITECTURE / AGENTS / 立项决策记录全套长期基线文档，并初始化本状态白板。
@@ -23,6 +23,7 @@ M1 业务模块 C（保险箱）进行中：task-016 5GB FIFO 保险箱已落地
 2026-10-12：task-014 完成——`cleanup_dry_run` Tauri 命令从 `MockResolver` 切到 `DbItemPathResolver`，打开真实 DB（与 scan_start 同 data_dir），按前端 itemIds 反查 cleanup_item 路径跑 dryRun；保留 external_deny 加载逻辑。cargo 五闸 + pnpm build 全绿。
 2026-10-12：task-015 完成——新增 `FsDeleter`（std::fs::remove_file，NotFound 幂等）、`execute_items` 编排（再查 DB + 再过白名单 + 真删 + 落 cleanup_task 批量行与 audit_log 逐条行）、Tauri `cleanup_execute` 命令注册；4 条集成测试全绿（删真文件/L3 拦/缺 id/幂等）。cargo 五闸 + pnpm build 全绿。
 2026-10-12：task-016 完成——新增 `SafeBoxDeleter`（rename 到 `<data_dir>/safe_box/`，跨盘 fallback copy+remove）、`enforce_quota` 按 quarantined_at 最旧 FIFO 剔除；`execute_items` 改签名为 deleter 工厂闭包；Tauri `cleanup_execute` 切到 SafeBoxDeleter。3 条集成测试全绿（移入写行/空 noop/quota 剔除）。cargo 五闸 + pnpm build 全绿。
+2026-10-12：task-017 完成——新增 `restore_from_safe_box`（按 id 查 in_box 行、拒目标占用/父目录缺失、rename 回原路径、删行、写 audit_log action='restore'）；Tauri `safe_box_restore` 命令注册（TargetOccupied→2003 FILE_OCCUPIED，其他→5001 INTERNAL）。4 条集成测试全绿（正常/占用/父缺/已剔除）。cargo 五闸 + pnpm build 全绿。
 
 ## 已完成事项
 - [x] 项目立项与仓库初始化（commit 67990f5 / 4972f9d）
@@ -50,8 +51,10 @@ M1 业务模块 C（保险箱）进行中：task-016 5GB FIFO 保险箱已落地
 - [x] 014：cleanup.dryRun 切 DbItemPathResolver（按 id 反查 cleanup_item 真实路径）
 - [x] 015：cleanup.execute 真实删除——FsDeleter + execute_items 编排 + Tauri 命令 + audit_log
 - [x] 016：safe_box 5GB FIFO 保险箱——删除前移入 box 目录 + 超容按时间最旧永久剔除
+- [x] 017：safe_box restore——按 id 把文件从保险箱 rename 回原路径，不自动建父目录、不批量
 
 ## 已知问题
+- [B 低] task-017 restore 边界：不自动建原父目录（ParentMissing 直接报错让用户手动处理）、不支持批量恢复、未加 `restored_at` 审计列（DELETE 行 + audit_log action='restore' 已留痕）。批量恢复与父目录自动 mkdir 留 task-018+。
 - [B 中] task-016 保险箱原子性：`fs::rename` 成功但 `INSERT INTO safe_box` 失败时，文件已在 box 目录但 DB 无行——当前简单报错，不做回滚；跨盘 rename 走 copy+remove 也非原子。补偿：下次 enforce_quota 扫到磁盘上有孤儿文件时会 NotFound 直接标 purged（不会重复占用 quota）。
 - [B 低] task-016 跨盘 rename：`fs::rename` 遇 EXDEV(17)/跨盘错误时 fallback 到 copy+remove；CI 单盘未实测跨盘用例。
 - [B 中] task-015 文件占用时删除失败：Windows 下 `std::fs::remove_file` 遇 SharingViolation 直接返 Err，不做重试/Restart Manager；命中占用的 item 记为 fail 并写 audit_log result='fail'。Restart Manager 集成留 M1-D 后续任务。
@@ -62,7 +65,7 @@ M1 业务模块 C（保险箱）进行中：task-016 5GB FIFO 保险箱已落地
 - [B 低] task-006 CI 未接 Dependabot / cargo audit / npm audit（任务边界明确不做）；package.json 的 lint/test 为 echo 占位，CI 也不跑这两个命令，待前端组件落地（ESLint/Vitest）后再启用。CI 仅 windows-latest 单平台，跨平台矩阵（macOS/Linux）本项目明确不做；NSIS 出包矩阵未配，留待打包任务。
 
 ## 下一步计划
-派发 task-017：restore 命令——从保险箱按 id 恢复文件到原路径。
+派发 task-018：safe_box.list 命令——列出当前保险箱里所有未剔除条目（前端 UI 用）。
 
 ## 当前负责人 Agent
 DocsKeeper（文档与状态管家）
@@ -164,6 +167,10 @@ DocsKeeper（文档与状态管家）
 | cdb89f6 | #task-016 | test(execute): safe_box 移入/quota 剔除/空 noop 集成测试 |
 | 82e320c | #task-016 | fix(execute): 去掉 MSRV 1.85 CrossesDevices variant |
 | （本次） | #task-016 | docs(state): 任务016完成，5GB FIFO 保险箱落地 |
+| 9fb97ea | #task-017 | feat(execute): 新增 restore_from_safe_box——按 id 把文件 rename 回原路径 |
+| 26d19d1 | #task-017 | feat(tauri): 新增 safe_box.restore 命令并注册 |
+| 6372f6c | #task-017 | test(execute): 补 restore 集成测试（正常/占用/父缺/已剔除） |
+| （本次） | #task-017 | docs(state): 任务017完成，保险箱 restore 闭环 |
 
 ---
 变更轨迹：
@@ -197,3 +204,4 @@ DocsKeeper（文档与状态管家）
 - 2026-10-12  task-015  评审前清障：executor 补 resolve_to_real——junction/symlink 重定向须对 canonicalize 后真实路径做 L3 判定（原只对输入路径分类，junction 可绕过）；NotExists 回退输入路径分类兼容幂等重删；clippy/test 96 条全绿
 - 2026-10-12  task-016  safe_box 5GB FIFO 保险箱落地，删除不再直接 remove_file
 - 2026-10-12  task-016  评审前清障：safe_box 测试加全局串行锁——QUOTA_BYTES 是进程级 AtomicU64，并行测试互相覆盖导致 evicts_oldest 偶发失败；clippy/test 99 条全绿
+- 2026-10-12  task-017  safe_box restore 闭环，用户后悔可恢复文件
