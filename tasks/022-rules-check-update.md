@@ -169,3 +169,12 @@ DevAgent 交付物（后续执行结果）：
 4. 本任务文档本身**由 DocsKeeper 在派发时**单独提交一次：
    `docs(task): 新增任务022-rules.checkUpdate (#task-022)`，
    该提交只含 `tasks/022-rules-check-update.md` 一个文件，落在 `feature/task-022-rules-check-update` 分支最前端。
+
+## 实现备注（DevAgent 落地后回填）
+- **改动文件**：新建 `engine/src/rules/meta_store.rs`（RulesMetaRow + upsert/get_active）、`engine/src/rules/remote.rs`（REMOTE_RULES_META_URL + RemoteRulesMeta + CheckUpdateResp + fetch_remote_meta）；修改 `engine/Cargo.toml`（reqwest 0.12）、`engine/src/rules/mod.rs`（挂 mod + re-export）、`app/src-tauri/src/commands.rs`（rules_check_update 命令）、`app/src-tauri/src/lib.rs`（注册）。
+- **reqwest 引入方式**：`blocking + json + rustls-tls`，default-features=false（Tauri 命令同步执行，不引入 async tokio runtime）。
+- **与任务书偏差**：v1__init.sql 的 `rules_meta` 是 CHECK(id=1) 单行表（列：version/checksum_sha256/source_url/downloaded_at/custom_rules），**没有 is_active 列**；upsert 用 `INSERT OR REPLACE ... WHERE id=1`。任务书 §A 的「先 UPDATE is_active=0 再 INSERT」未采用。
+- **CheckUpdateResp 位置**：放在 engine::rules::remote（app/src-tauri 不直接依赖 serde，避免新增 serde 依赖）。
+- **fetch_remote_meta 本地实测**：DevAgent 本地未跑真实网络（自动化环境 CI 不联网）；硬编码 URL 指向 `https://raw.githubusercontent.com/An0114/C-clean/main/rules/rules_meta.json`。
+- **自验命令与退出码**：cargo check=0 / clippy -D warnings=0 / cargo test -p engine=0（119+3=122 条） / cargo fmt --check=0 / pnpm --filter app build=0。
+- **遗留**：rules.applyUpdate（下载替换）、GitHub Token/私有仓、失败重试/离线降级、前端 UI 提示留 task-023+。
