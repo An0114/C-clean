@@ -3,7 +3,7 @@
 > **特别声明**：本文件是项目唯一真实数据源，也是「每次任务结束必更新、必单独提交」的文件。后续所有 Agent 必须遵守：任何任务完成后都要先更新本文件，再单独提交一次（commit message 形如 `docs(state): ... (#task-00X)`），不得与业务代码混在同一个 commit。
 
 ## 当前目标
-M1 业务模块 A 进行中：task-013 scan.start 端到端已通，下一步切真实 resolver / 补 scan.listItems。
+M1 业务模块 A 进行中：task-014 dryRun 已切真实 DB resolver，下一步 cleanup.execute 真实删除。
 
 ## 最近一次变更
 2026-10-11：完成 PRD / TRD / ARCHITECTURE / AGENTS / 立项决策记录全套长期基线文档，并初始化本状态白板。
@@ -20,6 +20,7 @@ M1 业务模块 A 进行中：task-013 scan.start 端到端已通，下一步切
 2026-10-12：task-011 完成——从零产出 `scripts/PROTOCOL.md`（item/done 两种 NDJSON 事件 schema）+ 5 个扫描脚本（temp/windows_update/prefetch/browser_cache/dev_cache），全部 `#requires -Version 5.1`、UTF-8 无 BOM、stdout 只出 NDJSON、跳过 LinkType、不删除；`smoke_test.ps1` 实跑 5 脚本逐行 ConvertFrom-Json 全绿（temp=154/wu=6/prefetch=0/browser=10/dev=33 行）。M1 前置清理清单收官。
 2026-10-12：task-012 完成——`engine::scan` 模块上线：`NdjsonEvent` serde 枚举（item/done + deny_unknown_fields）、`parse_line` 单行解析器；`ScanRunner` spawn `powershell.exe -File`，逐行写 `cleanup_item`（risk_level int→L0/L1/L2 映射、description 空串兜底）并 emit 进度；3 条假 ps1 集成测试全绿（含坏行跳过 / exit 1 无 done 报错）。
 2026-10-12：task-013 完成——新增 `ScanOrchestrator`（硬编码 5 个 ps1 串跑、失败不中断、全失败才报错）；Tauri `scan_start` 命令真接通：建 scan_session、跑 orchestrator、回写 status='completed'/'failed'、返回真实 session_id。4 条 orchestrator 集成测试全绿；cargo check/clippy/test/fmt + pnpm build 全绿。
+2026-10-12：task-014 完成——`cleanup_dry_run` Tauri 命令从 `MockResolver` 切到 `DbItemPathResolver`，打开真实 DB（与 scan_start 同 data_dir），按前端 itemIds 反查 cleanup_item 路径跑 dryRun；保留 external_deny 加载逻辑。cargo 五闸 + pnpm build 全绿。
 
 ## 已完成事项
 - [x] 项目立项与仓库初始化（commit 67990f5 / 4972f9d）
@@ -44,9 +45,9 @@ M1 业务模块 A 进行中：task-013 scan.start 端到端已通，下一步切
 - [x] 011：ps1 兼容层来源对齐与 NDJSON 改造（scripts/ 五个脚本；约 1 人天）
 - [x] 012：Rust 侧 ps1 NDJSON 消费器——parser + ScanRunner（spawn/写库/emit）
 - [x] 013：Tauri scan.start 真接通——Orchestrator 串跑 5 ps1 + 真实 session + 回写 status
+- [x] 014：cleanup.dryRun 切 DbItemPathResolver（按 id 反查 cleanup_item 真实路径）
 
 ## 已知问题
-- [B 低] task-009 `DbItemPathResolver` 已就绪并被 dryRun 单测端到端覆盖，但 Tauri 命令 `cleanup.dryRun` 仍注入 `MockResolver`（真实扫描还没产生 cleanup_item 数据）；切换时机留给 M1 扫描任务。
 - [B 低] UNC 路径 `\\server\share\...` task-008 评估结论：**沿用保守拒绝**（normalize 层 NotAbsolute + resolve 层 Io 双保险）；网络盘 L3 红线策略留待真实 NAS/企业盘场景出现时再开。
 - [B 低] task-007 WebView2 devtools console 的 `listen('scan://progress')` 真机截图未在本轮自动化环境内取得（tauri dev 窗口启动后 GUI 自动化无法稳定聚焦 console）；通道本身已由编译期类型 + engine 节流单测保证，留待 UI 联调任务补截图。
 - [B 低] task-005 `rules_meta` 落 DB（rules_meta 表运行时持久化）、GitHub Raw 联网拉取、`rules.checkUpdate`/`rules.applyUpdate` IPC 命令未做——本任务明确「不联网 / 不写 DB / 不接 Tauri command」，留待 M1 规则更新任务。补偿：静态 rules_meta.json 已含真实 SHA-256，loader 校验逻辑单测覆盖。
@@ -54,7 +55,7 @@ M1 业务模块 A 进行中：task-013 scan.start 端到端已通，下一步切
 - [B 低] task-006 CI 未接 Dependabot / cargo audit / npm audit（任务边界明确不做）；package.json 的 lint/test 为 echo 占位，CI 也不跑这两个命令，待前端组件落地（ESLint/Vitest）后再启用。CI 仅 windows-latest 单平台，跨平台矩阵（macOS/Linux）本项目明确不做；NSIS 出包矩阵未配，留待打包任务。
 
 ## 下一步计划
-派发 task-014：cleanup.dryRun 切换 MockResolver → DbItemPathResolver（现在 cleanup_item 有真实数据了）。
+派发 task-015：cleanup.execute 真实删除——dryRun 之后用户确认，调 engine::execute::delete::execute() 走白名单 + Deleter trait。
 
 ## 当前负责人 Agent
 DocsKeeper（文档与状态管家）
@@ -143,6 +144,8 @@ DocsKeeper（文档与状态管家）
 | be8bd23 | #task-013 | feat(tauri): scan_start 真接通——建 session/跑 Orchestrator/回写 status |
 | 8918c8f | #task-013 | test(scan): Orchestrator 集成测试（4 条） |
 | （本次） | #task-013 | docs(state): 任务013完成，scan.start 端到端跑通真实扫描 |
+| 0c32251 | #task-014 | feat(tauri): cleanup_dry_run 切 DbItemPathResolver，删 MockResolver |
+| （本次） | #task-014 | docs(state): 任务014完成，dryRun 走真实 DB 数据 |
 
 ---
 变更轨迹：
@@ -170,3 +173,4 @@ DocsKeeper（文档与状态管家）
 - 2026-10-12  task-012  评审前清障：独立复跑 clippy/fmt/test 全绿（88 条，含 ps1 spawn 3/3）；无第一档修复项；Tauri 接线/5脚本编排/scan.cancel 留 task-013
 - 2026-10-12  task-013  scan.start 端到端接线：5 ps1 串跑 + 真实 session + 前端 listen
 - 2026-10-12  task-013  评审前清障：独立复跑 clippy/fmt/test 全绿（92 条，含 orchestrator 4/4）；修正 scan_start doc 注释（同步执行+last_insert_rowid，非 spawn_blocking/RETURNING）；devtools console 截图仍留 UI 联调
+- 2026-10-12  task-014  cleanup.dryRun 切换 DbItemPathResolver，dryRun 闭环真实数据
