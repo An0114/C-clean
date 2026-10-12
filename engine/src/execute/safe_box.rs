@@ -158,9 +158,34 @@ impl<'conn> Deleter for SafeBoxDeleter<'conn> {
             Err(e) if is_cross_device(&e) => {
                 fs::copy(src_path, &box_path)
                     .and_then(|_| fs::remove_file(src_path))
-                    .map_err(|e2| format!("copy+remove fallback {src} -> {:?}: {e2}", box_path))?;
+                    .map_err(|e2| {
+                        // copy+remove 的 remove 阶段也要分类（文件被占用时 remove 会失败）
+                        match crate::execute::error_kind::classify_io_error(&e2) {
+                            crate::execute::error_kind::DeleteFailureKind::SharingViolation => {
+                                format!("FILE_IN_USE: {src}")
+                            }
+                            crate::execute::error_kind::DeleteFailureKind::PermissionDenied => {
+                                format!("PERMISSION_DENIED: {src}")
+                            }
+                            _ => format!("copy+remove fallback {src} -> {:?}: {e2}", box_path),
+                        }
+                    })?;
             }
-            Err(e) => return Err(format!("rename {src} -> {:?}: {e}", box_path)),
+            // task-019：rename 失败按 errno 分类，给前端明确的 FILE_IN_USE / PERMISSION_DENIED 信号。
+            Err(e) => {
+                return match crate::execute::error_kind::classify_io_error(&e) {
+                    crate::execute::error_kind::DeleteFailureKind::SharingViolation => {
+                        Err(format!("FILE_IN_USE: {src}"))
+                    }
+                    crate::execute::error_kind::DeleteFailureKind::PermissionDenied => {
+                        Err(format!("PERMISSION_DENIED: {src}"))
+                    }
+                    crate::execute::error_kind::DeleteFailureKind::NotFound => Ok(()),
+                    crate::execute::error_kind::DeleteFailureKind::Unknown => {
+                        Err(format!("rename {src} -> {:?}: {e}", box_path))
+                    }
+                };
+            }
         }
 
         // 5. 写 safe_box 行
