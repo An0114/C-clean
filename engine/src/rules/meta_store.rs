@@ -49,7 +49,10 @@ pub fn get_active_rules_meta(conn: &Connection) -> Result<Option<RulesMetaRow>, 
     let mut rows = stmt
         .query([])
         .map_err(|e| format!("get_active_rules_meta query: {e}"))?;
-    match rows.next().map_err(|e| format!("get_active_rules_meta next: {e}"))? {
+    match rows
+        .next()
+        .map_err(|e| format!("get_active_rules_meta next: {e}"))?
+    {
         Some(r) => Ok(Some(RulesMetaRow {
             version: r.get(0).map_err(|e| format!("version: {e}"))?,
             checksum_sha256: r.get(1).map_err(|e| format!("checksum_sha256: {e}"))?,

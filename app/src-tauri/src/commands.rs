@@ -246,12 +246,9 @@ pub async fn rules_check_update() -> Result<Envelope<CheckUpdateResp>, String> {
             return Ok(Envelope::err(INTERNAL));
         }
     };
-    if let Err(e) = upsert_active_rules_meta(
-        &conn,
-        &local_version,
-        &local_sha,
-        REMOTE_RULES_META_URL,
-    ) {
+    if let Err(e) =
+        upsert_active_rules_meta(&conn, &local_version, &local_sha, REMOTE_RULES_META_URL)
+    {
         eprintln!("[rules_check_update] upsert: {e}");
         return Ok(Envelope::err(INTERNAL));
     }
