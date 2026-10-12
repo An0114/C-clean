@@ -27,7 +27,8 @@ pub fn run() {
             ping,
             commands::scan_start,
             commands::cleanup_dry_run,
-            commands::cleanup_execute
+            commands::cleanup_execute,
+            commands::safe_box_restore
         ])
         .run(tauri::generate_context!())
         .expect("error while running C-Disk Cleaner");
