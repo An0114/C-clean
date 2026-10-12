@@ -172,3 +172,16 @@ DevAgent 交付物（后续执行结果）：
 4. 本任务文档本身**由 DocsKeeper 在派发时**单独提交一次：
    `docs(task): 新增任务011-ps1兼容层NDJSON (#task-011)`，
    该提交只含 `tasks/011-ps1-ndjson-compat.md` 一个文件，落在 `feature/task-011-ps1-ndjson-compat` 分支最前端。
+
+## 实现备注（DevAgent 落地后回填）
+- **产出文件**：`scripts/PROTOCOL.md`（item/done 两种事件 schema + 编码/stderr 规则）；5 个扫描脚本 `scan_temp.ps1` / `scan_windows_update.ps1` / `scan_prefetch.ps1` / `scan_browser_cache.ps1` / `scan_dev_cache.ps1`；`scripts/smoke_test.ps1`（一次性冒烟）。
+- **冒烟实跑结果**：
+  - scan_temp: items=154, done=`{"type":"done","module_code":"temp","total_items":154,"total_bytes":16541385}`
+  - scan_windows_update: items=6, done=`...windows_update...total_bytes=16535741`
+  - scan_prefetch: items=0（非管理员权限下 Prefetch 不可读，脚本不报错、只 done）
+  - scan_browser_cache: items=10, done=`...browser_cache...total_bytes=32240299`
+  - scan_dev_cache: items=33, done=`...dev_cache...total_bytes=15121106`
+- **行分隔符实测**：脚本 `[Console]::Out.WriteLine` 输出 `\r\n`（76 0d 0a 尾）；Rust 侧按 `\n` split 时 trim `\r` 即可，PROTOCOL.md 已注明。
+- **权限不足目录**：Prefetch 在非管理员下返回 0 项（无 stderr 泄漏到 stdout）；其余目录正常枚举。
+- **偏差**：冒烟脚本初版用 PS `*>` 重定向会把原生 stdout 包成 UTF-16LE 导致 ConvertFrom-Json 抖动，最终改用 `System.Diagnostics.Process` + `StandardOutputEncoding=UTF8` 字节级读取，与 Rust 消费方式一致。
+- **遗留**：Rust 侧 ps1 消费器（spawn/逐行读/写库/emit）留 M1-A；CI 跑 ps1 冒烟留后续。
