@@ -5,6 +5,8 @@
 //! 真实删除动作由后续任务通过 [`delete::Deleter`] trait 注入，本任务不碰磁盘。
 
 pub mod delete;
+pub mod executor;
+pub mod fs_deleter;
 pub mod normalize;
 pub mod resolve;
 pub mod whitelist;
