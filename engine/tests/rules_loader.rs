@@ -165,3 +165,22 @@ fn classify_builtin_unchanged() {
     let ok = normalize(r"C:\Windows\Temp\update.log").unwrap();
     assert!(classify(&ok).is_ok());
 }
+
+#[test]
+fn load_tolerates_crlf_line_endings_on_disk() {
+    // Windows 上 git autocrlf / 编辑器可能把 cache_rules.json 写成 CRLF；
+    // rules_meta.checksum 存的是 LF 字节哈希，运行时必须归一后再算，
+    // 否则合法文件会被误判为篡改（与 CI 守卫步骤同口径）。
+    let dir = tempfile::tempdir().unwrap();
+    let crlf_cache = VALID_CACHE.replace('\n', "\r\n");
+    fs::write(dir.path().join("cache_rules.json"), crlf_cache.as_bytes()).unwrap();
+    // meta 里的 checksum 用 LF 版本算（即 rules_meta.json 应当存的值）。
+    let meta = format!(
+        r#"{{"version":"1.0.0","checksum_sha256":"{}","source_url":"u","downloaded_at":0,"custom_rules":[]}}"#,
+        sha256_hex(VALID_CACHE.as_bytes())
+    );
+    fs::write(dir.path().join("rules_meta.json"), meta).unwrap();
+
+    let loaded = load(dir.path()).expect("CRLF 行尾的规则文件应被正常加载");
+    assert_eq!(loaded.rules.version, "1.0.0");
+}
