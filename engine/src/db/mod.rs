@@ -5,6 +5,7 @@
 
 pub mod conn;
 pub mod migrate;
+pub mod resolver;
 
 /// 数据层统一错误类型。
 ///
