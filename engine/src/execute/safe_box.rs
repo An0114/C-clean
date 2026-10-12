@@ -286,3 +286,63 @@ pub fn restore_from_safe_box(
         size_bytes: size_bytes as u64,
     })
 }
+
+// ===================== task-018: list =====================
+
+/// 保险箱条目（前端 UI 用）。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SafeBoxEntry {
+    pub id: i64,
+    pub original_path: String,
+    pub size_bytes: u64,
+    /// 移入时间（unix 秒），对应 schema 真实列 `quarantined_at`。
+    pub quarantined_at: i64,
+}
+
+/// list 响应：条目 + 汇总。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SafeBoxListResp {
+    pub entries: Vec<SafeBoxEntry>,
+    pub total_items: i64,
+    pub total_bytes: u64,
+}
+
+/// 列出当前 `status='in_box'` 的所有条目，按 quarantined_at DESC（最新在前）。
+///
+/// 与任务书 §A 的偏差（按 v1__init.sql 真实 schema 适配）：
+/// - 过滤条件 `status='in_box'`（任务书写 `purged_at IS NULL`）；
+/// - 时间列 `quarantined_at`（任务书写 `moved_at`）；
+/// - size_bytes 用 u64（真实列 INTEGER，i64 绑定后转 u64）。
+pub fn list_safe_box(conn: &Connection) -> Result<SafeBoxListResp, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, original_path, size_bytes, quarantined_at
+             FROM safe_box WHERE status='in_box'
+             ORDER BY quarantined_at DESC",
+        )
+        .map_err(|e| format!("prepare list_safe_box: {e}"))?;
+
+    let entries: Vec<SafeBoxEntry> = stmt
+        .query_map([], |r| {
+            Ok(SafeBoxEntry {
+                id: r.get(0)?,
+                original_path: r.get(1)?,
+                size_bytes: r.get::<_, i64>(2).map(|v| v as u64)?,
+                quarantined_at: r.get(3)?,
+            })
+        })
+        .map_err(|e| format!("query_map list_safe_box: {e}"))?
+        .collect::<std::result::Result<_, _>>()
+        .map_err(|e| format!("collect list_safe_box: {e}"))?;
+
+    let total_items = entries.len() as i64;
+    let total_bytes = entries.iter().map(|e| e.size_bytes).sum();
+
+    Ok(SafeBoxListResp {
+        entries,
+        total_items,
+        total_bytes,
+    })
+}
