@@ -135,3 +135,11 @@ DevAgent 交付物（后续执行结果）：
 4. 本任务文档本身**由 DocsKeeper 在派发时**单独提交一次：
    `docs(task): 新增任务010-外部红线接入dryRun (#task-010)`，
    该提交只含 `tasks/010-external-deny-wiring.md` 一个文件，落在 `feature/task-010-external-deny-wiring` 分支最前端。
+
+## 实现备注（DevAgent 落地后回填）
+- **改动文件**：`engine/src/ipc/commands/dry_run.rs`（签名加 `external_deny: &[String]`、`classify`→`classify_with_external`）；`app/src-tauri/src/commands.rs`（`load_external_deny()` 辅助 + cleanup_dry_run 接线、失败返 `Envelope::err(INTERNAL)`=5001）；新建 `engine/tests/ipc_dry_run_external.rs`（3 用例）。
+- **已有测试改 `&[]` 清单**：`engine/tests/ipc_commands.rs` 3 处（empty/all_pass/l3_path）；`engine/tests/db_resolver.rs` 1 处（dry_run_end_to_end）。
+- **rules 目录临时方案**：`std::env::current_dir()?.join("rules")` 硬编码仓库根，代码注释已标「M1 打包后改为 Tauri 资源目录」。
+- **自验退出码**：cargo check --workspace --all-targets=0；clippy -D warnings=0；cargo fmt --check=0；cargo test -p engine=0（新增 3/3）；pnpm --filter app build=0（✓ built in 1.29s）。
+- **偏差**：rules 加载失败在 command 内转成 `Ok(Envelope::err(INTERNAL))`（信封内 5001），而非 `Err(String)`，符合任务「返 5001 INTERNAL」要求；`classify_with_external` 外部红线命中仍按既有约定记 `L3SystemPath`（已知问题段保留）。
+- **遗留**：生产 rules 路径解析（TAURI 资源协议）、联网拉取、rules_meta 落 DB 均未做，留 M1 规则更新任务。
