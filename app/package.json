@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "lint": "echo \"TODO(ui): 待前端组件落地后接入 ESLint\"",
+    "test": "echo \"TODO(ui): 待前端组件落地后接入 Vitest\""
   },
   "dependencies": {
     "react": "^18.3.1",
