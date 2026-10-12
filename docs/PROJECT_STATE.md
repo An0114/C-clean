@@ -196,3 +196,4 @@ DocsKeeper（文档与状态管家）
 - 2026-10-12  task-015  cleanup.execute 真实删除（FsDeleter + delete::execute + audit_log）
 - 2026-10-12  task-015  评审前清障：executor 补 resolve_to_real——junction/symlink 重定向须对 canonicalize 后真实路径做 L3 判定（原只对输入路径分类，junction 可绕过）；NotExists 回退输入路径分类兼容幂等重删；clippy/test 96 条全绿
 - 2026-10-12  task-016  safe_box 5GB FIFO 保险箱落地，删除不再直接 remove_file
+- 2026-10-12  task-016  评审前清障：safe_box 测试加全局串行锁——QUOTA_BYTES 是进程级 AtomicU64，并行测试互相覆盖导致 evicts_oldest 偶发失败；clippy/test 99 条全绿
