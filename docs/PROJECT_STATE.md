@@ -239,4 +239,5 @@ DocsKeeper（文档与状态管家）
 - 2026-10-12  task-019  评审前清障：独立复跑 clippy/fmt/test 全绿（116 条，含 classify 4/4 单元 + 4/4 集成）；确认 SafeBoxDeleter rename 失败分类前缀和 executor audit_log detail 翻译逻辑正确；notepad 真机联调未跑（第三档已登记）
 - 2026-10-12  task-020  who_is_locking——Restart Manager FFI 查占用进程 PID
 - 2026-10-12  task-021  FILE_IN_USE 自动查占用进程写 audit_log 并返回前端
+- 2026-10-12  task-021  评审前清障：独立复跑 clippy/fmt/test 全绿（119 条，含 execute_locking 2/2 必跑 + 1 ignored）；确认 FILE_IN_USE 分支自动调 who_is_locking 拼 detail、PERMISSION_DENIED 分支不触发；notepad 端到端 #[ignore] 未跑（第三档已登记）
 - 2026-10-12  task-020  评审前清障：独立复跑 clippy/fmt/test 全绿（117 条，含 who_is_locking 1/1 必跑 + 1 ignored）；确认 RmStartSession/RegisterResources/GetList/EndSession 四件套 FFI 逻辑正确；notepad 端到端 #[ignore] 未跑（第三档已登记）
