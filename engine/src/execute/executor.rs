@@ -12,6 +12,7 @@ use rusqlite::params;
 use rusqlite::Connection;
 
 use crate::execute::delete::Deleter;
+use crate::execute::locking::{who_is_locking, LockingProcess};
 use crate::execute::normalize::normalize;
 use crate::execute::resolve::resolve_to_real;
 use crate::execute::whitelist::classify_with_external;
@@ -26,6 +27,9 @@ pub struct ExecResult {
     pub bytes_freed: u64,
     /// 失败原因；成功为 None。
     pub error: Option<String>,
+    /// task-021：FILE_IN_USE 时填占用进程列表；其他场景为空 Vec。
+    #[serde(default)]
+    pub locking_processes: Vec<LockingProcess>,
 }
 
 /// 一次 execute_items 调用的汇总（返回给 Tauri）。
@@ -103,6 +107,7 @@ where
                         deleted: false,
                         bytes_freed: 0,
                         error: Some("not found".into()),
+                        locking_processes: Vec::new(),
                     });
                     continue;
                 }
@@ -122,6 +127,7 @@ where
                     deleted: false,
                     bytes_freed: 0,
                     error: Some("blocked by L3: PathTraversal".into()),
+                    locking_processes: Vec::new(),
                 });
                 continue;
             }
@@ -143,6 +149,7 @@ where
                     deleted: false,
                     bytes_freed: 0,
                     error: Some(format!("blocked by L3: {reason}")),
+                    locking_processes: Vec::new(),
                 });
                 continue;
             }
@@ -157,6 +164,7 @@ where
                 deleted: false,
                 bytes_freed: 0,
                 error: Some(format!("blocked by L3: {reason_str}")),
+                locking_processes: Vec::new(),
             });
             continue;
         }
@@ -177,18 +185,37 @@ where
                     deleted: true,
                     bytes_freed: bytes_before,
                     error: None,
+                    locking_processes: Vec::new(),
                 });
             }
             Err(e) => {
                 summary.fail += 1;
                 // task-019：把 deleter 抛出的 FILE_IN_USE / PERMISSION_DENIED 前缀翻译成
                 // audit_log.detail 稳定文案，方便前端 toast 直接展示。
-                let detail = if e.starts_with("FILE_IN_USE:") {
-                    "file in use by another process".to_string()
+                // task-021：FILE_IN_USE 时自动调 who_is_locking 查占用进程列表，
+                // 拼进 detail 并填到 ExecResult.locking_processes 返回给前端。
+                let (detail, locking) = if let Some(_) = e.strip_prefix("FILE_IN_USE:") {
+                    match who_is_locking(&path) {
+                        Ok(procs) if !procs.is_empty() => {
+                            let names: Vec<String> = procs
+                                .iter()
+                                .map(|p| format!("{} (PID {})", p.app_name, p.pid))
+                                .collect();
+                            (
+                                format!("file in use by: {}", names.join(", ")),
+                                procs,
+                            )
+                        }
+                        _ => (
+                            "file in use by another process (unable to identify process)"
+                                .to_string(),
+                            Vec::new(),
+                        ),
+                    }
                 } else if e.starts_with("PERMISSION_DENIED:") {
-                    "permission denied, needs elevation".to_string()
+                    ("permission denied, needs elevation".to_string(), Vec::new())
                 } else {
-                    e.clone()
+                    (e.clone(), Vec::new())
                 };
                 write_audit(conn, now, &path, id, bytes_before, "fail", &detail);
                 results.push(ExecResult {
@@ -197,6 +224,7 @@ where
                     deleted: false,
                     bytes_freed: 0,
                     error: Some(e),
+                    locking_processes: locking,
                 });
             }
         }
