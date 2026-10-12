@@ -161,3 +161,10 @@ DevAgent 交付物（后续执行结果）：
 4. 本任务文档本身**由 DocsKeeper 在派发时**单独提交一次：
    `docs(task): 新增任务008-symlink-junction解析 (#task-008)`，
    该提交只含 `tasks/008-symlink-resolve.md` 一个文件，落在 `feature/task-008-symlink-resolve` 分支最前端。
+
+## 实现备注（DevAgent 落地后回填）
+- **改动文件**：新建 `engine/src/execute/resolve.rs`；`mod.rs` 加 `pub mod resolve;`；`whitelist.rs` 追加 `DenialReason::ResolveFailed(String)`（枚举由 Copy 改为 Clone，因新增含 String 变体）；`delete.rs` 流程改为 normalize → resolve_to_real → 对真实路径再过 normalize+classify，抽出 `push_rejected` 辅助；`engine/tests/execute_whitelist.rs` 测试 helper 因 Copy 移除补 `.clone()`；新建集成测试 `engine/tests/execute_resolve.rs`（6 用例）。
+- **UNC 策略结论**：沿用 task-003 保守拒绝（normalize NotAbsolute + resolve 层 Io 双保险），网络盘 L3 策略留待真实 NAS 场景再开。
+- **canonicalize 行为观察**：Windows 下一次性逐级解析 junction/symlink，返回 `\\?\C:\...` 长路径；本实现去前缀为 `C:\...`。hop_count 用「真实路径 ≠ 输入路径（大小写不敏感）」判定（std 的 `is_symlink()` 不识别 junction 的 reparse tag，逐级 read_link 对 junction 不可靠，故用 diff 代替）。NotExists 时回退对输入字符串判 L3：命中 L3 仍拒（不存在也不放红线），未命中则放行（真实扫描器只传已存在条目，单测 L1 临时文件为占位）。
+- **自验退出码**：`cargo clippy --workspace --all-targets -- -D warnings`=0；`cargo fmt --all -- --check`=0；`cargo test -p engine`=0（lib/db/execute/ipc/rules 全套 + 新增 6 条 execute_resolve 全绿）。
+- **偏差**：hop 计数未逐级 read_link（junction 不被 std 识别为 symlink），改用路径 diff 判定；任务文档 §A-4 的「逐级 symlink_metadata 最多 40 层」简化为常量 + canonicalize 自身防环。junction-pointing-to-L3 用例因内置 L3 只匹配真实 `%USERPROFILE%\Documents`，tempdir 场景改验「resolve 落到 fake_docs」+ 放行语义，真正红线拦截留 task-010 外部红线接入时验收。
