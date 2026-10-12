@@ -1,0 +1,47 @@
+# C-Disk Cleaner CI（task-006）。
+# 项目「完全不做 macOS/Linux」，只在 windows-latest 上跑五道闸：
+# fmt → clippy -D warnings → cargo test → pnpm install --frozen-lockfile → pnpm build。
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Setup Node + pnpm 9
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: corepack enable; corepack prepare pnpm@9 --activate
+
+      - name: Setup Rust（自动读取 rust-toolchain.toml）
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Rustfmt 检查
+        run: cargo fmt --all -- --check
+
+      - name: Clippy（warning 即 fail）
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Rust 测试
+        run: cargo test --workspace
+
+      - name: 前端安装（frozen lockfile）
+        run: pnpm install --frozen-lockfile
+
+      - name: 前端构建
+        run: pnpm --filter app build
