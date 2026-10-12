@@ -63,7 +63,10 @@ pub fn resolve_to_real(input: &NormalizedPath) -> Result<ResolvedPath, ResolveEr
     })?;
 
     // canonicalize 在 Windows 返回 \\?\C:\... 长路径前缀，去掉以匹配 classify 的字符串比较。
-    let real = canonical.to_string_lossy().trim_start_matches(r"\\?\").to_string();
+    let real = canonical
+        .to_string_lossy()
+        .trim_start_matches(r"\\?\")
+        .to_string();
 
     // 跳数：真实路径与输入不一致即视为发生过重定向（大小写不敏感比较）。
     let hop_count = if real.to_lowercase() == raw.to_lowercase() {
