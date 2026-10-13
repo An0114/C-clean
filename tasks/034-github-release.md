@@ -142,3 +142,19 @@ DevAgent 交付物（后续执行结果）：
 4. 本任务文档本身**由 DocsKeeper 在派发时**单独提交一次：
    `docs(task): 新增任务034-GitHub Release 发版通道 (#task-034)`，
    该提交只含 `tasks/034-github-release.md` 一个文件，落在 `feature/task-034-github-release` 分支最前端。
+
+## 实现备注（DevAgent 落地后回填）
+- **改动文件**：
+  - 新建：`.github/workflows/release.yml`（58 行）
+  - 收尾：`docs/PROJECT_STATE.md`（当前目标/最近变更/待办/下一步/Git 表/变更轨迹同步）
+- **release.yml 最终内容**：
+  - 触发器：`workflow_dispatch`（inputs.version 必填 string）+ `push.tags: ["v*"]`
+  - permissions: `contents: write`
+  - job：windows-latest，steps = checkout@v4 → pnpm/action-setup@v4 (v11) → setup-node@v4 (node 22, cache pnpm) → dtolnay/rust-toolchain@stable → pnpm install --frozen-lockfile → pnpm --filter app tauri build → softprops/action-gh-release@v2
+  - release action：name + tag_name 都用 `v${{ github.event.inputs.version || github.ref_name }}`，files 两行 `target/release/bundle/nsis/*.exe` + `target/release/bundle/msi/*.msi`，generate_release_notes: true
+- **首次 v0.1.0 发版**：留评审在 GitHub Actions 页手动触发 workflow_dispatch（version 输 `0.1.0`），或本地 `git tag v0.1.0 && git push origin v0.1.0` 走 tag 通道；自动化环境无 gh auth，未代点。
+- **与任务书偏差**：
+  1. bundle path 沿用 task-033 实证的 workspace 根 `target/release/bundle/`（不是任务书假设的 `app/src-tauri/target/release/bundle/`）；
+  2. 给 release action 同时显式设了 `tag_name`（任务书示例只写了 name），避免 workflow_dispatch 手动触发时 tag 不创建；
+  3. 首次手动触发 v0.1.0 由评审在网页执行，DevAgent 未代跑（无 gh CLI 鉴权）。
+- **遗留**：tauri updater 自动更新（需签名密钥对 + update endpoint JSON）、代码签名、changelog 自动生成、品牌图标设计、macOS/Linux 多平台，均留 task-035+。
