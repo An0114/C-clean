@@ -121,3 +121,23 @@ DevAgent 交付物（后续执行结果）：
 4. 本任务文档本身**由 DocsKeeper 在派发时**单独提交一次：
    `docs(task): 新增任务031-规则更新 UI (#task-031)`，
    该提交只含 `tasks/031-rules-settings-ui.md` 一个文件，落在 `feature/task-031-rules-settings-ui` 分支最前端。
+
+## 实现备注（DevAgent 落地后回填）
+- **改动文件**：
+  - 前端：新建 `app/src/pages/Settings.tsx`；`app/src/App.tsx` 加第五 tab「设置」。
+  - 后端：无改动（task-022/023 rules_check_update / rules_apply_update 已注册）。
+- **CheckUpdateResp / ApplyResult 真实 shape**（serde rename_all=camelCase，前端消费）：
+  ```ts
+  interface CheckUpdateResp {
+    hasUpdate: boolean; currentVersion: string; remoteVersion: string;
+    currentSha256: string; remoteSha256: string;
+  }
+  interface ApplyResult { newVersion: string; newSha256: string; }
+  ```
+- **与任务书偏差（重要）**：
+  1. 任务书 §A 给的 state 接口是 snake_case（has_update/current_version/...），但 engine 真实 serde 是 camelCase——前端按 camelCase 对接（hasUpdate/currentVersion/...）。
+  2. SHA-256 仅显示前 16 位（slice(0,16)）避免卡片过长。
+  3. 「应用更新」成功后自动 `check()` 重拉，刷新当前版本号 + 状态变「已是最新」。
+- **自验命令与退出码**：cargo check=0 / clippy -D warnings=0 / cargo test -p engine=0（137 条基线无回退）/ cargo fmt --check=0 / pnpm --filter app build=0（vite 40 modules，dist/assets/index-BWEJMU9M.js 158.90KB gzip 50.36KB）。
+- **端到端流程（tauri dev 真机，留评审手动复核）**：切「设置」tab → 启动自动拉一次显示当前版本 → 点「检查更新」→ 显示远端版本 +「有新版本 X 可用」→ 点「应用更新」→ 绿 toast「已更新到版本 X」+ 当前版本号刷新。
+- **遗留**：手动回滚（从 .bak 恢复）/ GitHub Token / 私有仓配置 / 失败重试 / 差量更新提示 / NSIS 打包 / ESLint+Vitest / safe_box purge 命令 / 端到端真机验收，均留 task-032+；tauri dev 真机端到端未在自动化环境跑（GUI 截图留评审）。
