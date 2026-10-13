@@ -11,7 +11,9 @@ use engine::rules::external_deny_list;
 use engine::rules::loader::load as load_rules;
 use engine::rules::meta_store::{get_active_rules_meta, upsert_active_rules_meta};
 use engine::rules::remote::fetch_remote_meta;
-use engine::rules::{CheckUpdateResp, REMOTE_RULES_META_URL};
+use engine::rules::{
+    apply_update, fetch_remote_rules_bytes, ApplyResult, CheckUpdateResp, REMOTE_RULES_META_URL,
+};
 use engine::scan::ScanOrchestrator;
 
 use crate::progress::ProgressState;
@@ -270,4 +272,45 @@ pub async fn rules_check_update() -> Result<Envelope<CheckUpdateResp>, String> {
         current_sha256: local_sha,
         remote_sha256: remote.checksum_sha256,
     }))
+}
+
+/// `rules.applyUpdate`：下载远端 cache_rules.json 并替换本地，SHA-256 校验通过后 upsert DB。
+///
+/// task-023：
+/// 1. GET 远端 rules_meta.json；
+/// 2. GET 远端 cache_rules.json 字节流；
+/// 3. `apply_update(rules_dir, conn, meta, bytes)`——校验/备份/写文件/upsert，失败自动回滚。
+#[tauri::command]
+pub async fn rules_apply_update() -> Result<Envelope<ApplyResult>, String> {
+    let data_root = std::env::current_dir().map_err(|e| e.to_string())?;
+    let rules_dir = data_root.join("rules");
+
+    let meta = match fetch_remote_meta() {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("[rules_apply_update] fetch meta: {e}");
+            return Ok(Envelope::err(INTERNAL));
+        }
+    };
+    let bytes = match fetch_remote_rules_bytes() {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("[rules_apply_update] fetch rules: {e}");
+            return Ok(Envelope::err(INTERNAL));
+        }
+    };
+    let conn = match engine::db::conn::open(&data_root) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[rules_apply_update] open db: {e}");
+            return Ok(Envelope::err(INTERNAL));
+        }
+    };
+    match apply_update(&rules_dir, &conn, &meta, &bytes) {
+        Ok(r) => Ok(Envelope::ok(r)),
+        Err(e) => {
+            eprintln!("[rules_apply_update] apply: {e}");
+            Ok(Envelope::err(INTERNAL))
+        }
+    }
 }
