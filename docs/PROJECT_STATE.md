@@ -3,7 +3,7 @@
 > **特别声明**：本文件是项目唯一真实数据源，也是「每次任务结束必更新、必单独提交」的文件。后续所有 Agent 必须遵守：任何任务完成后都要先更新本文件，再单独提交一次（commit message 形如 `docs(state): ... (#task-00X)`），不得与业务代码混在同一个 commit。
 
 ## 当前目标
-M1-F 报表基础（list + stats）已就绪；下一轮进入前端 UI 接入（React 历史页 + 仪表盘）。
+M1-F 报表基础（list+stats+Dashboard 卡片）已就绪；下一轮 task-027 进入前端历史列表（audit_log.list 接 React 表格）。
 
 ## 最近一次变更
 2026-10-11：完成 PRD / TRD / ARCHITECTURE / AGENTS / 立项决策记录全套长期基线文档，并初始化本状态白板。
@@ -32,6 +32,7 @@ M1-F 报表基础（list + stats）已就绪；下一轮进入前端 UI 接入�
 2026-10-13：task-023 完成——`remote.rs` 新增 `fetch_remote_rules_bytes`（GET 远端 cache_rules.json）与 `apply_update`（SHA-256 校验 + 备份 .bak + 替换 cache_rules.json/rules_meta.json + upsert rules_meta 单行表 + 失败自动回滚）；Tauri `rules.applyUpdate` 命令注册。3 条集成测试全绿（正常替换/sha不匹配拒绝/DB失败回滚）。cargo 五闸 + pnpm build 全绿。
 2026-10-13：task-024 完成——新建 `audit_log/query.rs`（`list_audit_log`：按 ts DESC, id DESC + limit/offset 分页；对外字段重命名 event_type=action、path=target、created_at=ts）；Tauri `audit_log.list` 命令注册。4 条集成测试全绿（空/倒序/action 过滤/分页）。cargo 五闸 + pnpm build 全绿。
 2026-10-13：task-025 完成——新建 `audit_log/stats.rs`（`cleanup_stats`：单条 SQL 一次取 total_bytes_freed / success_count / failed_count / session_count，COALESCE 防空表）；Tauri `audit_log.stats` 命令注册。4 条集成测试全绿（空/计数/session 过滤/去重）。cargo 五闸 + pnpm build 全绿。
+2026-10-13：task-026 完成——前端第一刀：新建 `app/src/utils/formatBytes.ts`（B/KB/MB/GB，负数/NaN 兜底 "0 B"）与 `app/src/pages/Dashboard.tsx`（2×2 grid 4 卡片，loading 骨架 / error 红条+重试 / ok 渲染，失败数>0 红色）；`App.tsx` 默认渲染 Dashboard。内联 style，未引 UI 库。补装 `@tauri-apps/api@2.12.3`（任务书假设已在 devDeps 实际未装，本次新增）。cargo 五闸保持基线 133 条全绿 + pnpm build 全绿。
 
 ## 已完成事项
 - [x] 项目立项与仓库初始化（commit 67990f5 / 4972f9d）
@@ -68,6 +69,7 @@ M1-F 报表基础（list + stats）已就绪；下一轮进入前端 UI 接入�
 - [x] 023：rules.applyUpdate——下载新 cache_rules.json + SHA-256 校验 + 备份替换 + upsert DB
 - [x] 024：audit_log.list——按 ts 倒序分页只读查询，M1-F 报表后端基础
 - [x] 025：audit_log.stats——cleanup_task 聚合（total_bytes / success / fail / sessions）
+- [x] 026：前端 Dashboard 4 数字卡片——formatBytes + Dashboard.tsx + App.tsx 挂载（stats 接前端，GB 格式化）
 
 ## 已知问题
 - [B 中] task-021 仅做「报告」（who_is_locking 结果写 audit_log + 返回前端），**未实现 RmShutdown/RmRestart（请求关闭占用进程）**，前端 UI toast 也未接；notepad 端到端真机验证 CI 用例 `#[ignore]`。请求关闭与前端展示留 task-022+。
@@ -83,7 +85,7 @@ M1-F 报表基础（list + stats）已就绪；下一轮进入前端 UI 接入�
 - [B 低] task-006 CI 未接 Dependabot / cargo audit / npm audit（任务边界明确不做）；package.json 的 lint/test 为 echo 占位，CI 也不跑这两个命令，待前端组件落地（ESLint/Vitest）后再启用。CI 仅 windows-latest 单平台，跨平台矩阵（macOS/Linux）本项目明确不做；NSIS 出包矩阵未配，留待打包任务。
 
 ## 下一步计划
-M1-F 报表基础（list + stats）已就绪；下一轮进入前端 UI 接入（React 历史页 + 仪表盘卡片）。
+派发 task-027：前端历史列表——audit_log.list 接 React 表格（分页 / session 过滤）。
 
 ## 当前负责人 Agent
 DocsKeeper（文档与状态管家）
@@ -227,7 +229,13 @@ DocsKeeper（文档与状态管家）
 | 9f0c0c5 | #task-025 | feat(audit_log): 新增 cleanup_stats——总释放字节 / 成功数 / 失败数 / session 数 |
 | 7052e14 | #task-025 | feat(tauri): 新增 audit_log.stats 命令并注册 |
 | d6a9fa1 | #task-025 | test(audit_log): 补 stats 集成测试（空/计数/session过滤/去重） |
-| （本次） | #task-025 | docs(state): 任务025完成，清理统计数字就绪 |
+| b741579 | #task-025 | docs(state): 任务025完成，清理统计数字就绪 |
+| 0516bee | #task-025 | docs(task): 回填任务025实现备注 |
+| 1548320 | #task-026 | docs(task): 新增任务026-前端仪表盘数字卡片 |
+| 40f5202 | #task-026 | feat(frontend): 新增 formatBytes 工具函数 |
+| 37219cd | #task-026 | feat(frontend): 新增 Dashboard 页面——audit_log.stats 4 数字卡片 |
+| 17c8e33 | #task-026 | feat(frontend): App.tsx 挂载 Dashboard 为默认页（补装 @tauri-apps/api@2.12.3） |
+| （本次） | #task-026 | docs(state): 任务026完成，前端仪表盘数字卡片就绪 |
 
 ---
 变更轨迹：
@@ -273,6 +281,8 @@ DocsKeeper（文档与状态管家）
 - 2026-10-13  task-023  rules.applyUpdate——下载新规则 + SHA-256 校验 + 备份替换 + upsert DB
 - 2026-10-13  task-024  audit_log.list 只读查询命令落地，历史页后端基础
 - 2026-10-13  task-025  cleanup_stats 聚合查询（total_bytes / success / fail / sessions）
+- 2026-10-13  task-026  Dashboard 4 数字卡片（stats 接前端，GB 格式化）
+- 2026-10-13  task-026  评审前清障：独立复跑 clippy/fmt/test/pnpm build 全绿（133 条测试无回退，vite build 145KB gzip 46.8KB）；确认 formatBytes 四档 1024 进制+负数/NaN 兜底、Dashboard loading/ok/error 三态状态机、失败数>0 红色高亮、useCallback 重试逻辑正确；tauri dev 真机截图未跑（第三档已登记）
 - 2026-10-13  task-025  评审前清障：独立复跑 clippy/fmt/test 全绿（133 条，含 audit_log_stats 4/4）；确认单条 SQL COALESCE 聚合、session_id 参数化过滤、cleanup_task 单行字段求和逻辑正确
 - 2026-10-13  task-024  评审前清障：独立复跑 clippy/fmt/test 全绿（129 条，含 audit_log_query 4/4）；确认 ts DESC/id DESC 分页、limit/offset 防御、action→event_type/target→path/ts→created_at 列名映射正确；session_id 过滤用户拍板方案二——入参保留标记"预留未启用"，待后续 schema 加列后启用
 - 2026-10-13  task-023  评审前清障：独立复跑 clippy/fmt/test 全绿（125 条，含 apply_update 3/3）；确认 SHA-256 校验/备份/替换/upsert/回滚全链路正确；真实 GitHub Raw 下载联调未跑（第三档已登记）
