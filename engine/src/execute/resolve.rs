@@ -1,10 +1,13 @@
 //! 真实路径解析（task-008）：把词法规范化后的路径解析到磁盘真实位置，
-//! 防止 junction/symlink 把「看似安全」的路径重定向到 L3 红线（ARCGITECTURE A03）。
+//! 防止 junction/symlink 把「看似安全」的路径重定向到 L3 红线（ARCHITECTURE A03）。
 //!
 //! 策略：
 //! - 用 [`std::fs::canonicalize`] 一次性拿到最终目标（Windows 下它会逐级解析
 //!   junction 与 symlink，返回 `\\?\C:\...` 长路径形式，本模块负责去前缀）；
-//! - hop 数：真实路径与输入规范化路径不一致即视为发生过重定向（至少 1 跳）；
+//! - hop 数：逐级 [`std::fs::symlink_metadata`] 查 `FILE_ATTRIBUTE_REPARSE_POINT`，
+//!   遇到真正的 junction/symlink 才计 1 跳。**不再用 canonicalize 后的字符串
+//!   与输入做相等比较**——CI runner 的 TEMP 用 8.3 短名（`RUNNER~1`），
+//!   canonicalize 会解析成长名（`runneradmin`），字符串不等会误判 hop=1。
 //! - 最多 [`MAX_HOPS`] 跳防环路（canonicalize 自身遇环会报错，这里仅作显式常量）；
 //! - UNC（`\\server\share\...`）本任务保守拒绝（沿用 task-003 策略）。
 
@@ -38,6 +41,53 @@ pub enum ResolveError {
     NotExists(String),
 }
 
+/// Windows: FILE_ATTRIBUTE_REPARSE_POINT（junction / symlink / 其他重解析点）。
+#[cfg(windows)]
+const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+
+/// 逐级查 reparse point，统计路径里真正的 junction/symlink 数。
+///
+/// `normalized` 形如 `C:\Users\runneradmin\AppData\Local\Temp\hello.txt`。
+/// 对每个前缀目录调用 [`std::fs::symlink_metadata`]（不跟随最终符号链接），
+/// 检查 Windows 文件属性里的 REPARSE_POINT 位。
+///
+/// 8.3 短名（`RUNNER~1`）不是 reparse point——NTFS 直接把它解析成长名，
+/// 返回的 metadata 不带 REPARSE_POINT 位，因此不会被误计。
+#[cfg(windows)]
+fn count_reparse_hops(normalized: &str) -> u32 {
+    use std::os::windows::fs::MetadataExt;
+
+    let mut parts = normalized.split('\\');
+    let drive = parts.next().unwrap_or(""); // "C:"
+    let mut current = format!("{drive}\\");
+    let mut hops = 0u32;
+    for comp in parts {
+        if comp.is_empty() {
+            continue;
+        }
+        current.push_str(comp);
+        // symlink_metadata 不跟随最终组件的符号链接；中间层 junction 会被
+        // Windows 自动穿透，但我们只看「当前这个组件本身」的属性位——
+        // 它是 junction 时属性里会带 REPARSE_POINT。
+        if let Ok(md) = std::fs::symlink_metadata(&current) {
+            if md.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+                hops += 1;
+                if hops >= MAX_HOPS {
+                    return hops;
+                }
+            }
+        }
+        current.push('\\');
+    }
+    hops
+}
+
+/// 非 Windows 平台占位（本项目 Windows-only，仅为编译通过）。
+#[cfg(not(windows))]
+fn count_reparse_hops(_normalized: &str) -> u32 {
+    0
+}
+
 /// 把词法规范化路径解析到磁盘真实位置。
 ///
 /// 调用方拿到 [`ResolvedPath.real`] 后应再过一次 `normalize()` + `classify()`，
@@ -68,15 +118,8 @@ pub fn resolve_to_real(input: &NormalizedPath) -> Result<ResolvedPath, ResolveEr
         .trim_start_matches(r"\\?\")
         .to_string();
 
-    // 跳数：真实路径与输入不一致即视为发生过重定向（大小写不敏感比较）。
-    let hop_count = if real.to_lowercase() == raw.to_lowercase() {
-        0
-    } else if MAX_HOPS == 0 {
-        // 理论不可达分支，保持显式
-        return Err(ResolveError::LoopDetected { max_hops: MAX_HOPS });
-    } else {
-        1
-    };
+    // hop 数：逐级查 reparse point（不再靠 canonicalize 字符串比对）。
+    let hop_count = count_reparse_hops(raw);
 
     Ok(ResolvedPath {
         input: input.normalized().to_string(),
