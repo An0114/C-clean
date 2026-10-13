@@ -1,11 +1,12 @@
-// task-027/029/030：App 加 Dashboard / Items / SafeBox / History tab 切换（不引 Router，useState）。
+// task-027/029/030/031：App 加 Dashboard / Items / SafeBox / History / Settings tab 切换（不引 Router，useState）。
 import { useState } from "react";
 import Dashboard from "./pages/Dashboard";
 import History from "./pages/History";
 import Items from "./pages/Items";
 import SafeBox from "./pages/SafeBox";
+import Settings from "./pages/Settings";
 
-type Tab = "dashboard" | "items" | "safebox" | "history";
+type Tab = "dashboard" | "items" | "safebox" | "history" | "settings";
 
 const tabBtnStyle = (active: boolean): React.CSSProperties => ({
   padding: "6px 14px",
@@ -44,11 +45,15 @@ export default function App() {
         <button style={tabBtnStyle(tab === "history")} onClick={() => setTab("history")}>
           历史
         </button>
+        <button style={tabBtnStyle(tab === "settings")} onClick={() => setTab("settings")}>
+          设置
+        </button>
       </div>
       {tab === "dashboard" && <Dashboard />}
       {tab === "items" && <Items />}
       {tab === "safebox" && <SafeBox />}
       {tab === "history" && <History />}
+      {tab === "settings" && <Settings />}
     </div>
   );
 }
