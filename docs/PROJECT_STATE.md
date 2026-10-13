@@ -3,7 +3,7 @@
 > **特别声明**：本文件是项目唯一真实数据源，也是「每次任务结束必更新、必单独提交」的文件。后续所有 Agent 必须遵守：任何任务完成后都要先更新本文件，再单独提交一次（commit message 形如 `docs(state): ... (#task-00X)`），不得与业务代码混在同一个 commit。
 
 ## 当前目标
-M1 v0.1.0 打包完成（NSIS .exe + MSI .msi 已出）；下一轮进入：GitHub Release 发版（手动 / workflow_dispatch）+ tauri updater 自动更新配置。
+M1 v0.1.0 打包完成 + GitHub Release 发版 workflow 已就位；下一轮进入 tauri updater 自动更新配置（签名密钥对 + update endpoint JSON，task-035）。
 
 ## 最近一次变更
 2026-10-11：完成 PRD / TRD / ARCHITECTURE / AGENTS / 立项决策记录全套长期基线文档，并初始化本状态白板。
@@ -39,6 +39,7 @@ M1 v0.1.0 打包完成（NSIS .exe + MSI .msi 已出）；下一轮进入：GitH
 2026-10-13：task-031 完成——规则更新 UI 落地。新建 `app/src/pages/Settings.tsx`：规则库卡片显示当前版本/远端版本/SHA-256（前 16 位）/状态（「已是最新」或「有新版本 X 可用」）；「检查更新」按钮调 `rules_check_update`（启动时自动拉一次），有更新时显示绿色「应用更新」按钮调 `rules_apply_update`，成功绿 toast「已更新到版本 X」+ 自动重拉；应用中按钮禁用 +「应用中…」；网络失败红条。`App.tsx` 加第五 tab「设置」。**与任务书偏差**：CheckUpdateResp/ApplyResult 均 `#[serde(rename_all="camelCase")]`，前端字段用 camelCase（hasUpdate/currentVersion/...），不是任务书假设的 snake_case。cargo 五闸保持基线 137 条全绿 + pnpm build 158.90KB gzip 50.36KB。
 2026-10-13：task-032 完成——前端工程化补齐。ESLint 10 flat config（`app/eslint.config.js`，@eslint/js + @typescript-eslint + react-hooks + react-refresh，no-undef 关闭交给 TS，no-unused-vars warn）；Vitest 2.1 + @testing-library/react + jest-dom + jsdom（`vite.config.ts` 加 test.environment=jsdom + setupFiles，`src/setupTests.ts` 引入 `@testing-library/jest-dom/vitest`）；formatBytes 5 个断言 + formatTs 4 个断言共 9 个单测全过；`.github/workflows/ci.yml` 前端 job 加 Lint/Test 两步替换 echo 占位。**与任务书偏差**：ESLint 10 已废弃 .eslintrc.cjs，改用 flat config `eslint.config.js`；Vitest 5.0.3 要求 Vite 6+，本项目 Vite 5.4.11 降级到 vitest@^2.1.9；setupTests 必须用 `@testing-library/jest-dom/vitest`（子路径）而非 `@testing-library/jest-dom`，否则 expect.extend 在框架注册前执行报错。cargo 五闸保持基线 + pnpm lint=0 / pnpm test=0（9/9）/ pnpm build=0。
 2026-10-13：task-033 完成——NSIS v0.1.0 打包就绪。`app/src-tauri/tauri.conf.json`：identifier 改为 `com.and0114.cclean`，bundle.targets 从 "all" 收窄为 `["nsis","msi"]`，bundle.windows.nsis 加 `installMode="perMachine"`（清理 C 盘要管理员）+ `languages=["SimpChinese"]`。图标沿用 task-001 生成的 Tauri 默认占位（17 个文件已在库，不重跑 `tauri icon`，设计图标留后续）。`.github/workflows/ci.yml` 在 `pnpm build` 后加 `pnpm --filter app tauri build` + `actions/upload-artifact@v4`（artifact 名 `cclean-windows-installer`，path `target/release/bundle/{nsis/*.exe,msi/*.msi}`，`if-no-files-found: error`）。本地 `pnpm --filter app tauri build` 退出码 0，产出 `target/release/bundle/msi/C-Disk Cleaner_0.1.0_x64_en-US.msi`（5.11 MB）+ `target/release/bundle/nsis/C-Disk Cleaner_0.1.0_x64-setup.exe`（3.60 MB）。**与任务书偏差**：① Tauri 2 NSIS schema 字段是 `languages`（数组）不是任务书写的 `displayLanguage`（标量，build script 直接报 unknown field）；② workspace 模式 bundle 输出在仓库根 `target/release/bundle/` 而非 `app/src-tauri/target/release/bundle/`，CI path 已相应调整；③ 图标未重跑（沿用 task-001 默认占位）。cargo 五闸 + pnpm lint/test/build + tauri build 全绿。
+2026-10-13：task-034 完成——GitHub Release 发版 workflow 就位。新建 `.github/workflows/release.yml`：触发器 `workflow_dispatch`（输入 version，如 0.1.0）+ `push.tags: v*`；permissions.contents=write；job windows-latest 跑 checkout → setup node 22/pnpm 11 → setup rust stable → pnpm install --frozen-lockfile → pnpm --filter app tauri build → softprops/action-gh-release@v2 上传 `target/release/bundle/{nsis/*.exe,msi/*.msi}`，Release 名/tag 为 `v${{ inputs.version || github.ref_name }}`，generate_release_notes=true。**与任务书偏差**：bundle path 沿用 task-033 实证的 workspace 根 `target/release/bundle/`（不是任务书假设的 `app/src-tauri/target/release/bundle/`）；首次 workflow_dispatch v0.1.0 手动触发留评审在 GitHub Actions 页执行（自动化环境无 gh auth，无法代点）。
 
 ## 已完成事项
 - [x] 项目立项与仓库初始化（commit 67990f5 / 4972f9d）
@@ -83,6 +84,7 @@ M1 v0.1.0 打包完成（NSIS .exe + MSI .msi 已出）；下一轮进入：GitH
 - [x] 031：规则更新 UI——Settings 规则库卡片 + 检查更新/应用更新按钮 + App 第五 tab
 - [x] 032：前端工程化补齐——ESLint 10 flat config + Vitest 2.1 + formatBytes/formatTs 单测 + CI 接 lint/test
 - [x] 033：NSIS v0.1.0 打包——tauri.conf identifier/nsis + CI tauri build/upload-artifact，本地出 .msi/.exe
+- [x] 034：GitHub Release workflow——release.yml 支持 workflow_dispatch + tag 触发，softprops/action-gh-release 上传 installer
 
 ## 已知问题
 - [B 中] task-021 仅做「报告」（who_is_locking 结果写 audit_log + 返回前端），**未实现 RmShutdown/RmRestart（请求关闭占用进程）**，前端 UI toast 也未接；notepad 端到端真机验证 CI 用例 `#[ignore]`。请求关闭与前端展示留 task-022+。
@@ -100,7 +102,7 @@ M1 v0.1.0 打包完成（NSIS .exe + MSI .msi 已出）；下一轮进入：GitH
 - [B 低] task-033 应用图标仍为 Tauri 默认占位（task-001 生成的 17 个文件），未做品牌图标设计；待设计出 1024×1024 源 PNG 后跑 `tauri icon` 重生成全套。
 
 ## 下一步计划
-M1 v0.1.0 打包完成；下一轮进入：GitHub Release 发版（手动 / workflow_dispatch）+ tauri updater 自动更新配置（task-034），并行做品牌图标设计。
+v0.1.0 发版 workflow 已就位；下一轮进入 tauri updater 自动更新配置（签名密钥对 + update endpoint JSON，task-035），并行做品牌图标设计与首次 workflow_dispatch v0.1.0 手动触发。
 
 ## 当前负责人 Agent
 DocsKeeper（文档与状态管家）
@@ -280,7 +282,10 @@ DocsKeeper（文档与状态管家）
 | 3a255d1 | #task-033 | docs(task): 新增任务033-NSIS v0.1.0 打包 |
 | f0a46ec | #task-033 | chore(tauri): tauri.conf.json 完善 identifier/nsis perMachine/SimpChinese |
 | 0d35fa0 | #task-033 | ci: 加 tauri build + upload-artifact 出 v0.1.0 installer |
-| （本次） | #task-033 | docs(state): 任务033完成，NSIS v0.1.0 打包就绪 |
+| 96be58d | #task-033 | docs(state): 任务033完成，NSIS v0.1.0 打包就绪 |
+| b360a9e | #task-034 | docs(task): 新增任务034-GitHub Release 发版通道 |
+| c7a276d | #task-034 | ci: 新增 release.yml——workflow_dispatch 手动发版 + tag 自动发版 |
+| （本次） | #task-034 | docs(state): 任务034完成，GitHub Release 通道就绪 |
 
 ---
 变更轨迹：
@@ -347,4 +352,6 @@ DocsKeeper（文档与状态管家）
 - 2026-10-13  task-032  ESLint+Vitest 接入，CI 跑 lint/test，task-006 echo 占位清零
 - 2026-10-13  task-033  NSIS v0.1.0 配置 + 图标 + CI 出 installer artifact，M1 可分发
 - 2026-10-13  task-033  评审前清障：独立复跑 clippy/fmt/test/pnpm lint/pnpm test/pnpm build 全绿（137 条后端测试无回退，前端 9 断言全过）；确认 tauri.conf.json productName/version/identifier/bundle.targets=["nsis","msi"]/windows.nsis.installMode=perMachine+languages=["SimpChinese"] 字段正确、CI yml 加 Tauri build + Upload installer artifact 两步正确（path 指向 workspace 根 target/release/bundle/，if-no-files-found: error）；Tauri 2 NSIS schema 用 languages 数组（非任务书 displayLanguage 标量）按真实 schema 适配；本地 tauri build 出 .msi 5.11MB + .exe 3.60MB；CI artifact 上传未跑（第三档已登记，需 PR 触发）；代码签名/updater/设计图标/macOS-Linux/真机安装验证留 task-034+（第三档已登记）
+- 2026-10-13  task-034  GitHub Release workflow_dispatch + tag 发版通道，v0.1.0 首次发版待手动触发
+- 2026-10-13  task-034  评审前清障：独立复跑 clippy/fmt/test/pnpm lint/pnpm test/pnpm build 全绿（137 条后端测试无回退，前端 9 断言全过）；确认 release.yml 触发器 workflow_dispatch(inputs.version 必填)+push.tags=["v*"]、permissions contents:write、steps checkout→pnpm/action-setup→setup-node(node 22 cache pnpm)→dtolnay/rust-toolchain→pnpm install→tauri build→softprops/action-gh-release@v2 正确；release action 同时设 name+tag_name（workflow_dispatch 手动触发时 tag 也创建）、files 指向 workspace 根 target/release/bundle/、generate_release_notes:true；首次 v0.1.0 发版未代跑（无 gh CLI 鉴权，需评审在网页手动触发或 git push tag，第三档已登记）；tauri updater/代码签名/changelog 自动生成/设计图标/macOS-Linux 留 task-035+（第三档已登记）
 - 2026-10-13  task-032  评审前清障：独立复跑 clippy/fmt/test/pnpm lint/pnpm test/pnpm build 全绿（137 条后端测试无回退，前端 9 断言全过：formatBytes 5 + formatTs 4）；确认 ESLint flat config（eslint.config.js）TS 文件 no-undef 关闭交给类型检查、react-hooks rules-of-hooks error/exhaustive-deps warn、Vitest jsdom 环境+setupFiles 配置正确、setupTests.ts 用 @testing-library/jest-dom/vitest 子路径导入、CI yml 加 Lint/Test 两步替换 echo 占位正确；Vitest 降级 2.1.9 兼容 Vite 5（Vitest 5 需 Vite 6+）；组件单测留 task-033+（第三档已登记）
