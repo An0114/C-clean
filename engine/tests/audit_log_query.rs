@@ -25,7 +25,13 @@ fn list_all_returns_desc_order() {
     let dir = tempfile::tempdir().unwrap();
     let conn = open(dir.path()).unwrap();
     for i in 0..5 {
-        insert_row(&conn, 1000 + i, "permanent_delete", &format!("/f{}", i), "success");
+        insert_row(
+            &conn,
+            1000 + i,
+            "permanent_delete",
+            &format!("/f{}", i),
+            "success",
+        );
     }
     let v = list_audit_log(&conn, &AuditLogFilter::default()).unwrap();
     assert_eq!(v.len(), 5);
@@ -50,7 +56,11 @@ fn list_by_action_filters() {
     // list_audit_log 当前不支持 WHERE action=，全量返回 5 条（按 ts DESC）。
     let v = list_audit_log(
         &conn,
-        &AuditLogFilter { session_id: None, limit: 100, offset: 0 },
+        &AuditLogFilter {
+            session_id: None,
+            limit: 100,
+            offset: 0,
+        },
     )
     .unwrap();
     assert_eq!(v.len(), 5);
@@ -62,11 +72,21 @@ fn list_pagination_limit_offset() {
     let dir = tempfile::tempdir().unwrap();
     let conn = open(dir.path()).unwrap();
     for i in 0..10 {
-        insert_row(&conn, 1000 + i, "permanent_delete", &format!("/f{}", i), "success");
+        insert_row(
+            &conn,
+            1000 + i,
+            "permanent_delete",
+            &format!("/f{}", i),
+            "success",
+        );
     }
     let p1 = list_audit_log(
         &conn,
-        &AuditLogFilter { session_id: None, limit: 3, offset: 0 },
+        &AuditLogFilter {
+            session_id: None,
+            limit: 3,
+            offset: 0,
+        },
     )
     .unwrap();
     assert_eq!(p1.len(), 3);
@@ -75,7 +95,11 @@ fn list_pagination_limit_offset() {
 
     let p2 = list_audit_log(
         &conn,
-        &AuditLogFilter { session_id: None, limit: 3, offset: 3 },
+        &AuditLogFilter {
+            session_id: None,
+            limit: 3,
+            offset: 3,
+        },
     )
     .unwrap();
     assert_eq!(p2.len(), 3);

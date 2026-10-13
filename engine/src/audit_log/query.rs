@@ -54,9 +54,7 @@ pub fn list_audit_log(
                FROM audit_log \
                ORDER BY ts DESC, id DESC \
                LIMIT ?1 OFFSET ?2";
-    let mut stmt = conn
-        .prepare(sql)
-        .map_err(|e| format!("prepare: {e}"))?;
+    let mut stmt = conn.prepare(sql).map_err(|e| format!("prepare: {e}"))?;
     let rows = stmt
         .query_map(params![limit, offset], |r| {
             Ok(AuditLogEntry {
