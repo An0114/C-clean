@@ -3,7 +3,7 @@
 > **特别声明**：本文件是项目唯一真实数据源，也是「每次任务结束必更新、必单独提交」的文件。后续所有 Agent 必须遵守：任何任务完成后都要先更新本文件，再单独提交一次（commit message 形如 `docs(state): ... (#task-00X)`），不得与业务代码混在同一个 commit。
 
 ## 当前目标
-M1 安全网闭环（保险箱恢复）已就绪；下一轮 task-031 rules 更新 UI（前端「检查更新」+「应用更新」按钮，调 rules_checkUpdate / rules_applyUpdate）。
+M1 业务模块 A~F 前端 UI 全部接完；下一轮进入：NSIS 打包 / ESLint+Vitest 接入 / safe_box purge 命令 / 端到端真机验收。
 
 ## 最近一次变更
 2026-10-11：完成 PRD / TRD / ARCHITECTURE / AGENTS / 立项决策记录全套长期基线文档，并初始化本状态白板。
@@ -36,6 +36,7 @@ M1 安全网闭环（保险箱恢复）已就绪；下一轮 task-031 rules 更�
 2026-10-13：task-028 完成——Dashboard 顶部加「开始扫描」按钮：点击 → `invoke('scan_start')` + `listen('scan://progress')` 订阅，绿底进度条（percent 0~100）+ 当前路径 + 已扫项数；扫描中按钮禁用，done 后文案变「再次扫描」并自动刷新 stats；失败红条 + 重试。**与任务书偏差**：真实 `ScanProgress` shape 是 `{session_id, percent, current_path, scanned_items}`（不是任务书假设的 `{module, done, total}`），进度条直接用 `percent`，文字用 `current_path` + `scanned_items`。cargo 五闸保持基线 + pnpm build 全绿。
 2026-10-13：task-029 完成——清理闭环打通。后端新建 `execute/list_pending.rs`（`list_pending_items`：按 session_id 可选过滤、size_bytes DESC、参数化 limit/offset）；Tauri `cleanup_list_pending` 命令注册。前端新建 `app/src/pages/Items.tsx`（pending 表格：checkbox/路径/大小/模块/session，顶部「已选 N 项共 X」+「清理已选」按钮 → `invoke('cleanup_execute', { itemIds })`，完成后自动重拉 + 绿/红结果条）；`App.tsx` 加第三 tab「清理」。4 条集成测试全绿。**与任务书偏差**：cleanup_item 表无 status/scanned_at 列，「pending」= 表内所有行（无 status 过滤），PendingItem 去掉 scanned_at 字段。cargo 五闸 + pnpm build 全绿。
 2026-10-13：task-030 完成——保险箱 UI 落地。新建 `app/src/pages/SafeBox.tsx`：`invoke('safe_box_list')` 拉列表，顶部「刷新」+「共 N 项 / 总大小 formatBytes(totalBytes)」汇总，表格 4 列（原路径/大小/移入时间 formatTs/操作「恢复」按钮），行内「恢复中…」禁用，绿条「已恢复：path」/红条「恢复失败：err」，空列表居中灰字「保险箱为空」；`App.tsx` 加第四 tab「保险箱」，顺序 dashboard→清理→保险箱→历史。**与任务书偏差**：真实 list 响应是 `SafeBoxListResp { entries, totalItems, totalBytes }`（不是裸数组），`SafeBoxEntry { id, originalPath, sizeBytes, quarantinedAt }`（不是任务书假设的 `{id, path, size_bytes, moved_at, original_path}`），restore 入参是 `safeBoxId`（不是 itemId）——前端已按真实 shape 对接。cargo 五闸保持基线 137 条全绿 + pnpm build 156.19KB gzip 49.74KB。
+2026-10-13：task-031 完成——规则更新 UI 落地。新建 `app/src/pages/Settings.tsx`：规则库卡片显示当前版本/远端版本/SHA-256（前 16 位）/状态（「已是最新」或「有新版本 X 可用」）；「检查更新」按钮调 `rules_check_update`（启动时自动拉一次），有更新时显示绿色「应用更新」按钮调 `rules_apply_update`，成功绿 toast「已更新到版本 X」+ 自动重拉；应用中按钮禁用 +「应用中…」；网络失败红条。`App.tsx` 加第五 tab「设置」。**与任务书偏差**：CheckUpdateResp/ApplyResult 均 `#[serde(rename_all="camelCase")]`，前端字段用 camelCase（hasUpdate/currentVersion/...），不是任务书假设的 snake_case。cargo 五闸保持基线 137 条全绿 + pnpm build 158.90KB gzip 50.36KB。
 
 ## 已完成事项
 - [x] 项目立项与仓库初始化（commit 67990f5 / 4972f9d）
@@ -77,6 +78,7 @@ M1 安全网闭环（保险箱恢复）已就绪；下一轮 task-031 rules 更�
 - [x] 028：前端开始扫描按钮——Dashboard 按钮 + scan_start invoke + listen(scan://progress) 实时进度条
 - [x] 029：清理闭环——cleanup.listPending 后端命令 + Items 表格（checkbox + 清理已选）+ App 第三 tab
 - [x] 030：保险箱 UI——safe_box_list 表格 + 汇总 + 单条「恢复」按钮 + App 第四 tab
+- [x] 031：规则更新 UI——Settings 规则库卡片 + 检查更新/应用更新按钮 + App 第五 tab
 
 ## 已知问题
 - [B 中] task-021 仅做「报告」（who_is_locking 结果写 audit_log + 返回前端），**未实现 RmShutdown/RmRestart（请求关闭占用进程）**，前端 UI toast 也未接；notepad 端到端真机验证 CI 用例 `#[ignore]`。请求关闭与前端展示留 task-022+。
@@ -92,7 +94,7 @@ M1 安全网闭环（保险箱恢复）已就绪；下一轮 task-031 rules 更�
 - [B 低] task-006 CI 未接 Dependabot / cargo audit / npm audit（任务边界明确不做）；package.json 的 lint/test 为 echo 占位，CI 也不跑这两个命令，待前端组件落地（ESLint/Vitest）后再启用。CI 仅 windows-latest 单平台，跨平台矩阵（macOS/Linux）本项目明确不做；NSIS 出包矩阵未配，留待打包任务。
 
 ## 下一步计划
-派发 task-031：rules 更新 UI——前端「检查更新」按钮 +「应用更新」按钮，调 rules_checkUpdate / rules_applyUpdate（task-019/023 后端已就绪）。
+M1 业务模块 A~F 前端 UI 全部接完；下一轮进入：NSIS 打包 / ESLint+Vitest 接入 / safe_box purge 命令 / 端到端真机验收。
 
 ## 当前负责人 Agent
 DocsKeeper（文档与状态管家）
@@ -258,7 +260,11 @@ DocsKeeper（文档与状态管家）
 | 7bb625e | #task-030 | docs(task): 新增任务030-保险箱恢复 UI |
 | 1f24104 | #task-030 | feat(frontend): 新增 SafeBox 页面——safe_box_list 表格 + 汇总 + 单条恢复按钮 |
 | 317258c | #task-030 | feat(frontend): App.tsx 加「保险箱」tab 切换 |
-| （本次） | #task-030 | docs(state): 任务030完成，保险箱恢复 UI 就绪 |
+| c7c1882 | #task-030 | docs(state): 任务030完成，保险箱恢复 UI 就绪 |
+| c58ce28 | #task-031 | docs(task): 新增任务031-规则更新 UI |
+| a46ec34 | #task-031 | feat(frontend): 新增 Settings 页面——规则库卡片 + 检查更新 + 应用更新按钮 |
+| 1c3d33c | #task-031 | feat(frontend): App.tsx 加「设置」tab 切换 |
+| （本次） | #task-031 | docs(state): 任务031完成，规则更新 UI 就绪 |
 
 ---
 变更轨迹：
@@ -318,5 +324,6 @@ DocsKeeper（文档与状态管家）
 - 2026-10-13  task-028  评审前清障：独立复跑 clippy/fmt/test/pnpm build 全绿（133 条测试无回退，vite build 150.6KB gzip 48.5KB）；确认 listen 订阅/finally unlisten 配对、percent 直接用 0~100 不除零、按钮四态文案（扫描中/再次扫描/重试扫描/开始扫描）、scanning 时 disabled 防重复点击、done 后自动 load() 刷新 stats 正确；ProgressEvent shape 按 engine 真实字段对齐（session_id/percent/current_path/scanned_items，非任务书假设的 module/done/total）；tauri dev 真机点按钮看进度条走动未跑（第三档已登记）
 - 2026-10-13  task-029  cleanup.listPending + Items 表格 + checkbox 清理按钮，M1 业务闭环
 - 2026-10-13  task-030  SafeBox 表格 + 单条恢复按钮，M1 安全网闭环
+- 2026-10-13  task-031  Settings 规则库卡片 + 检查更新/应用更新按钮，M1-E 前后端打通
 - 2026-10-13  task-030  评审前清障：独立复跑 clippy/fmt/test/pnpm build 全绿（137 条测试无回退，vite build 156.2KB gzip 49.7KB）；确认 safe_box_list 返回 {entries,totalItems,totalBytes} 响应结构正确消费、SafeBoxEntry camelCase 字段（originalPath/sizeBytes/quarantinedAt）映射正确、restore 入参 safeBoxId 驼峰对应 Rust safe_box_id、restoringId 单行恢复中禁用/finally 复位、空列表「保险箱为空」占位正确；App.tsx 四 tab（仪表盘/清理/保险箱/历史）useState 切换；tauri dev 真机端到端（删→进保险箱→恢复）未跑（第三档已登记）
 - 2026-10-13  task-029  评审前清障：独立复跑 clippy/fmt/test/pnpm build 全绿（137 条测试，含 list_pending 4/4）；确认 list_pending_items session_id 可选过滤/limit.clamp(1,500)/size_bytes DESC/参数化正确、Items 页面 Set<number> 选中态/全选 checkbox/清理已选按钮 disabled 条件/cleanup_execute 入参 itemIds 驼峰映射正确；cleanup_item 表无 status/scanned_at 列按真实 schema 适配（pending=表内所有行，清理后不删行）；tauri dev 真机端到端（扫→勾→清→数字涨）未跑（第三档已登记）
