@@ -52,6 +52,20 @@ jobs:
       - name: 前端构建
         run: pnpm --filter app build
 
+      # task-033：Tauri bundle 出 installer（nsis .exe + msi .msi）
+      # windows-latest 默认预装 WebView2 Runtime，无需额外安装。
+      - name: Tauri build
+        run: pnpm --filter app tauri build
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cclean-windows-installer
+          path: |
+            target/release/bundle/nsis/*.exe
+            target/release/bundle/msi/*.msi
+          if-no-files-found: error
+
       # 规则库自洽守卫：合并前挡住「手改 cache_rules.json 忘了更新 rules_meta.json」。
       # windows runner 带 autocrlf=true，checkout 出来的文件可能是 CRLF；
       # 这里先归一为 LF 再算哈希，与 git blob / rules_meta.json 的 LF 口径对齐。
