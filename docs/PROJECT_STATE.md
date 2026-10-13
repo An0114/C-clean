@@ -3,7 +3,7 @@
 > **特别声明**：本文件是项目唯一真实数据源，也是「每次任务结束必更新、必单独提交」的文件。后续所有 Agent 必须遵守：任何任务完成后都要先更新本文件，再单独提交一次（commit message 形如 `docs(state): ... (#task-00X)`），不得与业务代码混在同一个 commit。
 
 ## 当前目标
-M1 业务全部完成 + 前端工程化（ESLint+Vitest）已接入；下一轮进入 NSIS 打包（Tauri bundle 配置 + 图标 + 应用名）准备发版。
+M1 v0.1.0 打包完成（NSIS .exe + MSI .msi 已出）；下一轮进入：GitHub Release 发版（手动 / workflow_dispatch）+ tauri updater 自动更新配置。
 
 ## 最近一次变更
 2026-10-11：完成 PRD / TRD / ARCHITECTURE / AGENTS / 立项决策记录全套长期基线文档，并初始化本状态白板。
@@ -38,6 +38,7 @@ M1 业务全部完成 + 前端工程化（ESLint+Vitest）已接入；下一轮�
 2026-10-13：task-030 完成——保险箱 UI 落地。新建 `app/src/pages/SafeBox.tsx`：`invoke('safe_box_list')` 拉列表，顶部「刷新」+「共 N 项 / 总大小 formatBytes(totalBytes)」汇总，表格 4 列（原路径/大小/移入时间 formatTs/操作「恢复」按钮），行内「恢复中…」禁用，绿条「已恢复：path」/红条「恢复失败：err」，空列表居中灰字「保险箱为空」；`App.tsx` 加第四 tab「保险箱」，顺序 dashboard→清理→保险箱→历史。**与任务书偏差**：真实 list 响应是 `SafeBoxListResp { entries, totalItems, totalBytes }`（不是裸数组），`SafeBoxEntry { id, originalPath, sizeBytes, quarantinedAt }`（不是任务书假设的 `{id, path, size_bytes, moved_at, original_path}`），restore 入参是 `safeBoxId`（不是 itemId）——前端已按真实 shape 对接。cargo 五闸保持基线 137 条全绿 + pnpm build 156.19KB gzip 49.74KB。
 2026-10-13：task-031 完成——规则更新 UI 落地。新建 `app/src/pages/Settings.tsx`：规则库卡片显示当前版本/远端版本/SHA-256（前 16 位）/状态（「已是最新」或「有新版本 X 可用」）；「检查更新」按钮调 `rules_check_update`（启动时自动拉一次），有更新时显示绿色「应用更新」按钮调 `rules_apply_update`，成功绿 toast「已更新到版本 X」+ 自动重拉；应用中按钮禁用 +「应用中…」；网络失败红条。`App.tsx` 加第五 tab「设置」。**与任务书偏差**：CheckUpdateResp/ApplyResult 均 `#[serde(rename_all="camelCase")]`，前端字段用 camelCase（hasUpdate/currentVersion/...），不是任务书假设的 snake_case。cargo 五闸保持基线 137 条全绿 + pnpm build 158.90KB gzip 50.36KB。
 2026-10-13：task-032 完成——前端工程化补齐。ESLint 10 flat config（`app/eslint.config.js`，@eslint/js + @typescript-eslint + react-hooks + react-refresh，no-undef 关闭交给 TS，no-unused-vars warn）；Vitest 2.1 + @testing-library/react + jest-dom + jsdom（`vite.config.ts` 加 test.environment=jsdom + setupFiles，`src/setupTests.ts` 引入 `@testing-library/jest-dom/vitest`）；formatBytes 5 个断言 + formatTs 4 个断言共 9 个单测全过；`.github/workflows/ci.yml` 前端 job 加 Lint/Test 两步替换 echo 占位。**与任务书偏差**：ESLint 10 已废弃 .eslintrc.cjs，改用 flat config `eslint.config.js`；Vitest 5.0.3 要求 Vite 6+，本项目 Vite 5.4.11 降级到 vitest@^2.1.9；setupTests 必须用 `@testing-library/jest-dom/vitest`（子路径）而非 `@testing-library/jest-dom`，否则 expect.extend 在框架注册前执行报错。cargo 五闸保持基线 + pnpm lint=0 / pnpm test=0（9/9）/ pnpm build=0。
+2026-10-13：task-033 完成——NSIS v0.1.0 打包就绪。`app/src-tauri/tauri.conf.json`：identifier 改为 `com.and0114.cclean`，bundle.targets 从 "all" 收窄为 `["nsis","msi"]`，bundle.windows.nsis 加 `installMode="perMachine"`（清理 C 盘要管理员）+ `languages=["SimpChinese"]`。图标沿用 task-001 生成的 Tauri 默认占位（17 个文件已在库，不重跑 `tauri icon`，设计图标留后续）。`.github/workflows/ci.yml` 在 `pnpm build` 后加 `pnpm --filter app tauri build` + `actions/upload-artifact@v4`（artifact 名 `cclean-windows-installer`，path `target/release/bundle/{nsis/*.exe,msi/*.msi}`，`if-no-files-found: error`）。本地 `pnpm --filter app tauri build` 退出码 0，产出 `target/release/bundle/msi/C-Disk Cleaner_0.1.0_x64_en-US.msi`（5.11 MB）+ `target/release/bundle/nsis/C-Disk Cleaner_0.1.0_x64-setup.exe`（3.60 MB）。**与任务书偏差**：① Tauri 2 NSIS schema 字段是 `languages`（数组）不是任务书写的 `displayLanguage`（标量，build script 直接报 unknown field）；② workspace 模式 bundle 输出在仓库根 `target/release/bundle/` 而非 `app/src-tauri/target/release/bundle/`，CI path 已相应调整；③ 图标未重跑（沿用 task-001 默认占位）。cargo 五闸 + pnpm lint/test/build + tauri build 全绿。
 
 ## 已完成事项
 - [x] 项目立项与仓库初始化（commit 67990f5 / 4972f9d）
@@ -81,6 +82,7 @@ M1 业务全部完成 + 前端工程化（ESLint+Vitest）已接入；下一轮�
 - [x] 030：保险箱 UI——safe_box_list 表格 + 汇总 + 单条「恢复」按钮 + App 第四 tab
 - [x] 031：规则更新 UI——Settings 规则库卡片 + 检查更新/应用更新按钮 + App 第五 tab
 - [x] 032：前端工程化补齐——ESLint 10 flat config + Vitest 2.1 + formatBytes/formatTs 单测 + CI 接 lint/test
+- [x] 033：NSIS v0.1.0 打包——tauri.conf identifier/nsis + CI tauri build/upload-artifact，本地出 .msi/.exe
 
 ## 已知问题
 - [B 中] task-021 仅做「报告」（who_is_locking 结果写 audit_log + 返回前端），**未实现 RmShutdown/RmRestart（请求关闭占用进程）**，前端 UI toast 也未接；notepad 端到端真机验证 CI 用例 `#[ignore]`。请求关闭与前端展示留 task-022+。
@@ -93,10 +95,12 @@ M1 业务全部完成 + 前端工程化（ESLint+Vitest）已接入；下一轮�
 - [B 低] task-007 WebView2 devtools console 的 `listen('scan://progress')` 真机截图未在本轮自动化环境内取得（tauri dev 窗口启动后 GUI 自动化无法稳定聚焦 console）；通道本身已由编译期类型 + engine 节流单测保证，留待 UI 联调任务补截图。
 - [B 低] task-005 rules_meta 落 DB + checkUpdate + applyUpdate 均已在 task-022/023 落地；**GitHub Token/私有仓、失败重试/离线降级、前端 UI 「确认更新」弹窗、手动回滚命令（从 .bak 恢复）、差量更新** 仍未做，留后续。
 - [B 低] task-005 外部红线命中统一记为 `DenialReason::L3SystemPath`（遵守「whitelist.rs 仅新增函数、不改枚举/常量」约束）；后续审计若需区分内置/外部红线来源，再拆 DenialReason 变体。
-- [B 低] task-006 CI 未接 Dependabot / cargo audit / npm audit（任务边界明确不做）；~~package.json 的 lint/test 为 echo 占位，CI 也不跑这两个命令~~（task-032 已接入 ESLint 10 flat config + Vitest 2.1，CI 已加 Lint/Test 两步）。CI 仅 windows-latest 单平台，跨平台矩阵（macOS/Linux）本项目明确不做；NSIS 出包矩阵未配，留待打包任务。
+- [B 低] task-006 CI 未接 Dependabot / cargo audit / npm audit（任务边界明确不做）；~~package.json 的 lint/test 为 echo 占位，CI 也不跑这两个命令~~（task-032 已接入 ESLint 10 flat config + Vitest 2.1，CI 已加 Lint/Test 两步）。CI 仅 windows-latest 单平台，跨平台矩阵（macOS/Linux）本项目明确不做；~~NSIS 出包矩阵未配~~（task-033 已配 Windows 单平台 nsis+msi，artifact 名 cclean-windows-installer）。
+- [B 中] task-033 installer 未做代码签名：未购 EV/OV 证书，用户首次运行 .exe/.msi 会有 SmartScreen「Windows 已保护你的电脑」警告，需要手动「更多信息→仍要运行」；正式发版前需评估代码签名（自签/商业证书）。
+- [B 低] task-033 应用图标仍为 Tauri 默认占位（task-001 生成的 17 个文件），未做品牌图标设计；待设计出 1024×1024 源 PNG 后跑 `tauri icon` 重生成全套。
 
 ## 下一步计划
-M1 业务全部完成 + 工程化补齐；下一轮进入 NSIS 打包（Tauri bundle 配置 + 图标 + 应用名）准备发版。
+M1 v0.1.0 打包完成；下一轮进入：GitHub Release 发版（手动 / workflow_dispatch）+ tauri updater 自动更新配置（task-034），并行做品牌图标设计。
 
 ## 当前负责人 Agent
 DocsKeeper（文档与状态管家）
@@ -272,7 +276,11 @@ DocsKeeper（文档与状态管家）
 | ddfe37f | #task-032 | chore(frontend): 安装 Vitest 2.1 + testing-library + jsdom + vite.config test 字段 |
 | 8557c4d | #task-032 | test(frontend): 给 formatBytes / formatTs 写纯函数单测（9 个断言） |
 | 996a803 | #task-032 | ci: 前端 job 接 pnpm lint + pnpm test，替换 echo 占位 |
-| （本次） | #task-032 | docs(state): 任务032完成，ESLint+Vitest 接入 |
+| 173eac6 | #task-032 | docs(state): 任务032完成，ESLint+Vitest 接入 |
+| 3a255d1 | #task-033 | docs(task): 新增任务033-NSIS v0.1.0 打包 |
+| f0a46ec | #task-033 | chore(tauri): tauri.conf.json 完善 identifier/nsis perMachine/SimpChinese |
+| 0d35fa0 | #task-033 | ci: 加 tauri build + upload-artifact 出 v0.1.0 installer |
+| （本次） | #task-033 | docs(state): 任务033完成，NSIS v0.1.0 打包就绪 |
 
 ---
 变更轨迹：
@@ -337,4 +345,6 @@ DocsKeeper（文档与状态管家）
 - 2026-10-13  task-030  评审前清障：独立复跑 clippy/fmt/test/pnpm build 全绿（137 条测试无回退，vite build 156.2KB gzip 49.7KB）；确认 safe_box_list 返回 {entries,totalItems,totalBytes} 响应结构正确消费、SafeBoxEntry camelCase 字段（originalPath/sizeBytes/quarantinedAt）映射正确、restore 入参 safeBoxId 驼峰对应 Rust safe_box_id、restoringId 单行恢复中禁用/finally 复位、空列表「保险箱为空」占位正确；App.tsx 四 tab（仪表盘/清理/保险箱/历史）useState 切换；tauri dev 真机端到端（删→进保险箱→恢复）未跑（第三档已登记）
 - 2026-10-13  task-029  评审前清障：独立复跑 clippy/fmt/test/pnpm build 全绿（137 条测试，含 list_pending 4/4）；确认 list_pending_items session_id 可选过滤/limit.clamp(1,500)/size_bytes DESC/参数化正确、Items 页面 Set<number> 选中态/全选 checkbox/清理已选按钮 disabled 条件/cleanup_execute 入参 itemIds 驼峰映射正确；cleanup_item 表无 status/scanned_at 列按真实 schema 适配（pending=表内所有行，清理后不删行）；tauri dev 真机端到端（扫→勾→清→数字涨）未跑（第三档已登记）
 - 2026-10-13  task-032  ESLint+Vitest 接入，CI 跑 lint/test，task-006 echo 占位清零
+- 2026-10-13  task-033  NSIS v0.1.0 配置 + 图标 + CI 出 installer artifact，M1 可分发
+- 2026-10-13  task-033  评审前清障：独立复跑 clippy/fmt/test/pnpm lint/pnpm test/pnpm build 全绿（137 条后端测试无回退，前端 9 断言全过）；确认 tauri.conf.json productName/version/identifier/bundle.targets=["nsis","msi"]/windows.nsis.installMode=perMachine+languages=["SimpChinese"] 字段正确、CI yml 加 Tauri build + Upload installer artifact 两步正确（path 指向 workspace 根 target/release/bundle/，if-no-files-found: error）；Tauri 2 NSIS schema 用 languages 数组（非任务书 displayLanguage 标量）按真实 schema 适配；本地 tauri build 出 .msi 5.11MB + .exe 3.60MB；CI artifact 上传未跑（第三档已登记，需 PR 触发）；代码签名/updater/设计图标/macOS-Linux/真机安装验证留 task-034+（第三档已登记）
 - 2026-10-13  task-032  评审前清障：独立复跑 clippy/fmt/test/pnpm lint/pnpm test/pnpm build 全绿（137 条后端测试无回退，前端 9 断言全过：formatBytes 5 + formatTs 4）；确认 ESLint flat config（eslint.config.js）TS 文件 no-undef 关闭交给类型检查、react-hooks rules-of-hooks error/exhaustive-deps warn、Vitest jsdom 环境+setupFiles 配置正确、setupTests.ts 用 @testing-library/jest-dom/vitest 子路径导入、CI yml 加 Lint/Test 两步替换 echo 占位正确；Vitest 降级 2.1.9 兼容 Vite 5（Vitest 5 需 Vite 6+）；组件单测留 task-033+（第三档已登记）
