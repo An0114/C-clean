@@ -1,9 +1,10 @@
-// task-027：App 加 Dashboard / History tab 切换（不引 Router，useState）。
+// task-027/029：App 加 Dashboard / History / Items tab 切换（不引 Router，useState）。
 import { useState } from "react";
 import Dashboard from "./pages/Dashboard";
 import History from "./pages/History";
+import Items from "./pages/Items";
 
-type Tab = "dashboard" | "history";
+type Tab = "dashboard" | "history" | "items";
 
 const tabBtnStyle = (active: boolean): React.CSSProperties => ({
   padding: "6px 14px",
@@ -33,11 +34,16 @@ export default function App() {
         <button style={tabBtnStyle(tab === "dashboard")} onClick={() => setTab("dashboard")}>
           仪表盘
         </button>
+        <button style={tabBtnStyle(tab === "items")} onClick={() => setTab("items")}>
+          清理
+        </button>
         <button style={tabBtnStyle(tab === "history")} onClick={() => setTab("history")}>
           历史
         </button>
       </div>
-      {tab === "dashboard" ? <Dashboard /> : <History />}
+      {tab === "dashboard" && <Dashboard />}
+      {tab === "items" && <Items />}
+      {tab === "history" && <History />}
     </div>
   );
 }
