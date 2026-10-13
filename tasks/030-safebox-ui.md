@@ -116,3 +116,20 @@ DevAgent 交付物（后续执行结果）：
 4. 本任务文档本身**由 DocsKeeper 在派发时**单独提交一次：
    `docs(task): 新增任务030-保险箱恢复 UI (#task-030)`，
    该提交只含 `tasks/030-safebox-ui.md` 一个文件，落在 `feature/task-030-safebox-ui` 分支最前端。
+
+## 实现备注（DevAgent 落地后回填）
+- **改动文件**：
+  - 前端：新建 `app/src/pages/SafeBox.tsx`；`app/src/App.tsx` 加第四 tab「保险箱」。
+  - 后端：无改动（task-017/018 safe_box_restore / safe_box_list 已注册）。
+- **SafeBoxItem 真实 shape**（serde rename_all=camelCase，前端消费）：
+  ```ts
+  interface SafeBoxEntry { id: number; originalPath: string; sizeBytes: number; quarantinedAt: number; }
+  interface SafeBoxListResp { entries: SafeBoxEntry[]; totalItems: number; totalBytes: number; }
+  ```
+- **与任务书偏差（重要）**：
+  1. `safe_box_list` 返回 `SafeBoxListResp { entries, totalItems, totalBytes }`（不是任务书假设的裸数组）；汇总用响应字段 totalItems/totalBytes，不再前端 sum。
+  2. 字段名 camelCase：`originalPath / sizeBytes / quarantinedAt`（不是任务书假设的 `path / size_bytes / moved_at / original_path`）。
+  3. `safe_box_restore` 入参是 `safeBoxId`（不是任务书假设的 `item_id`）——对应 Rust 命令 `safe_box_restore(safe_box_id: i64)`。
+- **自验命令与退出码**：cargo check=0 / clippy -D warnings=0 / cargo test -p engine=0（137 条基线无回退）/ cargo fmt --check=0 / pnpm --filter app build=0（vite 39 modules，dist/assets/index-3C1RQ7N8.js 156.19KB gzip 49.74KB）。
+- **端到端流程（tauri dev 真机，留评审手动复核）**：Dashboard 点「开始扫描」→ 扫描完切「清理」tab 勾选一项 → 点「清理已选」→ 文件进保险箱 → 切「保险箱」tab 看到该行 → 点「恢复」→ 绿条「已恢复：path」+ 文件回到原路径 + 列表自动刷新。
+- **遗留**：purge（永久删除）/ 批量恢复 / 5GB FIFO quota 进度条 / dry-run 预览 UI 均留 task-031+；tauri dev 真机端到端未在自动化环境跑（GUI 截图留评审）。
