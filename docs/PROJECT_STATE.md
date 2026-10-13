@@ -3,7 +3,7 @@
 > **特别声明**：本文件是项目唯一真实数据源，也是「每次任务结束必更新、必单独提交」的文件。后续所有 Agent 必须遵守：任何任务完成后都要先更新本文件，再单独提交一次（commit message 形如 `docs(state): ... (#task-00X)`），不得与业务代码混在同一个 commit。
 
 ## 当前目标
-M1-F 报表第一步完成：audit_log.list 只读查询已就绪（按 ts 倒序 + 分页）。下一轮 task-025 做聚合统计（按 action / result 汇总 total_items 与 success/fail 计数）。
+M1-F 报表基础（list + stats）已就绪；下一轮进入前端 UI 接入（React 历史页 + 仪表盘）。
 
 ## 最近一次变更
 2026-10-11：完成 PRD / TRD / ARCHITECTURE / AGENTS / 立项决策记录全套长期基线文档，并初始化本状态白板。
@@ -31,6 +31,7 @@ M1-F 报表第一步完成：audit_log.list 只读查询已就绪（按 ts 倒�
 2026-10-13：task-022 完成——engine 引入 reqwest 0.12（blocking + rustls-tls）；新建 `rules/meta_store.rs`（upsert/get_active rules_meta 单行表 id=1）与 `rules/remote.rs`（`fetch_remote_meta` GET GitHub Raw rules_meta.json）；Tauri `rules.checkUpdate` 命令注册，返回 `{has_update, current_version, remote_version, current_sha256, remote_sha256}`。3 条集成测试全绿（upsert/get_active/空库）。cargo 五闸 + pnpm build 全绿。
 2026-10-13：task-023 完成——`remote.rs` 新增 `fetch_remote_rules_bytes`（GET 远端 cache_rules.json）与 `apply_update`（SHA-256 校验 + 备份 .bak + 替换 cache_rules.json/rules_meta.json + upsert rules_meta 单行表 + 失败自动回滚）；Tauri `rules.applyUpdate` 命令注册。3 条集成测试全绿（正常替换/sha不匹配拒绝/DB失败回滚）。cargo 五闸 + pnpm build 全绿。
 2026-10-13：task-024 完成——新建 `audit_log/query.rs`（`list_audit_log`：按 ts DESC, id DESC + limit/offset 分页；对外字段重命名 event_type=action、path=target、created_at=ts）；Tauri `audit_log.list` 命令注册。4 条集成测试全绿（空/倒序/action 过滤/分页）。cargo 五闸 + pnpm build 全绿。
+2026-10-13：task-025 完成——新建 `audit_log/stats.rs`（`cleanup_stats`：单条 SQL 一次取 total_bytes_freed / success_count / failed_count / session_count，COALESCE 防空表）；Tauri `audit_log.stats` 命令注册。4 条集成测试全绿（空/计数/session 过滤/去重）。cargo 五闸 + pnpm build 全绿。
 
 ## 已完成事项
 - [x] 项目立项与仓库初始化（commit 67990f5 / 4972f9d）
@@ -66,6 +67,7 @@ M1-F 报表第一步完成：audit_log.list 只读查询已就绪（按 ts 倒�
 - [x] 022：rules_meta 落 DB + rules.checkUpdate——查 GitHub Raw 比对版本（不下载替换）
 - [x] 023：rules.applyUpdate——下载新 cache_rules.json + SHA-256 校验 + 备份替换 + upsert DB
 - [x] 024：audit_log.list——按 ts 倒序分页只读查询，M1-F 报表后端基础
+- [x] 025：audit_log.stats——cleanup_task 聚合（total_bytes / success / fail / sessions）
 
 ## 已知问题
 - [B 中] task-021 仅做「报告」（who_is_locking 结果写 audit_log + 返回前端），**未实现 RmShutdown/RmRestart（请求关闭占用进程）**，前端 UI toast 也未接；notepad 端到端真机验证 CI 用例 `#[ignore]`。请求关闭与前端展示留 task-022+。
@@ -81,7 +83,7 @@ M1-F 报表第一步完成：audit_log.list 只读查询已就绪（按 ts 倒�
 - [B 低] task-006 CI 未接 Dependabot / cargo audit / npm audit（任务边界明确不做）；package.json 的 lint/test 为 echo 占位，CI 也不跑这两个命令，待前端组件落地（ESLint/Vitest）后再启用。CI 仅 windows-latest 单平台，跨平台矩阵（macOS/Linux）本项目明确不做；NSIS 出包矩阵未配，留待打包任务。
 
 ## 下一步计划
-派发 task-025：audit_log.stats 聚合——按 action / result 汇总 total_items、success/fail 计数，作为报表卡片数据源。
+M1-F 报表基础（list + stats）已就绪；下一轮进入前端 UI 接入（React 历史页 + 仪表盘卡片）。
 
 ## 当前负责人 Agent
 DocsKeeper（文档与状态管家）
@@ -221,6 +223,11 @@ DocsKeeper（文档与状态管家）
 | 701caf8 | #task-024 | feat(tauri): 新增 audit_log.list 命令并注册 |
 | dd24e78 | #task-024 | test(audit_log): 补 list 集成测试（空/倒序/action过滤/分页） |
 | （本次） | #task-024 | docs(state): 任务024完成，audit_log.list 就绪 |
+| 8fa4546 | #task-025 | docs(task): 新增任务025-audit_log.stats |
+| 9f0c0c5 | #task-025 | feat(audit_log): 新增 cleanup_stats——总释放字节 / 成功数 / 失败数 / session 数 |
+| 7052e14 | #task-025 | feat(tauri): 新增 audit_log.stats 命令并注册 |
+| d6a9fa1 | #task-025 | test(audit_log): 补 stats 集成测试（空/计数/session过滤/去重） |
+| （本次） | #task-025 | docs(state): 任务025完成，清理统计数字就绪 |
 
 ---
 变更轨迹：
@@ -265,6 +272,7 @@ DocsKeeper（文档与状态管家）
 - 2026-10-13  task-022  rules_meta 落 DB + rules.checkUpdate 查远端版本（不下载）
 - 2026-10-13  task-023  rules.applyUpdate——下载新规则 + SHA-256 校验 + 备份替换 + upsert DB
 - 2026-10-13  task-024  audit_log.list 只读查询命令落地，历史页后端基础
+- 2026-10-13  task-025  cleanup_stats 聚合查询（total_bytes / success / fail / sessions）
 - 2026-10-13  task-024  评审前清障：独立复跑 clippy/fmt/test 全绿（129 条，含 audit_log_query 4/4）；确认 ts DESC/id DESC 分页、limit/offset 防御、action→event_type/target→path/ts→created_at 列名映射正确；session_id 过滤用户拍板方案二——入参保留标记"预留未启用"，待后续 schema 加列后启用
 - 2026-10-13  task-023  评审前清障：独立复跑 clippy/fmt/test 全绿（125 条，含 apply_update 3/3）；确认 SHA-256 校验/备份/替换/upsert/回滚全链路正确；真实 GitHub Raw 下载联调未跑（第三档已登记）
 - 2026-10-13  task-022  评审前清障：独立复跑 clippy/fmt/test 全绿（122 条，含 rules_meta_store 3/3）；确认 upsert/get_active 单行表逻辑正确、fetch_remote_meta reqwest blocking 实现正确；真实 GitHub Raw 网络联调未跑（第三档已登记）
