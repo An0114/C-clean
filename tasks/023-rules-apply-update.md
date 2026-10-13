@@ -184,3 +184,14 @@ DevAgent 交付物（后续执行结果）：
 4. 本任务文档本身**由 DocsKeeper 在派发时**单独提交一次：
    `docs(task): 新增任务023-rules.applyUpdate (#task-023)`，
    该提交只含 `tasks/023-rules-apply-update.md` 一个文件，落在 `feature/task-023-rules-apply-update` 分支最前端。
+
+## 实现备注（DevAgent 落地后回填）
+- **改动文件**：`engine/src/rules/remote.rs`（REMOTE_RULES_URL + fetch_remote_rules_bytes + ApplyResult + ApplyError + apply_update + sha256_hex + rollback）；`engine/src/rules/mod.rs`（re-export）；`app/src-tauri/src/commands.rs`（rules_apply_update）；`app/src-tauri/src/lib.rs`（注册）；新建 `engine/tests/rules_apply_update.rs`。
+- **SHA-256 不匹配实测**：test `apply_update_sha_mismatch_refuses` 构造 meta.sha256="deadbeef"，断言返回 `ApplyError::ShaMismatch{expected, actual}`，且本地 cache_rules.json/rules_meta.json 字节不变、`.bak` 未生成。
+- **回滚实测**：test `apply_update_db_failure_rolls_back` 用 `DROP TABLE rules_meta` 强制 upsert 失败，断言返回 `ApplyError::Db`，且本地 cache_rules.json/rules_meta.json 已从 .bak 恢复到旧字节。
+- **与任务书偏差**：
+  - 写 rules_meta.json 时补了 `source_url` / `downloaded_at` / `custom_rules` 字段（与 v1__init.sql 列对齐）；任务书只写 version+sha256，loader 反序列化时这些字段有默认值，无兼容问题。
+  - `ApplyError::RollbackFailed` 变体已定义但当前 rollback 失败只 `let _ =` 吞掉（不二次报错），因为本地文件已不一致，抛 RollbackFailed 也救不回来；后续若要暴露给前端，再在 rollback 内聚合错误。
+- **fetch_remote_rules_bytes 本地实测**：自动化环境不联网，未跑真实 HTTP；URL 硬编码 `https://raw.githubusercontent.com/An0114/C-clean/main/rules/cache_rules.json`。
+- **自验命令与退出码**：cargo check --workspace=0 / clippy -D warnings=0 / cargo test -p engine=0（122+3=125 条） / cargo fmt --check=0 / pnpm --filter app build=0。
+- **遗留**：前端 UI 确认弹窗、回滚命令（从 .bak 恢复）、差量更新、GitHub Token/私有仓、失败重试/离线降级，全部留后续。
