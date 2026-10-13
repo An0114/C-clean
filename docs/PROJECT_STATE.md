@@ -70,6 +70,7 @@ M1-F 报表基础（list+stats+Dashboard 卡片）已就绪；下一轮 task-027
 - [x] 024：audit_log.list——按 ts 倒序分页只读查询，M1-F 报表后端基础
 - [x] 025：audit_log.stats——cleanup_task 聚合（total_bytes / success / fail / sessions）
 - [x] 026：前端 Dashboard 4 数字卡片——formatBytes + Dashboard.tsx + App.tsx 挂载（stats 接前端，GB 格式化）
+- [x] 027：前端 History 明细页——formatTs + History.tsx 表格（时间/事件/路径/详情）+ 分页 + App.tsx tab 切换（audit_log.list 接前端）
 
 ## 已知问题
 - [B 中] task-021 仅做「报告」（who_is_locking 结果写 audit_log + 返回前端），**未实现 RmShutdown/RmRestart（请求关闭占用进程）**，前端 UI toast 也未接；notepad 端到端真机验证 CI 用例 `#[ignore]`。请求关闭与前端展示留 task-022+。
@@ -85,7 +86,7 @@ M1-F 报表基础（list+stats+Dashboard 卡片）已就绪；下一轮 task-027
 - [B 低] task-006 CI 未接 Dependabot / cargo audit / npm audit（任务边界明确不做）；package.json 的 lint/test 为 echo 占位，CI 也不跑这两个命令，待前端组件落地（ESLint/Vitest）后再启用。CI 仅 windows-latest 单平台，跨平台矩阵（macOS/Linux）本项目明确不做；NSIS 出包矩阵未配，留待打包任务。
 
 ## 下一步计划
-派发 task-027：前端历史列表——audit_log.list 接 React 表格（分页 / session 过滤）。
+派发 task-028：scan.start 交互——前端「开始扫描」按钮 + 进度条 listen('scan://progress') 实时更新。
 
 ## 当前负责人 Agent
 DocsKeeper（文档与状态管家）
