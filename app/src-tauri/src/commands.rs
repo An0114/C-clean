@@ -7,6 +7,7 @@
 use engine::audit_log::{
     cleanup_stats, list_audit_log, AuditLogEntry, AuditLogFilter, CleanupStats,
 };
+use engine::execute::list_pending::{list_pending_items, PendingItem};
 use engine::ipc::commands::dry_run::{handle_dry_run, DryRunReq, DryRunResp};
 use engine::ipc::envelope::Envelope;
 use engine::ipc::error_codes::INTERNAL;
@@ -366,6 +367,33 @@ pub async fn audit_log_stats(session_id: Option<i64>) -> Result<Envelope<Cleanup
         Ok(s) => Ok(Envelope::ok(s)),
         Err(e) => {
             eprintln!("[audit_log_stats] stats: {e}");
+            Ok(Envelope::err(INTERNAL))
+        }
+    }
+}
+
+/// `cleanup.listPending`：列出 cleanup_item 表中所有待清理项（size 倒序）。
+///
+/// task-029：cleanup_item 表无 status 列，「pending」= 表内所有行；
+/// 入参 session_id/limit/offset 全可选（默认 limit=100）。
+#[tauri::command]
+pub async fn cleanup_list_pending(
+    session_id: Option<i64>,
+    limit: Option<i64>,
+    offset: Option<i64>,
+) -> Result<Envelope<Vec<PendingItem>>, String> {
+    let data_root = std::env::current_dir().map_err(|e| e.to_string())?;
+    let conn = match engine::db::conn::open(&data_root) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[cleanup_list_pending] open db: {e}");
+            return Ok(Envelope::err(INTERNAL));
+        }
+    };
+    match list_pending_items(&conn, session_id, limit.unwrap_or(100), offset.unwrap_or(0)) {
+        Ok(v) => Ok(Envelope::ok(v)),
+        Err(e) => {
+            eprintln!("[cleanup_list_pending] list: {e}");
             Ok(Envelope::err(INTERNAL))
         }
     }
