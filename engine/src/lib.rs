@@ -12,6 +12,9 @@ pub fn hello_engine() -> &'static str {
 /// 公共数据层：SQLite 连接入口与 schema 迁移（task-002）。
 pub mod db;
 
+/// 审计日志只读查询（task-024，M1-F 报表基础）。
+pub mod audit_log;
+
 /// 执行引擎：删除唯一入口与 L3 红线白名单匹配器（task-003）。
 pub mod execute;
 
