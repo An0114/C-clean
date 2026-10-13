@@ -299,3 +299,4 @@ DocsKeeper（文档与状态管家）
 - 2026-10-12  task-021  评审前清障：独立复跑 clippy/fmt/test 全绿（119 条，含 execute_locking 2/2 必跑 + 1 ignored）；确认 FILE_IN_USE 分支自动调 who_is_locking 拼 detail、PERMISSION_DENIED 分支不触发；notepad 端到端 #[ignore] 未跑（第三档已登记）
 - 2026-10-12  task-020  评审前清障：独立复跑 clippy/fmt/test 全绿（117 条，含 who_is_locking 1/1 必跑 + 1 ignored）；确认 RmStartSession/RegisterResources/GetList/EndSession 四件套 FFI 逻辑正确；notepad 端到端 #[ignore] 未跑（第三档已登记）
 - 2026-10-13  task-028  前端 scan_start 按钮 + scan://progress 实时进度条（percent/current_path/scanned_items）
+- 2026-10-13  task-028  评审前清障：独立复跑 clippy/fmt/test/pnpm build 全绿（133 条测试无回退，vite build 150.6KB gzip 48.5KB）；确认 listen 订阅/finally unlisten 配对、percent 直接用 0~100 不除零、按钮四态文案（扫描中/再次扫描/重试扫描/开始扫描）、scanning 时 disabled 防重复点击、done 后自动 load() 刷新 stats 正确；ProgressEvent shape 按 engine 真实字段对齐（session_id/percent/current_path/scanned_items，非任务书假设的 module/done/total）；tauri dev 真机点按钮看进度条走动未跑（第三档已登记）
