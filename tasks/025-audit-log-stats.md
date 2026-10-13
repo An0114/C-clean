@@ -137,3 +137,15 @@ DevAgent 交付物（后续执行结果）：
 4. 本任务文档本身**由 DocsKeeper 在派发时**单独提交一次：
    `docs(task): 新增任务025-audit_log.stats (#task-025)`，
    该提交只含 `tasks/025-audit-log-stats.md` 一个文件，落在 `feature/task-025-audit-log-stats` 分支最前端。
+
+## 实现备注（DevAgent 落地后回填）
+- **改动文件**：新建 `engine/src/audit_log/stats.rs`；`engine/src/audit_log/mod.rs` 加 `pub mod stats;` + re-export；`app/src-tauri/src/commands.rs` 加 `audit_log_stats`；`app/src-tauri/src/lib.rs` 注册；新建 `engine/tests/audit_log_stats.rs`。
+- **SQL 风格**：单条 `SELECT COALESCE(SUM(...),0) ... FROM cleanup_task [WHERE session_id=?]`，一次拿 4 个聚合值；COALESCE 防空表 NULL。
+- **与任务书偏差（重要）**：v1__init.sql 的 `cleanup_task` 是「一次清理任务」级聚合行（无 status 列、行内已含 freed_bytes/success_count/fail_count 整数），不是任务书假设的「行级 success/failed 表」。聚合直接对单行字段求和：
+  - total_bytes_freed = SUM(freed_bytes)
+  - success_count     = SUM(success_count)
+  - failed_count      = SUM(fail_count)
+  - session_count     = COUNT(DISTINCT session_id)
+- **测试前置**：cleanup_task.session_id 是外键，测试用例须先 `INSERT OR IGNORE INTO scan_session(id,started_at,status,scope)` 造 session 行，否则 FK 787 报错。
+- **自验命令与退出码**：cargo check=0 / clippy -D warnings=0 / cargo test -p engine=0（129+4=133 条，含 audit_log_stats 4 条全绿） / cargo fmt --check=0 / pnpm --filter app build=0。
+- **遗留**：按 module 维度拆分（需 JOIN cleanup_item）、时间区间过滤（今天/本周）、前端图表，全部留 task-026+。
