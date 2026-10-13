@@ -43,6 +43,12 @@ jobs:
       - name: 前端安装（frozen lockfile）
         run: pnpm install --frozen-lockfile
 
+      - name: 前端 Lint
+        run: pnpm --filter app lint
+
+      - name: 前端测试
+        run: pnpm --filter app test
+
       - name: 前端构建
         run: pnpm --filter app build
 
