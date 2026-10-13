@@ -15,7 +15,13 @@ fn ensure_session(conn: &rusqlite::Connection, id: i64) {
     .unwrap();
 }
 
-fn insert_item(conn: &rusqlite::Connection, session_id: i64, size: i64, path: &str, mod_code: &str) {
+fn insert_item(
+    conn: &rusqlite::Connection,
+    session_id: i64,
+    size: i64,
+    path: &str,
+    mod_code: &str,
+) {
     conn.execute(
         "INSERT INTO cleanup_item (session_id, module_code, category, path, size_bytes,
              risk_level, description)
