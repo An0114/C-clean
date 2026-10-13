@@ -177,3 +177,18 @@ DevAgent 交付物（后续执行结果）：
 4. 本任务文档本身**由 DocsKeeper 在派发时**单独提交一次：
    `docs(task): 新增任务032-ESLint+Vitest 接入 (#task-032)`，
    该提交只含 `tasks/032-eslint-vitest-ci.md` 一个文件，落在 `feature/task-032-eslint-vitest-ci` 分支最前端。
+
+## 实现备注（DevAgent 落地后回填）
+- **改动文件**：
+  - 新建：`app/eslint.config.js`（flat config，替换 .eslintrc.cjs）、`app/src/setupTests.ts`、`app/src/utils/formatBytes.test.ts`、`app/src/utils/formatTimestamp.test.ts`
+  - 修改：`app/package.json`（scripts lint/test + devDeps）、`app/vite.config.ts`（加 test 字段）、`.github/workflows/ci.yml`（加 Lint/Test 两步）、`pnpm-lock.yaml`（根 lockfile）
+  - 删除：`app/.eslintrc.cjs`（ESLint 10 已废弃 eslintrc 格式）
+- **devDeps 版本**：eslint@^10.12.0 + @eslint/js@^10 + @typescript-eslint/{parser,eslint-plugin}@^8.71 + eslint-plugin-react-hooks@^7.1 + eslint-plugin-react-refresh@^0.5.7；vitest@^2.1.9（不是任务书写的 ^5）+ @testing-library/{react,jest-dom}@^7 + jsdom@^30。
+- **与任务书偏差（重要）**：
+  1. ESLint 10 已移除 .eslintrc.cjs 支持，必须用 flat config `eslint.config.js`（ESM）；同时补装 `@eslint/js` 作为 `js.configs.recommended` 来源。
+  2. Vitest 5.0.3 要求 Vite 6+，本项目 Vite 5.4.11 不兼容（启动报 `ERR_PACKAGE_PATH_NOT_EXPORTED: ./module-runner`），降级到 vitest@^2.1.9（Vite 5 兼容的最后一个大版本）。
+  3. `src/setupTests.ts` 必须用 `import "@testing-library/jest-dom/vitest"`（子路径），不能用 `@testing-library/jest-dom`——后者在 setup 阶段直接调 `expect.extend`，此时 vitest 的 expect 还没注入，报 `ReferenceError: expect is not defined`。
+  4. ESLint flat config 里对 TS 文件关闭 `no-undef`（类型检查交给 TS），否则 `React.CSSProperties` / `HTMLElement` 等全局类型会被报 no-undef 一堆错。
+  5. pnpm-lock.yaml 在仓库根（monorepo 根 lockfile），不是 app/pnpm-lock.yaml。
+- **自验命令与退出码**：cargo check=0 / clippy -D warnings=0 / cargo test -p engine=0（137 条基线无回退）/ cargo fmt --check=0 / pnpm --filter app lint=0 / pnpm --filter app test=0（2 文件 9 断言全过：formatBytes 5 + formatTs 4）/ pnpm --filter app build=0。
+- **遗留**：组件单测（Dashboard/History/Items/SafeBox/Settings）、Prettier、Husky、cargo audit / npm audit、Dependabot、NSIS 出包矩阵、safe_box purge 命令、端到端真机验收，均留 task-033+。
