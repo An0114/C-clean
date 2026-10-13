@@ -3,7 +3,7 @@
 > **特别声明**：本文件是项目唯一真实数据源，也是「每次任务结束必更新、必单独提交」的文件。后续所有 Agent 必须遵守：任何任务完成后都要先更新本文件，再单独提交一次（commit message 形如 `docs(state): ... (#task-00X)`），不得与业务代码混在同一个 commit。
 
 ## 当前目标
-M1-E 规则更新进行中：task-022 rules_meta 落 DB + rules.checkUpdate 已就绪，下一步 task-023 rules.applyUpdate——下载新 cache_rules.json 并替换本地文件。
+M1-E 规则更新闭环完成（checkUpdate + applyUpdate 均已就绪），下一轮进入 M1-F 报表（audit_log 查询）或前端 UI 接入。
 
 ## 最近一次变更
 2026-10-11：完成 PRD / TRD / ARCHITECTURE / AGENTS / 立项决策记录全套长期基线文档，并初始化本状态白板。
@@ -29,6 +29,7 @@ M1-E 规则更新进行中：task-022 rules_meta 落 DB + rules.checkUpdate 已�
 2026-10-12：task-020 完成——engine 引入 windows 0.58 crate（cfg(windows)）；新增 `who_is_locking(path) -> Vec<LockingProcess{pid, app_name, service_name}>`，封装 RmStartSession/RmRegisterResources/RmGetList/RmEndSession 四件套；空锁测试全绿，notepad 真机用例 `#[ignore]`。cargo 五闸 + pnpm build 全绿。
 2026-10-12：task-021 完成——`ExecResult` 加 `locking_processes: Vec<LockingProcess>` 字段；executor 在 deleter 返回 `FILE_IN_USE:` 前缀时自动调 `who_is_locking(&path)`，把 `"notepad.exe (PID 1234), chrome.exe (PID 5678)"` 拼进 audit_log.detail 并填进结果返回前端；PERMISSION_DENIED 走 task-019 旧文案不调 RM。2 条 CI 集成测试全绿（空锁 + PERMISSION_DENIED 不触发），notepad 端到端 `#[ignore]`。cargo 五闸 + pnpm build 全绿。
 2026-10-13：task-022 完成——engine 引入 reqwest 0.12（blocking + rustls-tls）；新建 `rules/meta_store.rs`（upsert/get_active rules_meta 单行表 id=1）与 `rules/remote.rs`（`fetch_remote_meta` GET GitHub Raw rules_meta.json）；Tauri `rules.checkUpdate` 命令注册，返回 `{has_update, current_version, remote_version, current_sha256, remote_sha256}`。3 条集成测试全绿（upsert/get_active/空库）。cargo 五闸 + pnpm build 全绿。
+2026-10-13：task-023 完成——`remote.rs` 新增 `fetch_remote_rules_bytes`（GET 远端 cache_rules.json）与 `apply_update`（SHA-256 校验 + 备份 .bak + 替换 cache_rules.json/rules_meta.json + upsert rules_meta 单行表 + 失败自动回滚）；Tauri `rules.applyUpdate` 命令注册。3 条集成测试全绿（正常替换/sha不匹配拒绝/DB失败回滚）。cargo 五闸 + pnpm build 全绿。
 
 ## 已完成事项
 - [x] 项目立项与仓库初始化（commit 67990f5 / 4972f9d）
@@ -62,6 +63,7 @@ M1-E 规则更新进行中：task-022 rules_meta 落 DB + rules.checkUpdate 已�
 - [x] 020：who_is_locking——Windows Restart Manager FFI 查占用进程 PID
 - [x] 021：占用进程自动接线——FILE_IN_USE 时 execute_items 自动调 who_is_locking 写 audit_log 并返回前端
 - [x] 022：rules_meta 落 DB + rules.checkUpdate——查 GitHub Raw 比对版本（不下载替换）
+- [x] 023：rules.applyUpdate——下载新 cache_rules.json + SHA-256 校验 + 备份替换 + upsert DB
 
 ## 已知问题
 - [B 中] task-021 仅做「报告」（who_is_locking 结果写 audit_log + 返回前端），**未实现 RmShutdown/RmRestart（请求关闭占用进程）**，前端 UI toast 也未接；notepad 端到端真机验证 CI 用例 `#[ignore]`。请求关闭与前端展示留 task-022+。
@@ -72,12 +74,12 @@ M1-E 规则更新进行中：task-022 rules_meta 落 DB + rules.checkUpdate 已�
 - [B 中] task-015 文件占用时删除失败：Windows 下 `std::fs::remove_file` 遇 SharingViolation 直接返 Err，不做重试/Restart Manager；命中占用的 item 记为 fail 并写 audit_log result='fail'。Restart Manager 集成留 M1-D 后续任务。
 - [B 低] UNC 路径 `\\server\share\...` task-008 评估结论：**沿用保守拒绝**（normalize 层 NotAbsolute + resolve 层 Io 双保险）；网络盘 L3 红线策略留待真实 NAS/企业盘场景出现时再开。
 - [B 低] task-007 WebView2 devtools console 的 `listen('scan://progress')` 真机截图未在本轮自动化环境内取得（tauri dev 窗口启动后 GUI 自动化无法稳定聚焦 console）；通道本身已由编译期类型 + engine 节流单测保证，留待 UI 联调任务补截图。
-- [B 低] task-005 rules_meta 落 DB + rules.checkUpdate 已在 task-022 落地；**rules.applyUpdate（下载新 cache_rules.json 并替换本地文件）、GitHub Token/私有仓、失败重试/离线降级、前端 UI 提示** 仍未做，留 task-023+。
+- [B 低] task-005 rules_meta 落 DB + checkUpdate + applyUpdate 均已在 task-022/023 落地；**GitHub Token/私有仓、失败重试/离线降级、前端 UI 「确认更新」弹窗、手动回滚命令（从 .bak 恢复）、差量更新** 仍未做，留后续。
 - [B 低] task-005 外部红线命中统一记为 `DenialReason::L3SystemPath`（遵守「whitelist.rs 仅新增函数、不改枚举/常量」约束）；后续审计若需区分内置/外部红线来源，再拆 DenialReason 变体。
 - [B 低] task-006 CI 未接 Dependabot / cargo audit / npm audit（任务边界明确不做）；package.json 的 lint/test 为 echo 占位，CI 也不跑这两个命令，待前端组件落地（ESLint/Vitest）后再启用。CI 仅 windows-latest 单平台，跨平台矩阵（macOS/Linux）本项目明确不做；NSIS 出包矩阵未配，留待打包任务。
 
 ## 下一步计划
-派发 task-023：rules.applyUpdate——下载新 cache_rules.json 并替换本地文件，SHA-256 校验通过后 upsert rules_meta 表。
+M1-E 规则更新闭环（checkUpdate + applyUpdate）已完成；下一轮进入 M1-F 报表（audit_log 查询）或前端 UI 接入。
 
 ## 当前负责人 Agent
 DocsKeeper（文档与状态管家）
@@ -206,6 +208,12 @@ DocsKeeper（文档与状态管家）
 | 7f0c1bf | #task-022 | feat(tauri): 新增 rules.checkUpdate 命令（比对本地/远端 sha256） |
 | 757f5c3 | #task-022 | test(rules): 补 meta_store 集成测试 |
 | （本次） | #task-022 | docs(state): 任务022完成，rules.checkUpdate 就绪 |
+| 4add0d7 | #task-023 | docs(task): 新增任务023-rules.applyUpdate |
+| 1db76ec | #task-023 | feat(rules): 新增 fetch_remote_rules_bytes——GET 远端 cache_rules.json |
+| 5691f59 | #task-023 | feat(rules): 新增 apply_update——SHA-256 校验 + 备份 + 替换 + upsert DB + 失败回滚 |
+| 49f784a | #task-023 | feat(tauri): 新增 rules.applyUpdate 命令并注册 |
+| 0bc8bfb | #task-023 | test(rules): 补 apply_update 集成测试（替换/sha不匹配回滚） |
+| （本次） | #task-023 | docs(state): 任务023完成，规则更新闭环 |
 
 ---
 变更轨迹：
@@ -248,6 +256,8 @@ DocsKeeper（文档与状态管家）
 - 2026-10-12  task-020  who_is_locking——Restart Manager FFI 查占用进程 PID
 - 2026-10-12  task-021  FILE_IN_USE 自动查占用进程写 audit_log 并返回前端
 - 2026-10-13  task-022  rules_meta 落 DB + rules.checkUpdate 查远端版本（不下载）
+- 2026-10-13  task-023  rules.applyUpdate——下载新规则 + SHA-256 校验 + 备份替换 + upsert DB
+- 2026-10-13  task-023  评审前清障：独立复跑 clippy/fmt/test 全绿（125 条，含 apply_update 3/3）；确认 SHA-256 校验/备份/替换/upsert/回滚全链路正确；真实 GitHub Raw 下载联调未跑（第三档已登记）
 - 2026-10-13  task-022  评审前清障：独立复跑 clippy/fmt/test 全绿（122 条，含 rules_meta_store 3/3）；确认 upsert/get_active 单行表逻辑正确、fetch_remote_meta reqwest blocking 实现正确；真实 GitHub Raw 网络联调未跑（第三档已登记）
 - 2026-10-12  task-021  评审前清障：独立复跑 clippy/fmt/test 全绿（119 条，含 execute_locking 2/2 必跑 + 1 ignored）；确认 FILE_IN_USE 分支自动调 who_is_locking 拼 detail、PERMISSION_DENIED 分支不触发；notepad 端到端 #[ignore] 未跑（第三档已登记）
 - 2026-10-12  task-020  评审前清障：独立复跑 clippy/fmt/test 全绿（117 条，含 who_is_locking 1/1 必跑 + 1 ignored）；确认 RmStartSession/RegisterResources/GetList/EndSession 四件套 FFI 逻辑正确；notepad 端到端 #[ignore] 未跑（第三档已登记）
