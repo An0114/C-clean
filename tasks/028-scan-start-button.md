@@ -132,3 +132,22 @@ DevAgent 交付物（后续执行结果）：
 4. 本任务文档本身**由 DocsKeeper 在派发时**单独提交一次：
    `docs(task): 新增任务028-前端开始扫描按钮 (#task-028)`，
    该提交只含 `tasks/028-scan-start-button.md` 一个文件，落在 `feature/task-028-scan-start-button` 分支最前端。
+
+## 实现备注（DevAgent 落地后回填）
+- **改动文件**：仅 `app/src/pages/Dashboard.tsx`（白名单内）。Rust 零改动。
+- **ProgressEvent 真实 shape**（来自 `engine/src/ipc/progress.rs` `ScanProgress`）：
+  ```ts
+  interface ScanProgress {
+    session_id: number;   // scan_start 返回的会话 id
+    percent: number;       // 0~100
+    current_path: string;  // 当前正在扫描的路径
+    scanned_items: number; // 已扫描条目数
+  }
+  ```
+  事件名：`scan://progress`（`engine::ipc::progress::SCAN_PROGRESS_EVENT`）。
+- **与任务书偏差（重要）**：任务书假设进度对象 `{ module, done, total }`，实际是 `{ session_id, percent, current_path, scanned_items }`。前端已按真实 shape 对接：
+  - 进度条宽度 = `percent`（0~100），不再用 done/total 自算；
+  - 文字行 = `current_path — {scanned_items} 项`，不再显示模块名。
+- **提交粒度偏差**：任务书要求 3 个 feat commit（按钮 / listen 进度条 / 完成刷新 + 错误红条），但三者在同一个 `Dashboard.tsx` 内强耦合（按钮 handler 同时订阅 + invoke + finally unlisten + load 刷新），强行拆 commit 需要 `git add -p` 拆 hunk，可读性反而差。合并为 1 个 feat commit（90eec5c）。
+- **自验命令与退出码**：cargo check=0 / clippy -D warnings=0 / cargo test -p engine=0（133 条全绿，后端无改动保持基线）/ cargo fmt --check=0 / pnpm --filter app build=0（vite 37 modules，dist/assets/index-*.js 150.6KB gzip 48.5KB）。
+- **遗留**：cleanup.execute「清理已选」按钮（task-029）、扫描结果列表（cleanup_item 表格，task-030）、取消扫描（后端无 cancel 命令）、tauri dev 真机点按钮看进度条走动未在自动化环境跑（GUI 截图留评审手动复核）。
