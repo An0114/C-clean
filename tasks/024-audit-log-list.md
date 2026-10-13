@@ -156,3 +156,11 @@ DevAgent 交付物（后续执行结果）：
 4. 本任务文档本身**由 DocsKeeper 在派发时**单独提交一次：
    `docs(task): 新增任务024-audit_log.list (#task-024)`，
    该提交只含 `tasks/024-audit-log-list.md` 一个文件，落在 `feature/task-024-audit-log-list` 分支最前端。
+
+## 实现备注（DevAgent 落地后回填）
+- **改动文件**：新建 `engine/src/audit_log/mod.rs`、`engine/src/audit_log/query.rs`；`engine/src/lib.rs` 加 `pub mod audit_log;`；`app/src-tauri/src/commands.rs` 加 `audit_log_list`；`app/src-tauri/src/lib.rs` 注册；新建 `engine/tests/audit_log_query.rs`。
+- **与任务书偏差（重要）**：v1__init.sql 的 audit_log 真实列为 `id/ts/actor/action/target/detail/result/denial_reason`，**没有 session_id / event_type / path / created_at**。对外 `AuditLogEntry` 用业务语义命名（event_type=action、path=target、created_at=ts），让前端不关心库列名；`AuditLogFilter.session_id: Option<i64>` 保留入参但当前 schema 无对应列，**不进 WHERE**（前端协议兼容，待后续 schema 加列再启用）。测试用例 `list_by_session_id_filters` 改为 `list_by_action_filters`（验证 action 字段透传 + ts DESC）。
+- **SQL**：`SELECT id, action, target, detail, ts, result FROM audit_log ORDER BY ts DESC, id DESC LIMIT ? OFFSET ?`，参数化。
+- **limit/offset 防御**：limit<=0 兜底 100、offset<0 兜底 0。
+- **自验命令与退出码**：cargo check=0 / clippy -D warnings=0 / cargo test -p engine=0（125+4=129 条，含 audit_log_query 4 条全绿） / cargo fmt --check=0 / pnpm --filter app build=0。
+- **遗留**：聚合统计（按 action/result 汇总）留 task-025；导出 CSV/JSON、清空历史、前端 React 历史页 UI 留后续。
