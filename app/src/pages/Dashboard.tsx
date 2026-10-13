@@ -4,9 +4,9 @@
 // 状态：stats loading/ok/error；scan idle/scanning/done/error。
 
 import { useCallback, useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { formatBytes } from "../utils/formatBytes";
+import { api } from "../utils/invoke";
 
 interface CleanupStats {
   total_bytes_freed: number;
@@ -71,7 +71,7 @@ export default function Dashboard() {
     setStatus("loading");
     setMsg("");
     try {
-      const s = await invoke<CleanupStats>("audit_log_stats", {});
+      const s = await api<CleanupStats>("audit_log_stats", {});
       setData(s);
       setStatus("ok");
     } catch (e) {
@@ -95,12 +95,14 @@ export default function Dashboard() {
       unlisten = await listen<ScanProgress>("scan://progress", (e) => {
         setProgress(e.payload);
       });
-      await invoke("scan_start", {});
+      await api("scan_start", {});
       setScanStatus("done");
       await load();
     } catch (e) {
       setScanStatus("error");
       setScanMsg(String(e));
+      // Bug-5：失败时清掉残留进度条，否则「重试扫描」按钮旁边还挂着上一次的进度。
+      setProgress(null);
     } finally {
       if (unlisten) unlisten();
     }

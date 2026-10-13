@@ -7,9 +7,9 @@
 // - restore 入参是 safeBoxId（不是 itemId）。
 
 import { useCallback, useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import { formatBytes } from "../utils/formatBytes";
 import { formatTs } from "../utils/formatTimestamp";
+import { api } from "../utils/invoke";
 
 interface SafeBoxEntry {
   id: number;
@@ -54,10 +54,10 @@ export default function SafeBox() {
     setStatus("loading");
     setMsg("");
     try {
-      const r = await invoke<SafeBoxListResp>("safe_box_list", {});
-      setEntries(r.entries || []);
-      setTotalItems(r.totalItems || 0);
-      setTotalBytes(r.totalBytes || 0);
+      const r = await api<SafeBoxListResp>("safe_box_list", {});
+      setEntries(r.entries);
+      setTotalItems(r.totalItems);
+      setTotalBytes(r.totalBytes);
       setStatus("ok");
     } catch (e) {
       setEntries([]);
@@ -77,7 +77,7 @@ export default function SafeBox() {
       setRestoringId(item.id);
       setResult(null);
       try {
-        await invoke("safe_box_restore", { safeBoxId: item.id });
+        await api("safe_box_restore", { safeBoxId: item.id });
         setResult({ ok: true, text: `已恢复：${item.originalPath}` });
         await load();
       } catch (e) {
