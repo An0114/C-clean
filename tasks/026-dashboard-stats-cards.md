@@ -144,3 +144,12 @@ DevAgent 交付物（后续执行结果）：
 4. 本任务文档本身**由 DocsKeeper 在派发时**单独提交一次：
    `docs(task): 新增任务026-前端仪表盘数字卡片 (#task-026)`，
    该提交只含 `tasks/026-dashboard-stats-cards.md` 一个文件，落在 `feature/task-026-dashboard-stats-cards` 分支最前端。
+
+## 实现备注（DevAgent 落地后回填）
+- **改动文件**：新建 `app/src/utils/formatBytes.ts`、`app/src/pages/Dashboard.tsx`；`app/src/App.tsx` 默认渲染 `<Dashboard />`；`app/package.json` + `pnpm-lock.yaml` 新增 `@tauri-apps/api@2.12.3` 依赖（任务书假设已在 devDeps 实际未装，本次补装）。
+- **formatBytes 规则**：n<1024→"B"；<1024²→"x.x KB"；<1024³→"x.x MB"；否则→"x.x GB"；负数/NaN 兜底 "0 B"。
+- **Dashboard 状态机**：`status: 'loading'|'ok'|'error'`；loading 4 个灰色占位条（opacity 0.5）；error 红底 div + message + 「重试」按钮（useCallback load 重新 invoke）；ok 2×2 grid 4 卡片，失败数>0 时数字红色 `#dc2626`。
+- **Tauri 调用**：`invoke<CleanupStats>('audit_log_stats', {})`，入参空对象查全局；类型按任务书 snake_case（total_bytes_freed/success_count/failed_count/session_count）。
+- **自验命令与退出码**：cargo check=0 / clippy -D warnings=0 / cargo test -p engine=0（133 条全绿，后端无改动保持基线）/ cargo fmt --check=0 / pnpm --filter app build=0（vite 34 modules，dist/assets/index-*.js 145KB gzip 46.8KB）。
+- **偏差**：任务书声称 `@tauri-apps/api` 已在 devDeps，实际未装——本次新增依赖并打包进 commit 3（与 App.tsx 同一 commit）。其他需求逐项落实，无其他偏差。
+- **遗留**：未接 audit_log.list 历史列表（task-027）、未接 scan/delete 交互（task-028+）、未接 safe_box / rules 更新 UI；未写 Vitest/Playwright（CI echo 占位）。
