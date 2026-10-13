@@ -12,6 +12,7 @@
     "test": "echo \"TODO(ui): 待前端组件落地后接入 Vitest\""
   },
   "dependencies": {
+    "@tauri-apps/api": "^2.12.3",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
