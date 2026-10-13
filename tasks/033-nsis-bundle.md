@@ -165,3 +165,36 @@ DevAgent 交付物（后续执行结果）：
 4. 本任务文档本身**由 DocsKeeper 在派发时**单独提交一次：
    `docs(task): 新增任务033-NSIS v0.1.0 打包 (#task-033)`，
    该提交只含 `tasks/033-nsis-bundle.md` 一个文件，落在 `feature/task-033-nsis-bundle` 分支最前端。
+
+## 实现备注（DevAgent 落地后回填）
+- **改动文件**：
+  - 修改：`app/src-tauri/tauri.conf.json`（identifier 改 com.and0114.cclean；bundle.targets 收窄为 ["nsis","msi"]；bundle.windows.nsis 加 installMode=perMachine + languages=["SimpChinese"]）
+  - 修改：`.github/workflows/ci.yml`（pnpm build 后加 Tauri build + Upload installer artifact 两步）
+  - 图标：未重跑 `tauri icon`，沿用 task-001 生成的 17 个 Tauri 默认占位文件（已在库），设计图标留后续
+- **最终 tauri.conf.json 关键片段**：
+  ```json
+  {
+    "productName": "C-Disk Cleaner",
+    "version": "0.1.0",
+    "identifier": "com.and0114.cclean",
+    "bundle": {
+      "active": true,
+      "targets": ["nsis", "msi"],
+      "icon": ["icons/32x32.png","icons/128x128.png","icons/128x128@2x.png","icons/icon.icns","icons/icon.ico"],
+      "windows": {
+        "nsis": { "installMode": "perMachine", "languages": ["SimpChinese"] }
+      }
+    }
+  }
+  ```
+- **本地 `pnpm --filter app tauri build` 退出码 0**，产出：
+  - `target/release/bundle/msi/C-Disk Cleaner_0.1.0_x64_en-US.msi`（5.11 MB）
+  - `target/release/bundle/nsis/C-Disk Cleaner_0.1.0_x64-setup.exe`（3.60 MB）
+- **CI artifact**：名 `cclean-windows-installer`，path `target/release/bundle/{nsis/*.exe,msi/*.msi}`，`if-no-files-found: error`；windows-latest 默认预装 WebView2 Runtime 无需额外装；CI 跑通留评审（本地已验证 build 能出包）。
+- **SmartScreen / 未签名警告**：未做代码签名（无证书），用户首次运行 .exe/.msi 会有 SmartScreen「Windows 已保护你的电脑」提示，需手动「更多信息→仍要运行」；正式发版前需评估代码签名。
+- **与任务书偏差**：
+  1. Tauri 2 NSIS schema 字段是 `languages`（数组），不是任务书写的 `displayLanguage`（标量）——build script 报 `unknown field displayLanguage`，已改为 `languages: ["SimpChinese"]`。
+  2. workspace 模式 bundle 输出在仓库根 `target/release/bundle/` 而非任务书假设的 `app/src-tauri/target/release/bundle/`，CI path 已相应调整。
+  3. 图标未重跑 `tauri icon`（无 1024×1024 源 PNG，沿用 task-001 默认占位），按任务书「没有就用 Tauri 默认占位，备注待设计」处理。
+- **自验七闸**：cargo check=0 / clippy -D warnings=0 / cargo test -p engine=0（137 条基线）/ cargo fmt --check=0 / pnpm --filter app lint=0 / pnpm --filter app test=0（9/9）/ pnpm --filter app build=0 / pnpm --filter app tauri build=0（出 .msi + .exe）。
+- **遗留**：代码签名、tauri updater 自动更新、品牌图标设计、macOS/Linux 多平台、safe_box purge 命令、端到端真机安装验证（双击 .msi 装→启动→看 5 个 tab），均留 task-034+。
