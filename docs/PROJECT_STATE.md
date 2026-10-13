@@ -70,6 +70,7 @@ M1-F 报表基础（list+stats+Dashboard 卡片）已就绪；下一轮 task-027
 - [x] 024：audit_log.list——按 ts 倒序分页只读查询，M1-F 报表后端基础
 - [x] 025：audit_log.stats——cleanup_task 聚合（total_bytes / success / fail / sessions）
 - [x] 026：前端 Dashboard 4 数字卡片——formatBytes + Dashboard.tsx + App.tsx 挂载（stats 接前端，GB 格式化）
+- [x] 027：前端 History 明细页——formatTs + History.tsx 表格（时间/事件/路径/详情）+ 分页 + App.tsx tab 切换（audit_log.list 接前端）
 
 ## 已知问题
 - [B 中] task-021 仅做「报告」（who_is_locking 结果写 audit_log + 返回前端），**未实现 RmShutdown/RmRestart（请求关闭占用进程）**，前端 UI toast 也未接；notepad 端到端真机验证 CI 用例 `#[ignore]`。请求关闭与前端展示留 task-022+。
@@ -85,7 +86,7 @@ M1-F 报表基础（list+stats+Dashboard 卡片）已就绪；下一轮 task-027
 - [B 低] task-006 CI 未接 Dependabot / cargo audit / npm audit（任务边界明确不做）；package.json 的 lint/test 为 echo 占位，CI 也不跑这两个命令，待前端组件落地（ESLint/Vitest）后再启用。CI 仅 windows-latest 单平台，跨平台矩阵（macOS/Linux）本项目明确不做；NSIS 出包矩阵未配，留待打包任务。
 
 ## 下一步计划
-派发 task-027：前端历史列表——audit_log.list 接 React 表格（分页 / session 过滤）。
+派发 task-028：scan.start 交互——前端「开始扫描」按钮 + 进度条 listen('scan://progress') 实时更新。
 
 ## 当前负责人 Agent
 DocsKeeper（文档与状态管家）
@@ -282,6 +283,8 @@ DocsKeeper（文档与状态管家）
 - 2026-10-13  task-024  audit_log.list 只读查询命令落地，历史页后端基础
 - 2026-10-13  task-025  cleanup_stats 聚合查询（total_bytes / success / fail / sessions）
 - 2026-10-13  task-026  Dashboard 4 数字卡片（stats 接前端，GB 格式化）
+- 2026-10-13  task-027  History 历史明细页（audit_log.list 表格 + 分页 + tab 切换）
+- 2026-10-13  task-027  评审前清障：独立复跑 clippy/fmt/test/pnpm build 全绿（133 条测试无回退，vite build 148KB gzip 47.7KB）；确认 formatTs 非法输入兜底"-"、History loading/ok/error 三态+分页（offset 累加、canNext 按 rows.length===PAGE_SIZE 判定）、App tab 切换 useState 模式正确；tauri dev 真机切 tab 未跑（第三档已登记）
 - 2026-10-13  task-026  评审前清障：独立复跑 clippy/fmt/test/pnpm build 全绿（133 条测试无回退，vite build 145KB gzip 46.8KB）；确认 formatBytes 四档 1024 进制+负数/NaN 兜底、Dashboard loading/ok/error 三态状态机、失败数>0 红色高亮、useCallback 重试逻辑正确；tauri dev 真机截图未跑（第三档已登记）
 - 2026-10-13  task-025  评审前清障：独立复跑 clippy/fmt/test 全绿（133 条，含 audit_log_stats 4/4）；确认单条 SQL COALESCE 聚合、session_id 参数化过滤、cleanup_task 单行字段求和逻辑正确
 - 2026-10-13  task-024  评审前清障：独立复跑 clippy/fmt/test 全绿（129 条，含 audit_log_query 4/4）；确认 ts DESC/id DESC 分页、limit/offset 防御、action→event_type/target→path/ts→created_at 列名映射正确；session_id 过滤用户拍板方案二——入参保留标记"预留未启用"，待后续 schema 加列后启用
