@@ -101,6 +101,8 @@ export default function Dashboard() {
     } catch (e) {
       setScanStatus("error");
       setScanMsg(String(e));
+      // Bug-5：失败时清掉残留进度条，否则「重试扫描」按钮旁边还挂着上一次的进度。
+      setProgress(null);
     } finally {
       if (unlisten) unlisten();
     }
