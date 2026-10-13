@@ -7,8 +7,8 @@
 // PendingItem 仅 id/path/sizeBytes/moduleCode/sessionId，无时间列展示。
 
 import { useCallback, useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import { formatBytes } from "../utils/formatBytes";
+import { api } from "../utils/invoke";
 
 interface PendingItem {
   id: number;
@@ -47,7 +47,7 @@ export default function Items() {
     setStatus("loading");
     setMsg("");
     try {
-      const list = await invoke<PendingItem[]>("cleanup_list_pending", { limit: 100 });
+      const list = await api<PendingItem[]>("cleanup_list_pending", { limit: 100 });
       setRows(list);
       setStatus("ok");
     } catch (e) {
@@ -72,7 +72,7 @@ export default function Items() {
 
   const totalSelectedBytes = rows
     .filter((r) => selected.has(r.id))
-    .reduce((sum, r) => sum + (r.sizeBytes || 0), 0);
+    .reduce((sum, r) => sum + r.sizeBytes, 0);
 
   const cleanup = useCallback(async () => {
     if (selected.size === 0 || cleaning) return;
@@ -80,7 +80,7 @@ export default function Items() {
     setResult(null);
     try {
       const ids = Array.from(selected);
-      await invoke("cleanup_execute", { itemIds: ids });
+      await api("cleanup_execute", { itemIds: ids });
       setResult({ ok: true, text: `已清理 ${ids.length} 项` });
       setSelected(new Set());
       await load();

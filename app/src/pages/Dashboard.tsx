@@ -4,9 +4,9 @@
 // 状态：stats loading/ok/error；scan idle/scanning/done/error。
 
 import { useCallback, useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { formatBytes } from "../utils/formatBytes";
+import { api } from "../utils/invoke";
 
 interface CleanupStats {
   total_bytes_freed: number;
@@ -71,7 +71,7 @@ export default function Dashboard() {
     setStatus("loading");
     setMsg("");
     try {
-      const s = await invoke<CleanupStats>("audit_log_stats", {});
+      const s = await api<CleanupStats>("audit_log_stats", {});
       setData(s);
       setStatus("ok");
     } catch (e) {
@@ -95,7 +95,7 @@ export default function Dashboard() {
       unlisten = await listen<ScanProgress>("scan://progress", (e) => {
         setProgress(e.payload);
       });
-      await invoke("scan_start", {});
+      await api("scan_start", {});
       setScanStatus("done");
       await load();
     } catch (e) {

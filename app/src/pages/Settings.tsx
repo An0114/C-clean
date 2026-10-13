@@ -7,7 +7,7 @@
 //   直接消费 data 字段（信封解包由既有运行时约定处理）。
 
 import { useCallback, useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { api } from "../utils/invoke";
 
 interface CheckUpdateResp {
   hasUpdate: boolean;
@@ -63,7 +63,7 @@ export default function Settings() {
     setMsg("");
     setToast(null);
     try {
-      const r = await invoke<CheckUpdateResp>("rules_check_update", {});
+      const r = await api<CheckUpdateResp>("rules_check_update", {});
       setInfo(r);
       setPhase("idle");
       if (withToast) {
@@ -87,7 +87,7 @@ export default function Settings() {
     setPhase("applying");
     setToast(null);
     try {
-      const r = await invoke<ApplyResult>("rules_apply_update", {});
+      const r = await api<ApplyResult>("rules_apply_update", {});
       setToast({ ok: true, text: `已更新到版本 ${r.newVersion}` });
       // 应用后重拉，刷新当前版本号 + hasUpdate=false。
       await check();

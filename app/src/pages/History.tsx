@@ -3,8 +3,8 @@
 // 分页：上一页 / 下一页（每页 20 条）；加载骨架 / 错误红条 + 重试。
 
 import { useCallback, useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import { formatTs } from "../utils/formatTimestamp";
+import { api } from "../utils/invoke";
 
 interface AuditLogEntry {
   id: number;
@@ -47,7 +47,7 @@ export default function History() {
     setStatus("loading");
     setMsg("");
     try {
-      const r = await invoke<AuditLogEntry[]>("audit_log_list", {
+      const r = await api<AuditLogEntry[]>("audit_log_list", {
         limit: PAGE_SIZE,
         offset: off,
       });
