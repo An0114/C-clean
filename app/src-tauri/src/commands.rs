@@ -4,6 +4,7 @@
 //! 业务判定全部在 engine::ipc::commands 里，方便纯内存单测。
 //! （Tauri 2 规则：带 State 引用的 async command 必须返回 Result。）
 
+use engine::audit_log::{list_audit_log, AuditLogEntry, AuditLogFilter};
 use engine::ipc::commands::dry_run::{handle_dry_run, DryRunReq, DryRunResp};
 use engine::ipc::envelope::Envelope;
 use engine::ipc::error_codes::INTERNAL;
@@ -310,6 +311,37 @@ pub async fn rules_apply_update() -> Result<Envelope<ApplyResult>, String> {
         Ok(r) => Ok(Envelope::ok(r)),
         Err(e) => {
             eprintln!("[rules_apply_update] apply: {e}");
+            Ok(Envelope::err(INTERNAL))
+        }
+    }
+}
+
+/// `audit_log.list`：按 ts 倒序分页返回清理历史条目（只读）。
+///
+/// task-024：M1-F 报表基础。入参 session_id 当前 schema 无对应列，仅透传忽略。
+#[tauri::command]
+pub async fn audit_log_list(
+    session_id: Option<i64>,
+    limit: Option<i64>,
+    offset: Option<i64>,
+) -> Result<Envelope<Vec<AuditLogEntry>>, String> {
+    let data_root = std::env::current_dir().map_err(|e| e.to_string())?;
+    let conn = match engine::db::conn::open(&data_root) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[audit_log_list] open db: {e}");
+            return Ok(Envelope::err(INTERNAL));
+        }
+    };
+    let filter = AuditLogFilter {
+        session_id,
+        limit: limit.unwrap_or(100),
+        offset: offset.unwrap_or(0),
+    };
+    match list_audit_log(&conn, &filter) {
+        Ok(v) => Ok(Envelope::ok(v)),
+        Err(e) => {
+            eprintln!("[audit_log_list] list: {e}");
             Ok(Envelope::err(INTERNAL))
         }
     }
