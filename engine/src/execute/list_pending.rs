@@ -28,7 +28,7 @@ pub fn list_pending_items(
     limit: i64,
     offset: i64,
 ) -> Result<Vec<PendingItem>, String> {
-    let limit = limit.max(1).min(500);
+    let limit = limit.clamp(1, 500);
     let offset = offset.max(0);
 
     let sql = "SELECT id, path, size_bytes, module_code, session_id \
