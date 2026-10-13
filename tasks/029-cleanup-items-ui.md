@@ -163,3 +163,21 @@ DevAgent 交付物（后续执行结果）：
 4. 本任务文档本身**由 DocsKeeper 在派发时**单独提交一次：
    `docs(task): 新增任务029-清理闭环Items UI (#task-029)`，
    该提交只含 `tasks/029-cleanup-items-ui.md` 一个文件，落在 `feature/task-029-cleanup-items-ui` 分支最前端。
+
+## 实现备注（DevAgent 落地后回填）
+- **改动文件**：
+  - 后端：新建 `engine/src/execute/list_pending.rs`、`engine/tests/list_pending_items.rs`；`engine/src/execute/mod.rs` 加 `pub mod list_pending;`；`app/src-tauri/src/commands.rs` 加 `cleanup_list_pending`；`app/src-tauri/src/lib.rs` 注册。
+  - 前端：新建 `app/src/pages/Items.tsx`；`app/src/App.tsx` 加第三 tab「清理」。
+- **PendingItem shape**（serde rename_all=camelCase，前端消费）：
+  ```ts
+  interface PendingItem {
+    id: number; path: string; sizeBytes: number; moduleCode: string; sessionId: number;
+  }
+  ```
+- **与任务书偏差（重要）**：
+  1. `cleanup_item` 表**无 status 列**（真实列为 id/session_id/module_code/category/path/size_bytes/risk_level/...），「pending」= 表内所有行，无 `WHERE status='pending'` 过滤。
+  2. 表**无 scanned_at 列**，PendingItem 去掉该字段；前端 Items 表格不显示时间列，改显示 `sessionId`（#N）。
+  3. cleanup.execute 不删 cleanup_item 行（task-015 边界，executor 不允许改）；清理后行仍在 DB（历史快照），Items 页刷新后仍会列出——这是已知限制，后续可加 `WHERE id NOT IN (SELECT item_id FROM audit_log WHERE action='delete')` 或加 status 列。
+- **自验命令与退出码**：cargo check=0 / clippy -D warnings=0（首次报 manual_clamp，已改 `limit.clamp(1,500)` 修复）/ cargo test -p engine=0（133+4=137 条全绿，含 list_pending 4/4）/ cargo fmt --check=0 / pnpm --filter app build=0。
+- **提交粒度**：按任务书 5 个代码 commit 推进（execute 功能 / tauri 命令 / 测试 / Items 页 / App tab），外加 1 个 clippy style 修复 commit。
+- **遗留**：cleanup_item 清理后不删行的问题、dry-run 预览 UI（task-014 已有后端）、safe_box restore UI、rules 更新 UI；tauri dev 真机「扫一次→勾选→清理→Dashboard 数字涨」端到端未在自动化环境跑（GUI 截图留评审手动复核）。
