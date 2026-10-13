@@ -32,7 +32,8 @@ pub fn run() {
             commands::safe_box_list,
             commands::rules_check_update,
             commands::rules_apply_update,
-            commands::audit_log_list
+            commands::audit_log_list,
+            commands::audit_log_stats
         ])
         .run(tauri::generate_context!())
         .expect("error while running C-Disk Cleaner");
