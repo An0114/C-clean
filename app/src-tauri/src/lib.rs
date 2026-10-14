@@ -19,6 +19,7 @@ fn ping() -> &'static str {
 /// Tauri 应用入口：构造默认 Builder 并挂上命令，随后阻塞运行窗口。
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(std::sync::Mutex::new(0_i64))
         // task-007：在 setup 闭包里拿 AppHandle，构造全局进度 State 并注入。
         // debt-cleanup-003：构造 AppPaths（data_root/rules_dir/scripts_dir/box_dir）并注入。
