@@ -3,7 +3,7 @@
 > **特别声明**：本文件是项目唯一真实数据源，也是「每次任务结束必更新、必单独提交」的文件。后续所有 Agent 必须遵守：任何任务完成后都要先更新本文件，再单独提交一次（commit message 形如 `docs(state): ... (#task-00X)`），不得与业务代码混在同一个 commit。
 
 ## 当前目标
-M2 自动更新最小闭环已就位（tauri-plugin-updater + 签名密钥 + latest.json + Settings 应用更新卡片）；下一轮：①后台自动检查 + 启动弹窗（task-036）②品牌图标设计 ③首次 v0.1.1 发版验证 updater 闭环。
+M2 自动更新闭环已就位（tauri-plugin-updater + 启动自动 check + 非阻塞 banner）；safe_box 单条 purge 已就绪；下一轮：①safe_box 批量恢复 / 批量 purge（task-038）②品牌图标设计 ③首次 v0.1.1 发版验证 updater 闭环。
 
 ## 最近一次变更
 2026-10-11：完成 PRD / TRD / ARCHITECTURE / AGENTS / 立项决策记录全套长期基线文档，并初始化本状态白板。
@@ -75,6 +75,12 @@ M2 自动更新最小闭环已就位（tauri-plugin-updater + 签名密钥 + lat
   - 「立即更新」走 `update.downloadAndInstall()` + `relaunch()`，banner 变「下载安装中…」按钮禁用；失败变红条「更新失败：<err>」；
   - 「稍后」setDismissed(true)，本次启动不再弹。
   自验：cargo check=0（后端无改动）；pnpm lint=0 / test=0 / build=0（165.78 kB / gzip 52.79 kB）。**与任务书偏差**：任务书要求拆 3 个 feat 提交（check / banner / downloadAndInstall），但 banner UI 与 onUpdateNow handler 紧耦合在同一块 JSX 里，拆开会出现中间态「按钮无 onClick」无法编译，故合并为 2 个 feat 提交（check / banner+install）。
+2026-10-14：task-037 完成——safe_box purge 单条永久删除：
+  - `engine/src/execute/safe_box.rs` 新增 `purge_item(conn, box_dir, item_id)`：查行 → 删磁盘文件（NotFound 吞）→ DELETE DB 行 → 写 audit_log action='purge'；
+  - Tauri 命令 `safe_box_purge(item_id)` 接 `commands.rs`，注册到 `lib.rs`；
+  - 3 条集成测试（删文件+DB 行 / 缺文件仍删行 / 未找到返 Err）全绿；
+  - 前端 `SafeBox.tsx` 操作列加红色「永久删除」按钮，`window.confirm` 兜底，成功重拉列表，失败红条。
+  自验：cargo check/clippy/fmt/test=0（engine 140 条）；pnpm lint/test/build=0（166.43 kB / gzip 52.97 kB）。
 
 ## 已完成事项
 - [x] 项目立项与仓库初始化（commit 67990f5 / 4972f9d）
@@ -122,6 +128,7 @@ M2 自动更新最小闭环已就位（tauri-plugin-updater + 签名密钥 + lat
 - [x] 034：GitHub Release workflow——release.yml 支持 workflow_dispatch + tag 触发，softprops/action-gh-release 上传 installer
 - [x] 035：tauri updater 自动更新最小闭环——签名密钥对 + plugins.updater 配置 + Settings 应用更新卡片 + release.yml 签名/latest.json 生成
 - [x] 036：启动自动 check + 非阻塞 banner——App.tsx useEffect 自动 check()，有新版本顶部蓝条提示 + 立即更新/稍后按钮
+- [x] 037：safe_box purge 单条永久删除——后端 purge_item + Tauri 命令 + 前端红色按钮 + confirm
 
 ## 已知问题
 - [B 中] task-021 仅做「报告」（who_is_locking 结果写 audit_log + 返回前端），**未实现 RmShutdown/RmRestart（请求关闭占用进程）**，前端 UI toast 也未接；notepad 端到端真机验证 CI 用例 `#[ignore]`。请求关闭与前端展示留 task-022+。
@@ -347,6 +354,11 @@ DocsKeeper（文档与状态管家）
 | 2d959b3 | #task-036 | feat(frontend): App 启动自动 check() 应用更新 |
 | f460c42 | #task-036 | feat(frontend): 非阻塞 banner——新版本提示 + 立即走 downloadAndInstall/relaunch |
 | （本次） | #task-036 | docs(state): 任务036完成，启动自动更新 banner 就绪 |
+| eacc988 | #task-037 | feat(execute): safe_box.purge_item——删磁盘文件 + DELETE DB 行 + audit_log |
+| 6dbb099 | #task-037 | feat(tauri): safe_box_purge 命令并注册 |
+| 90ed07c | #task-037 | test(execute): safe_box_purge 集成测试（删文件+DB/缺文件/未找到） |
+| 44f2c38 | #task-037 | feat(frontend): SafeBox 行加「永久删除」红色按钮 + confirm |
+| （本次） | #task-037 | docs(state): 任务037完成，safe_box purge 就绪 |
 
 ---
 变更轨迹：
@@ -423,3 +435,5 @@ DocsKeeper（文档与状态管家）
 - 2026-10-14  task-035  评审前清障：独立复跑 clippy/fmt/test/pnpm lint/pnpm test/pnpm build 全绿（137 条后端测试无回退，前端 9 断言全过，vite build 164.6KB gzip 52.5KB）；确认 tauri.conf.json plugins.updater 命名空间（active/endpoints/pubkey，非任务书顶层 updater）、lib.rs 挂 tauri_plugin_updater::Builder、Cargo.toml 加 tauri-plugin-updater=2 + serde_json=1、Settings.tsx 应用更新卡片 check/downloadAndInstall/relaunch 状态机正确（idle/checking/downloading/error）、release.yml Setup signing key 写 ~/.tauri/cclean.key + TAURI_SIGNING_PRIVATE_KEY_PATH 注入 + Generate latest.json 读 .msi.sig 生成 JSON 并随 Release 上传；私钥未入仓（git log -p 自审无 BEGIN PRIVATE）；GitHub Secret TAURI_SIGNING_PRIVATE_KEY 需用户手动配置（第三档已登记）；latest.json push 回 main 分支未自动化（raw URL 拿到的是占位，第三档已登记）；后台自动检查弹窗/增量更新/真机端到端升级验证留 task-036+（第三档已登记）
 - 2026-10-14  task-036  启动自动 check + 非阻塞 banner 提示新版本，updater 最后一公里。
 - 2026-10-14  task-036  评审前清障：独立复跑 clippy/fmt/test/pnpm lint/pnpm test/pnpm build 全绿（137 条后端测试无回退，前端 12 断言全过，vite build 165.8KB gzip 52.8KB）；修复 P1 bug——App.tsx banner 更新说明文字条件 `!bannerPhase` 恒 false（bannerPhase 初始值是字符串 "idle"，!"idle"=false），导致 update.body 永远不显示，改为 `bannerPhase === "idle"`；确认启动 useEffect 自动 check() 静默 catch、banner 三态（idle/downloading/error）、立即更新走 downloadAndInstall+relaunch、稍后按钮 setDismissed(true)、ErrorBoundary 包裹 tab 渲染正确；强制更新/下载进度条/定时轮询/"不再提示此版本"持久化/真机端到端升级验证留 task-037+（第三档已登记）
+- 2026-10-14  task-037  safe_box.purge 单条永久删除（后端 purge_item + Tauri 命令 + 前端红色按钮 + confirm）。
+- 2026-10-14  task-037  评审前清障：独立复跑 check/clippy/fmt/test/pnpm lint/fe-test/build 全绿（140 条后端测试含 safe_box_purge 3/3，vite build 166.4KB gzip 53.0KB）；初始 match 写 `Ok(()) | Err(e) if ...` 触发 E0408+E0004，拆成两个臂后通过；前端 purge 入参 itemId 驼峰对应 Rust item_id、api() 已统一解包 Envelope；批量 purge/批量恢复/quota UI 留 task-038+
