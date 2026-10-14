@@ -16,13 +16,14 @@ use engine::audit_log::{
 use engine::execute::list_pending::{list_pending_items, PendingItem};
 use engine::ipc::commands::dry_run::{handle_dry_run, DryRunReq, DryRunResp};
 use engine::ipc::envelope::Envelope;
-use engine::ipc::error_codes::INTERNAL;
+use engine::ipc::error_codes::{INTERNAL, RULE_CHECKSUM_MISMATCH, RULE_NETWORK_ERROR};
 use engine::rules::external_deny_list;
 use engine::rules::loader::load as load_rules;
 use engine::rules::meta_store::{get_active_rules_meta, upsert_active_rules_meta};
 use engine::rules::remote::fetch_remote_meta;
 use engine::rules::{
-    apply_update, fetch_remote_rules_bytes, ApplyResult, CheckUpdateResp, REMOTE_RULES_META_URL,
+    apply_update, fetch_remote_rules_bytes, ApplyError, ApplyResult, CheckUpdateResp,
+    REMOTE_RULES_META_URL,
 };
 use engine::scan::ScanOrchestrator;
 
@@ -230,7 +231,9 @@ pub async fn rules_check_update(
         Ok(r) => r,
         Err(e) => {
             eprintln!("[rules_check_update] fetch remote: {e}");
-            return Ok(Envelope::err(INTERNAL));
+            // 网络不通 / GitHub Raw 不可达 → RULE_NETWORK_ERROR（3003），
+            // 不再坍缩成「内部错误」。
+            return Ok(Envelope::err(RULE_NETWORK_ERROR));
         }
     };
 
@@ -252,14 +255,14 @@ pub async fn rules_apply_update(
         Ok(m) => m,
         Err(e) => {
             eprintln!("[rules_apply_update] fetch meta: {e}");
-            return Ok(Envelope::err(INTERNAL));
+            return Ok(Envelope::err(RULE_NETWORK_ERROR));
         }
     };
     let bytes = match fetch_remote_rules_bytes() {
         Ok(b) => b,
         Err(e) => {
             eprintln!("[rules_apply_update] fetch rules: {e}");
-            return Ok(Envelope::err(INTERNAL));
+            return Ok(Envelope::err(RULE_NETWORK_ERROR));
         }
     };
     let conn = match engine::db::conn::open(&paths.data_root) {
@@ -271,6 +274,10 @@ pub async fn rules_apply_update(
     };
     match apply_update(&paths.rules_dir, &conn, &meta, &bytes) {
         Ok(r) => Ok(Envelope::ok(r)),
+        Err(ApplyError::ShaMismatch { .. }) => {
+            eprintln!("[rules_apply_update] sha mismatch, keeping old rules");
+            Ok(Envelope::err(RULE_CHECKSUM_MISMATCH))
+        }
         Err(e) => {
             eprintln!("[rules_apply_update] apply: {e}");
             Ok(Envelope::err(INTERNAL))
