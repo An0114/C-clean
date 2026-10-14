@@ -237,6 +237,24 @@ pub async fn safe_box_purge_many(
     Ok(Envelope::ok(r))
 }
 
+/// `safe_box.restoreMany`：批量恢复——循环调 restore_from_safe_box，单个失败不中断。
+#[tauri::command]
+pub async fn safe_box_restore_many(
+    item_ids: Vec<i64>,
+    paths: tauri::State<'_, AppPaths>,
+) -> Result<Envelope<engine::execute::safe_box::BatchOpResult>, String> {
+    let conn = match engine::db::conn::open(&paths.data_root) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[safe_box_restore_many] open db: {e}");
+            return Ok(Envelope::err(INTERNAL));
+        }
+    };
+    // 批量恢复不抛硬错（内部已收集 failed/errors），始终返回 Envelope::ok(...)。
+    let r = engine::execute::safe_box::restore_many(&conn, &paths.box_dir, &item_ids);
+    Ok(Envelope::ok(r))
+}
+
 /// `rules.checkUpdate`：比对本地 rules_meta 与远端 GitHub Raw 版本。
 #[tauri::command]
 pub async fn rules_check_update(
