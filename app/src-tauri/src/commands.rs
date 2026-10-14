@@ -197,6 +197,28 @@ pub async fn safe_box_list(
     }
 }
 
+/// `safe_box.purge`：按 safe_box id 永久删除保险箱条目（删磁盘文件 + DB 行 + audit_log）。
+#[tauri::command]
+pub async fn safe_box_purge(
+    item_id: i64,
+    paths: tauri::State<'_, AppPaths>,
+) -> Result<Envelope<bool>, String> {
+    let conn = match engine::db::conn::open(&paths.data_root) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[safe_box_purge] open db: {e}");
+            return Ok(Envelope::err(INTERNAL));
+        }
+    };
+    match engine::execute::safe_box::purge_item(&conn, &paths.box_dir, item_id) {
+        Ok(()) => Ok(Envelope::ok(true)),
+        Err(e) => {
+            eprintln!("[safe_box_purge] id={item_id} failed: {e}");
+            Ok(Envelope::err(INTERNAL))
+        }
+    }
+}
+
 /// `rules.checkUpdate`：比对本地 rules_meta 与远端 GitHub Raw 版本。
 #[tauri::command]
 pub async fn rules_check_update(

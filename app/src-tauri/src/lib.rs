@@ -38,6 +38,7 @@ pub fn run() {
             commands::cleanup_execute,
             commands::safe_box_restore,
             commands::safe_box_list,
+            commands::safe_box_purge,
             commands::rules_check_update,
             commands::rules_apply_update,
             commands::audit_log_list,
