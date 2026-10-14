@@ -95,7 +95,9 @@ export default function Dashboard() {
       unlisten = await listen<ScanProgress>("scan://progress", (e) => {
         setProgress(e.payload);
       });
-      await api("scan_start", {});
+      // debt-cleanup-003 Bug-1：scan_start 签名 scope: String 必填、target_drive: Option<String>。
+      // Tauri 2 自动把 camelCase JS 参转 snake_case Rust 参：targetDrive → target_drive。
+      await api("scan_start", { scope: "full", targetDrive: null });
       setScanStatus("done");
       await load();
     } catch (e) {
