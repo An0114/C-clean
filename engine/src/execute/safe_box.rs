@@ -379,11 +379,7 @@ pub fn list_safe_box(conn: &Connection) -> Result<SafeBoxListResp, String> {
 /// - 磁盘文件不存在不报错（手动清理过的场景仍能删行）；
 /// - DB 行不存在返回 `Err("safe_box item not found")`；
 /// - audit_log action='purge'，target=original_path，detail 含 safe_rel_path。
-pub fn purge_item(
-    conn: &Connection,
-    box_dir: &Path,
-    item_id: i64,
-) -> Result<(), String> {
+pub fn purge_item(conn: &Connection, box_dir: &Path, item_id: i64) -> Result<(), String> {
     // 1. 查行
     let row: (String, String) = conn
         .query_row(

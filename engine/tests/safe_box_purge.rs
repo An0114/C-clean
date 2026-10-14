@@ -47,9 +47,11 @@ fn purge_removes_file_and_db_row() {
     assert_eq!(n, 0);
     // audit_log 写了一条 purge
     let n_audit: i64 = conn
-        .query_row("SELECT COUNT(*) FROM audit_log WHERE action='purge'", [], |r| {
-            r.get(0)
-        })
+        .query_row(
+            "SELECT COUNT(*) FROM audit_log WHERE action='purge'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
     assert_eq!(n_audit, 1);
 }
