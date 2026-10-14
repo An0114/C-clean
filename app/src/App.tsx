@@ -1,7 +1,9 @@
 // task-027/029/030/031：App 加 Dashboard / Items / SafeBox / History / Settings tab 切换（不引 Router，useState）。
 // debt-cleanup-002 / Bug-1：外层加最小 Error Boundary——任何页面渲染期抛错
 // 不再整树白屏，而是在该 tab 区域显示「页面出错，点这里回仪表盘」。
-import { Component, useState, type ReactNode } from "react";
+import { Component, useEffect, useState, type ReactNode } from "react";
+import { check, type Update } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
 import Dashboard from "./pages/Dashboard";
 import History from "./pages/History";
 import Items from "./pages/Items";
@@ -73,6 +75,19 @@ class ErrorBoundary extends Component<
 
 export default function App() {
   const [tab, setTab] = useState<Tab>("dashboard");
+  // task-036：启动时自动 check 一次应用更新（不弹窗、不阻塞）。
+  // 无更新 / 网络失败都静默；有更新才在顶部 banner 提示。
+  const [update, setUpdate] = useState<Update | null>(null);
+  useEffect(() => {
+    (async () => {
+      try {
+        const u = await check();
+        if (u) setUpdate(u);
+      } catch {
+        // 静默：网络错 / endpoint 未就绪都不打扰用户
+      }
+    })();
+  }, []);
   return (
     <div
       style={{
