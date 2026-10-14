@@ -177,3 +177,55 @@ DevAgent 交付物（后续执行结果）：
 4. 本任务文档本身**由 DocsKeeper 在派发时**单独提交一次：
    `docs(task): 新增任务035-tauri updater 自动更新 (#task-035)`，
    该提交只含 `tasks/035-tauri-updater.md` 一个文件，落在 `feature/task-035-tauri-updater` 分支最前端。
+
+## 实现备注
+
+### 实际改动文件清单
+- `app/src-tauri/Cargo.toml`：加 `tauri-plugin-updater = "2"` + `serde_json = "1"`
+- `app/src-tauri/src/lib.rs`：Builder 链加 `.plugin(tauri_plugin_updater::Builder::new().build())`
+- `app/src-tauri/tauri.conf.json`：加 `plugins.updater`（active/endpoints/pubkey）
+- `app/src/pages/Settings.tsx`：规则库卡片下方加「应用更新」卡片（checkApplication / downloadAndInstall）
+- `app/package.json` + 根 `pnpm-lock.yaml`：加 `@tauri-apps/plugin-updater` + `@tauri-apps/plugin-process`
+- `.github/workflows/release.yml`：加 Setup signing key + Generate latest.json 两步，release action 上传 latest.json
+- 根目录新建 `latest.json`（占位，CI 首次发版时会被真实签名覆盖）
+
+### 给用户的 GitHub Secrets 配置步骤
+1. 打开 https://github.com/An0114/C-clean/settings/secrets/actions
+2. 点 `New repository secret`
+3. Name 填 `TAURI_SIGNING_PRIVATE_KEY`
+4. Secret 内容粘贴 `C:\Users\An\.tauri\cclean.key` 文件的全部内容（私钥 PEM 文本，含 `-----BEGIN...` 头尾）
+5. 点 `Add secret`
+6. 之后每次发版（workflow_dispatch 或 push tag v*）CI 会自动写私钥并签名
+
+### 公钥内容
+```
+dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDE4MTg5ODNBOTMwMkVCNDAKUldSQTZ3S1RPcGdZR0dlNE53L1pZUm4zTkFnOVk1aE03SlpTRHpvR2N4YVJianBOT2Q0d2Q4eUgK
+```
+
+### 私钥本地位置
+`C:\Users\An\.tauri\cclean.key`（不入库，git 历史中已自审无任何私钥字符串）
+
+### 自验输出
+- `cargo check --workspace --all-targets`：0
+- `cargo clippy --workspace --all-targets -- -D warnings`：0
+- `cargo test -p engine`：0（137 条无回退）
+- `cargo fmt --all -- --check`：0
+- `pnpm --filter app lint`：0
+- `pnpm --filter app test`：0（9 断言）
+- `pnpm --filter app build`：0
+
+### 首次 v0.1.1 发版时 latest.json 怎么更新
+- 不需要手动改根目录 `latest.json`——CI 里 Generate latest.json 步骤会读 `.msi.sig` 自动生成并随 Release 上传；
+- 但 updater endpoint 是 `raw.githubusercontent.com/.../main/latest.json`，CI 上传到 Release 后还需要把这份 latest.json 合并进 main 分支（手动从 Release 下载后 push，或后续在 release.yml 加一步 `git commit`）。**留 task-036 或评审时补 CI 自动 push latest.json 到 main。**
+
+### 与本任务文档不符的偏差
+1. **updater 配置位置**：任务书写顶层 `updater`，Tauri 2 build script 报 `unknown field 'updater'`；实测正确位置是 `plugins.updater` 命名空间。
+2. **serde_json 依赖**：任务书未提，但 `tauri::generate_context!()` 解析 plugins.updater 配置时需要 `serde_json` 在依赖图里，否则 E0433。
+3. **签名私钥环境变量**：任务书写 `TAURI_SIGNING_PRIVATE_KEY` 直接写文件内容；release.yml 里改为 `TAURI_SIGNING_PRIVATE_KEY_PATH` 指向 `~/.tauri/cclean.key`（tauri build 更友好）。
+4. **签名生成命令**：任务书写 `tauri signer generate -w`，但交互式 prompt 在非 TTY 下会挂死；实际用 `--ci --password="" -w <path> -f` 一次性生成（密码为空 CI 友好）。
+
+### 遗留问题
+- 后台自动检查 + 启动弹窗：留 task-036
+- CI 自动把 latest.json push 回 main：需补一步（否则 raw URL 拿到的还是占位）
+- 增量更新 / 多平台：明确不做
+- 真机端到端（装 v0.1.0 → 触发 v0.1.1 发版 → 点检查更新 → 自动装）：留首次发版验证
