@@ -140,7 +140,7 @@ export default function App() {
                   ? "下载安装中…（应用即将重启）"
                   : `发现新版本 v${update.version}`}
             </div>
-            {!bannerPhase && update.body && (
+            {bannerPhase === "idle" && update.body && (
               <div style={{ fontSize: 12, color: "#374151", marginTop: 4 }}>
                 {update.body}
               </div>
