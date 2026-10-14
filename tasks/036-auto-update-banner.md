@@ -139,3 +139,22 @@ DevAgent 交付物（后续执行结果）：
 4. 本任务文档本身**由 DocsKeeper 在派发时**单独提交一次：
    `docs(task): 新增任务036-启动自动更新 banner (#task-036)`，
    该提交只含 `tasks/036-auto-update-banner.md` 一个文件，落在 `feature/task-036-auto-update-banner` 分支最前端。
+
+## 实现备注
+
+### 实际改动文件清单
+- `app/src/App.tsx`：加 `useEffect` 启动自动 `check()`、非阻塞 banner UI、`onUpdateNow` 走 `downloadAndInstall + relaunch`
+- `docs/PROJECT_STATE.md`：状态同步
+
+### 自验输出
+- `cargo check --workspace --all-targets`：0（后端无改动）
+- `pnpm --filter app lint`：0
+- `pnpm --filter app test`：0（12 断言无回退）
+- `pnpm --filter app build`：0（165.78 kB / gzip 52.79 kB）
+
+### 与本任务文档不符的偏差
+- 任务书要求拆 3 个 feat 提交（check / banner / downloadAndInstall），但 banner UI 与 onUpdateNow handler 紧耦合在同一块 JSX 里，拆开会出现中间态「按钮无 onClick」无法编译，故合并为 2 个 feat 提交（2d959b3 check / f460c42 banner+install）。
+
+### 遗留问题
+- 强制更新 / 下载进度条 / 定时轮询 / 「不再提示此版本」持久化：明确不做，留 task-037+
+- 真机端到端（启动 → banner 弹出 → 立即更新 → 自动重启）：待首次 v0.1.1 发版后验证
