@@ -8,20 +8,23 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { formatBytes } from "../utils/formatBytes";
 import { api } from "../utils/invoke";
 
+// engine CleanupStats / ScanProgress 均 #[serde(rename_all = "camelCase")]，
+// 前端 interface 必须用 camelCase（debt-cleanup-004 Bug-1+2：之前 snake_case
+// 导致 successCount/failedCount/sessionCount/currentPath/scannedItems 全 undefined）。
 interface CleanupStats {
-  total_bytes_freed: number;
-  success_count: number;
-  failed_count: number;
-  session_count: number;
+  totalBytesFreed: number;
+  successCount: number;
+  failedCount: number;
+  sessionCount: number;
 }
 
 // task-028：与 engine::ipc::progress::ScanProgress 真实 shape 对齐
-// （任务书假设 {module, done, total}，实际是 {session_id, percent, current_path, scanned_items}）。
+// （任务书假设 {module, done, total}，实际是 {sessionId, percent, currentPath, scannedItems}）。
 interface ScanProgress {
-  session_id: number;
+  sessionId: number;
   percent: number;
-  current_path: string;
-  scanned_items: number;
+  currentPath: string;
+  scannedItems: number;
 }
 
 type Status = "loading" | "ok" | "error";
@@ -160,7 +163,7 @@ export default function Dashboard() {
               />
             </div>
             <div style={{ marginTop: 6, fontSize: 12, color: "#374151" }}>
-              {progress.current_path || "准备中..."} — {progress.scanned_items} 项
+              {progress.currentPath || "准备中..."} — {progress.scannedItems} 项
             </div>
           </div>
         )}
@@ -226,21 +229,21 @@ export default function Dashboard() {
         >
           <div style={cardStyle}>
             <div style={labelStyle}>总释放空间</div>
-            <div style={valueStyle("#111827")}>{formatBytes(data.total_bytes_freed)}</div>
+            <div style={valueStyle("#111827")}>{formatBytes(data.totalBytesFreed)}</div>
           </div>
           <div style={cardStyle}>
             <div style={labelStyle}>成功次数</div>
-            <div style={valueStyle("#111827")}>{data.success_count}</div>
+            <div style={valueStyle("#111827")}>{data.successCount}</div>
           </div>
           <div style={cardStyle}>
             <div style={labelStyle}>失败次数</div>
-            <div style={valueStyle(data.failed_count > 0 ? "#dc2626" : "#111827")}>
-              {data.failed_count}
+            <div style={valueStyle(data.failedCount > 0 ? "#dc2626" : "#111827")}>
+              {data.failedCount}
             </div>
           </div>
           <div style={cardStyle}>
             <div style={labelStyle}>清理轮次</div>
-            <div style={valueStyle("#111827")}>{data.session_count}</div>
+            <div style={valueStyle("#111827")}>{data.sessionCount}</div>
           </div>
         </div>
       )}
