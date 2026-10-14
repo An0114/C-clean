@@ -64,6 +64,11 @@ M2 自动更新最小闭环已就位（tauri-plugin-updater + 签名密钥 + lat
   - `release.yml` 加 Setup signing key（从 secret `TAURI_SIGNING_PRIVATE_KEY` 写 `~/.tauri/cclean.key`）+ Generate latest.json（PowerShell 读 `.msi.sig` 拼 JSON）+ 随 Release 上传；根目录 `latest.json` 占位（raw URL 可达）。
   - 签名密钥对已本地生成在 `~/.tauri/cclean.key`（私钥不入库），公钥已写入 tauri.conf。
   自验：cargo check/clippy/fmt/test（137 条）/pnpm lint/test/build 全绿。**与任务书偏差**：① updater 配置位置按 Tauri 2 真实 schema 落在 `plugins.updater`（任务书写顶层 `updater`，build script 报 unknown field）；② generate_context 需要显式 `serde_json` 依赖否则 E0433；③ release.yml 用 `TAURI_SIGNING_PRIVATE_KEY_PATH` 环境变量指向私钥文件路径（不是把私钥本身当字符串）。
+2026-10-14：bugfix/task-035-updater-acl 完成——task-035 评审 P0「updater ACL 拒绝」修复（bugfix 分支，等评审不自行 merge）：
+  - Bug-1（P0，自动更新完全不可用）：`capabilities/default.json` 只授权 `core:default` + `core:event:default`，前端 Settings 点「检查应用更新」调 `plugin-updater|check` 被 Tauri ACL 直接拒，报 `Command plugin:updater|check not allowed by ACL`。补 `updater:default`（聚合 allow-check/download/install/download-and-install）+ `process:default`。
+  - 顺带补接线缺陷：前端已 `pnpm add @tauri-apps/plugin-process` 并在 downloadAndInstall 后调 `relaunch()`，但 Rust 侧从未注册 `tauri-plugin-process`（Cargo.toml/Cargo.lock/Builder 全缺），relaunch 无后端。补 `tauri-plugin-process = "2"` + `lib.rs` 挂 `.plugin(tauri_plugin_process::init())`。
+  - **与评审建议偏差**：评审建议加 `process:allow-relaunch`，但本版 tauri-plugin-process v2 的 ACL manifest 只有 `allow-exit`/`allow-restart`（无 allow-relaunch）；JS `relaunch()` 实际映射到 `restart` 命令，故用 `process:default`（含 allow-restart）覆盖。照抄 `process:allow-relaunch` 会触发 unknown-permission 构建错误。
+  自验：cargo fmt --check 干净；clippy --workspace --all-targets -D warnings 无告警；cargo test -p engine 全绿（基线 137 无回退）；pnpm lint 干净；pnpm test 12/12（新增 capabilities 回归 3 断言）；pnpm build 164.56 kB / gzip 52.50 kB。
 
 ## 已完成事项
 - [x] 项目立项与仓库初始化（commit 67990f5 / 4972f9d）
@@ -329,6 +334,9 @@ DocsKeeper（文档与状态管家）
 | 28c1f1a | #task-035 | ci: release.yml 加签名 key 注入 + latest.json 生成上传 |
 | 4f7eb0a | #task-035 | fix(tauri): updater 配置移到 plugins.updater 命名空间并补 serde_json 依赖 |
 | （本次） | #task-035 | docs(state): 任务035完成，tauri updater 自动更新就绪 |
+| f3086b4 | #task-035 | fix(tauri): 放行 updater/process 插件 ACL 并补注册 process Rust 插件 |
+| 5d93bb7 | #task-035 | test(frontend): 补 capabilities updater/process ACL 回归测试 |
+| （本次） | #task-035 | docs(state): 修复 task-035 updater ACL P0 bug |
 
 ---
 变更轨迹：
