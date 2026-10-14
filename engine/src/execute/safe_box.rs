@@ -422,3 +422,39 @@ pub fn purge_item(conn: &Connection, box_dir: &Path, item_id: i64) -> Result<(),
 
     Ok(())
 }
+
+// ===================== task-038: purge_many =====================
+
+/// 批量 purge 结果（前端 UI 用）。
+#[derive(Debug, Clone, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PurgeManyResult {
+    /// 成功删除条数。
+    pub deleted: usize,
+    /// 失败条数。
+    pub failed: usize,
+    /// 失败原因列表（`id=<id>: <err>`）。
+    pub errors: Vec<String>,
+}
+
+/// 批量永久删除：循环调 [`purge_item`]，单个失败不中断，收集 errors。
+///
+/// - 空 slice 直接返默认空结果；
+/// - 单个 purge_item 失败 → `failed += 1` 并 push 一条错误，不阻断后续 id。
+pub fn purge_many(
+    conn: &Connection,
+    box_dir: &Path,
+    item_ids: &[i64],
+) -> PurgeManyResult {
+    let mut out = PurgeManyResult::default();
+    for &id in item_ids {
+        match purge_item(conn, box_dir, id) {
+            Ok(()) => out.deleted += 1,
+            Err(e) => {
+                out.failed += 1;
+                out.errors.push(format!("id={id}: {e}"));
+            }
+        }
+    }
+    out
+}
