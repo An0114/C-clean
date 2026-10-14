@@ -52,6 +52,11 @@ M1 v0.1.0 打包完成 + GitHub Release 发版 workflow 已就位；下一轮进
   - Bug-2（P0，干净安装后所有命令 EACCES）：所有命令用 `std::env::current_dir()` 定位 rules/ 和 DB，perMachine 装到 `C:\Program Files\C-Disk Cleaner\` 后 current_dir 指向只读安装目录，SQLite 报 `拒绝访问 (os error 5)`，设置页规则库「内部错误」。新建 `app/src-tauri/src/paths.rs` 的 `AppPaths`（setup 时构造一次并 manage）：data_root = `app.path().app_data_dir()`（%APPDATA%\com.and0114.cclean\，可写）；rules_dir = data_root/rules（首次从 bundled resource 复制）；scripts_dir = 只读 resource_dir；box_dir = data_root/safe_box。commands.rs 全部改从 `tauri::State<'_, AppPaths>` 取路径，不再碰 current_dir。tauri.conf.json `bundle.resources` 打包 2 个 rules 文件 + 5 个 ps1 脚本。
   - 评审报告另发现 Bug-3（设置页所有失败坍缩成「内部错误」，不区分网络/校验/后端错，P1）和 Bug-4（Dashboard 成功/失败/轮次三个数字卡片空白，总释放空间显示 0 B，P1），留 debt-cleanup-004。
   自验：cargo clippy --workspace --all-targets -- -D warnings 干净；cargo test -p engine 137 passed / 0 failed（与基线一致）；cargo fmt --check 过；pnpm --filter app build 通过。
+2026-10-14：debt-cleanup-004 完成——debt-cleanup-003 安装包干净目录真机二轮评审暴露的 3 个回归 bug 修复（同分支 feature/fix-m1-postinstall-v2 追加提交，等评审不自行 merge）：
+  - Bug-1（中，Dashboard 数字卡片空白）：后端 `CleanupStats` 有 `#[serde(rename_all = "camelCase")]`，JSON 输出 `totalBytesFreed/successCount/failedCount/sessionCount`；但 Dashboard.tsx interface 是 snake_case，三个 count 字段全 undefined 渲染空白。改为 camelCase。顺带修 History.tsx `AuditLogEntry` 同样问题（sessionId/eventType/createdAt）。
+  - Bug-2（中，进度条文字卡死「准备中...」）：`ScanProgress` 事件 payload 也是 camelCase（currentPath/scannedItems），前端 listener 读 snake_case 字段，两个字段全 undefined 永远走 fallback。改 Dashboard.tsx ScanProgress interface 为 camelCase。注：后端 runner 目前 percent 统一发 0（单脚本内不知总量），进度条宽度不动是已知设计限制，留后续任务。
+  - Bug-3（中，设置页检查更新全报「内部错误」）：rules_check_update / rules_apply_update 把所有失败（含网络不通、SHA 校验失败）都返回 `Envelope::err(INTERNAL)`。改为 fetch_remote_* 失败 → `RULE_NETWORK_ERROR`（3003），ApplyError::ShaMismatch → `RULE_CHECKSUM_MISMATCH`（3002）；load_rules/DB 错仍 INTERNAL。
+  自验：cargo clippy --workspace --all-targets -- -D warnings 干净；cargo test -p engine 137 passed / 0 failed（与基线一致）；cargo fmt --check 过；pnpm --filter app build 通过。
 
 ## 已完成事项
 - [x] 项目立项与仓库初始化（commit 67990f5 / 4972f9d）
@@ -307,6 +312,9 @@ DocsKeeper（文档与状态管家）
 | c5cf1d3 | #debt-cleanup-003 | fix(frontend): pass scope='full' to scan_start command |
 | 16b30e2 | #debt-cleanup-003 | fix(tauri): use app_data_dir() for DB/safe_box, bundle rules+scripts as resources |
 | （本次） | #debt-cleanup-003 | docs(state): debt-cleanup-003 两个 P0 post-install bug 修复完成 |
+| 16f0512 | #debt-cleanup-004 | fix(frontend): align CleanupStats/ScanProgress/AuditLogEntry to camelCase |
+| 00015c0 | #debt-cleanup-004 | fix(tauri): classify rules update errors instead of collapsing to INTERNAL |
+| （本次） | #debt-cleanup-004 | docs(state): debt-cleanup-004 三个二轮回归 bug 修复完成 |
 
 ---
 变更轨迹：
@@ -378,3 +386,4 @@ DocsKeeper（文档与状态管家）
 - 2026-10-13  task-032  评审前清障：独立复跑 clippy/fmt/test/pnpm lint/pnpm test/pnpm build 全绿（137 条后端测试无回退，前端 9 断言全过：formatBytes 5 + formatTs 4）；确认 ESLint flat config（eslint.config.js）TS 文件 no-undef 关闭交给类型检查、react-hooks rules-of-hooks error/exhaustive-deps warn、Vitest jsdom 环境+setupFiles 配置正确、setupTests.ts 用 @testing-library/jest-dom/vitest 子路径导入、CI yml 加 Lint/Test 两步替换 echo 占位正确；Vitest 降级 2.1.9 兼容 Vite 5（Vitest 5 需 Vite 6+）；组件单测留 task-033+（第三档已登记）
 - 2026-10-13  debt-cleanup-002  M1 NSIS 安装包装干净目录后 5 个回归 bug：Envelope 未解包白屏/数字空（api() 解包 + ErrorBoundary）、plugin:event|listen ACL 拒（capabilities/default.json 授权 core:default + core:event:default）、release.yml pnpm 版本双声明（删 with: version: 11）、resolve hop 在 CI 8.3 短名下误判 1（改 symlink_metadata 查 REPARSE_POINT）、Dashboard 重试扫描残留进度（catch 里 setProgress(null)）。分支 feature/fix-m1-packaging-bugs 等评审。
 - 2026-10-14  debt-cleanup-003  NSIS 干净目录真机验收 2 个 P0：scan_start 前端漏传 scope 必填参数（传 { scope:'full', targetDrive:null }）、current_dir() 在 Program Files 只读导致 DB EACCES（新建 AppPaths State，data_root 走 app_data_dir()，rules/scripts 打包为 bundle.resources，首次复制 rules 到 data_root）。Bug-3（设置页错误信息坍缩）+ Bug-4（Dashboard 数字卡片空白）留 debt-cleanup-004。分支 feature/fix-m1-postinstall-v2 等评审。
+- 2026-10-14  debt-cleanup-004  二轮真机验收 3 个回归：Dashboard CleanupStats/ScanProgress interface snake_case 与后端 serde camelCase 不匹配（数字卡片空白 + 进度文字卡死「准备中...」，顺带修 History AuditLogEntry）、rules_check_update/apply_update 所有错误坍缩成 INTERNAL（网络错→RULE_NETWORK_ERROR 3003，SHA 校验错→RULE_CHECKSUM_MISMATCH 3002）。已知遗留：后端 runner percent 统一发 0（单脚本内不知总量），进度条宽度不动留后续任务。同分支 feature/fix-m1-postinstall-v2 追加提交等评审。
