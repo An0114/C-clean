@@ -1,10 +1,12 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "M1 默认能力集：允许前端 listen/emit 扫描进度事件（debt-cleanup-002 Bug-2）。",
+  "description": "M1/M2 默认能力集：core 默认 + 扫描事件 listen/emit；task-035 bugfix 放行 updater（检查/下载安装）与 process（relaunch→restart）插件命令，修复 `plugin:updater|check not allowed by ACL`。",
   "windows": ["main"],
   "permissions": [
     "core:default",
-    "core:event:default"
+    "core:event:default",
+    "updater:default",
+    "process:default"
   ]
 }

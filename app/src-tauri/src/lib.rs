@@ -20,6 +20,8 @@ fn ping() -> &'static str {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
+        // bugfix/task-035-updater-acl：为前端 relaunch() 提供 process 插件后端。
+        .plugin(tauri_plugin_process::init())
         .manage(std::sync::Mutex::new(0_i64))
         // task-007：在 setup 闭包里拿 AppHandle，构造全局进度 State 并注入。
         // debt-cleanup-003：构造 AppPaths（data_root/rules_dir/scripts_dir/box_dir）并注入。
