@@ -3,7 +3,7 @@
 > **特别声明**：本文件是项目唯一真实数据源，也是「每次任务结束必更新、必单独提交」的文件。后续所有 Agent 必须遵守：任何任务完成后都要先更新本文件，再单独提交一次（commit message 形如 `docs(state): ... (#task-00X)`），不得与业务代码混在同一个 commit。
 
 ## 当前目标
-M1 v0.1.0 打包完成 + GitHub Release 发版 workflow 已就位；下一轮进入 tauri updater 自动更新配置（签名密钥对 + update endpoint JSON，task-035）。
+M2 自动更新最小闭环已就位（tauri-plugin-updater + 签名密钥 + latest.json + Settings 应用更新卡片）；下一轮：①后台自动检查 + 启动弹窗（task-036）②品牌图标设计 ③首次 v0.1.1 发版验证 updater 闭环。
 
 ## 最近一次变更
 2026-10-11：完成 PRD / TRD / ARCHITECTURE / AGENTS / 立项决策记录全套长期基线文档，并初始化本状态白板。
@@ -57,6 +57,18 @@ M1 v0.1.0 打包完成 + GitHub Release 发版 workflow 已就位；下一轮进
   - Bug-2（中，进度条文字卡死「准备中...」）：`ScanProgress` 事件 payload 也是 camelCase（currentPath/scannedItems），前端 listener 读 snake_case 字段，两个字段全 undefined 永远走 fallback。改 Dashboard.tsx ScanProgress interface 为 camelCase。注：后端 runner 目前 percent 统一发 0（单脚本内不知总量），进度条宽度不动是已知设计限制，留后续任务。
   - Bug-3（中，设置页检查更新全报「内部错误」）：rules_check_update / rules_apply_update 把所有失败（含网络不通、SHA 校验失败）都返回 `Envelope::err(INTERNAL)`。改为 fetch_remote_* 失败 → `RULE_NETWORK_ERROR`（3003），ApplyError::ShaMismatch → `RULE_CHECKSUM_MISMATCH`（3002）；load_rules/DB 错仍 INTERNAL。
   自验：cargo clippy --workspace --all-targets -- -D warnings 干净；cargo test -p engine 137 passed / 0 failed（与基线一致）；cargo fmt --check 过；pnpm --filter app build 通过。
+2026-10-14：task-035 完成——tauri updater 自动更新最小闭环：
+  - Rust 侧 `Cargo.toml` 加 `tauri-plugin-updater = "2"` + `serde_json = "1"`（generate_context 解析 plugins.updater 配置需要），`lib.rs` Builder 链上 `.plugin(tauri_plugin_updater::Builder::new().build())`。
+  - `tauri.conf.json` 加 `plugins.updater`（active/endpoints/pubkey）——注意 Tauri 2 schema 是 `plugins.updater` 命名空间，不是任务书写的顶层 `updater`，也不是 `bundle.updater`。
+  - 前端 `pnpm add @tauri-apps/plugin-updater @tauri-apps/plugin-process`，Settings.tsx 在规则库卡片下方加「应用更新」卡片：checkApplication 调 `check()`，downloadAndInstall 调 `update.downloadAndInstall()` + `relaunch()`。
+  - `release.yml` 加 Setup signing key（从 secret `TAURI_SIGNING_PRIVATE_KEY` 写 `~/.tauri/cclean.key`）+ Generate latest.json（PowerShell 读 `.msi.sig` 拼 JSON）+ 随 Release 上传；根目录 `latest.json` 占位（raw URL 可达）。
+  - 签名密钥对已本地生成在 `~/.tauri/cclean.key`（私钥不入库），公钥已写入 tauri.conf。
+  自验：cargo check/clippy/fmt/test（137 条）/pnpm lint/test/build 全绿。**与任务书偏差**：① updater 配置位置按 Tauri 2 真实 schema 落在 `plugins.updater`（任务书写顶层 `updater`，build script 报 unknown field）；② generate_context 需要显式 `serde_json` 依赖否则 E0433；③ release.yml 用 `TAURI_SIGNING_PRIVATE_KEY_PATH` 环境变量指向私钥文件路径（不是把私钥本身当字符串）。
+2026-10-14：bugfix/task-035-updater-acl 完成——task-035 评审 P0「updater ACL 拒绝」修复（bugfix 分支，等评审不自行 merge）：
+  - Bug-1（P0，自动更新完全不可用）：`capabilities/default.json` 只授权 `core:default` + `core:event:default`，前端 Settings 点「检查应用更新」调 `plugin-updater|check` 被 Tauri ACL 直接拒，报 `Command plugin:updater|check not allowed by ACL`。补 `updater:default`（聚合 allow-check/download/install/download-and-install）+ `process:default`。
+  - 顺带补接线缺陷：前端已 `pnpm add @tauri-apps/plugin-process` 并在 downloadAndInstall 后调 `relaunch()`，但 Rust 侧从未注册 `tauri-plugin-process`（Cargo.toml/Cargo.lock/Builder 全缺），relaunch 无后端。补 `tauri-plugin-process = "2"` + `lib.rs` 挂 `.plugin(tauri_plugin_process::init())`。
+  - **与评审建议偏差**：评审建议加 `process:allow-relaunch`，但本版 tauri-plugin-process v2 的 ACL manifest 只有 `allow-exit`/`allow-restart`（无 allow-relaunch）；JS `relaunch()` 实际映射到 `restart` 命令，故用 `process:default`（含 allow-restart）覆盖。照抄 `process:allow-relaunch` 会触发 unknown-permission 构建错误。
+  自验：cargo fmt --check 干净；clippy --workspace --all-targets -D warnings 无告警；cargo test -p engine 全绿（基线 137 无回退）；pnpm lint 干净；pnpm test 12/12（新增 capabilities 回归 3 断言）；pnpm build 164.56 kB / gzip 52.50 kB。
 
 ## 已完成事项
 - [x] 项目立项与仓库初始化（commit 67990f5 / 4972f9d）
@@ -102,6 +114,7 @@ M1 v0.1.0 打包完成 + GitHub Release 发版 workflow 已就位；下一轮进
 - [x] 032：前端工程化补齐——ESLint 10 flat config + Vitest 2.1 + formatBytes/formatTs 单测 + CI 接 lint/test
 - [x] 033：NSIS v0.1.0 打包——tauri.conf identifier/nsis + CI tauri build/upload-artifact，本地出 .msi/.exe
 - [x] 034：GitHub Release workflow——release.yml 支持 workflow_dispatch + tag 触发，softprops/action-gh-release 上传 installer
+- [x] 035：tauri updater 自动更新最小闭环——签名密钥对 + plugins.updater 配置 + Settings 应用更新卡片 + release.yml 签名/latest.json 生成
 
 ## 已知问题
 - [B 中] task-021 仅做「报告」（who_is_locking 结果写 audit_log + 返回前端），**未实现 RmShutdown/RmRestart（请求关闭占用进程）**，前端 UI toast 也未接；notepad 端到端真机验证 CI 用例 `#[ignore]`。请求关闭与前端展示留 task-022+。
@@ -119,7 +132,7 @@ M1 v0.1.0 打包完成 + GitHub Release 发版 workflow 已就位；下一轮进
 - [B 低] task-033 应用图标仍为 Tauri 默认占位（task-001 生成的 17 个文件），未做品牌图标设计；待设计出 1024×1024 源 PNG 后跑 `tauri icon` 重生成全套。
 
 ## 下一步计划
-v0.1.0 发版 workflow 已就位；下一轮进入 tauri updater 自动更新配置（签名密钥对 + update endpoint JSON，task-035），并行做品牌图标设计与首次 workflow_dispatch v0.1.0 手动触发。
+tauri updater 手动检查已就位；下一轮做：①后台自动检查 + 启动弹窗（task-036）②品牌图标设计（用户手动）③首次 v0.1.1 发版验证 updater 闭环（需先在 GitHub Repo → Settings → Secrets → Actions 加 `TAURI_SIGNING_PRIVATE_KEY` = 私钥文件内容）。
 
 ## 当前负责人 Agent
 DocsKeeper（文档与状态管家）
@@ -315,6 +328,15 @@ DocsKeeper（文档与状态管家）
 | 16f0512 | #debt-cleanup-004 | fix(frontend): align CleanupStats/ScanProgress/AuditLogEntry to camelCase |
 | 00015c0 | #debt-cleanup-004 | fix(tauri): classify rules update errors instead of collapsing to INTERNAL |
 | （本次） | #debt-cleanup-004 | docs(state): debt-cleanup-004 三个二轮回归 bug 修复完成 |
+| 72e2571 | #task-035 | chore(tauri): 接入 tauri-plugin-updater Rust 插件（Cargo.toml + lib.rs） |
+| 7a2a4bf | #task-035 | chore(tauri): tauri.conf.json 加 updater 配置（pubkey + endpoint） |
+| 1023a02 | #task-035 | feat(frontend): Settings 加「应用更新」卡片 + check/downloadAndInstall |
+| 28c1f1a | #task-035 | ci: release.yml 加签名 key 注入 + latest.json 生成上传 |
+| 4f7eb0a | #task-035 | fix(tauri): updater 配置移到 plugins.updater 命名空间并补 serde_json 依赖 |
+| （本次） | #task-035 | docs(state): 任务035完成，tauri updater 自动更新就绪 |
+| f3086b4 | #task-035 | fix(tauri): 放行 updater/process 插件 ACL 并补注册 process Rust 插件 |
+| 5d93bb7 | #task-035 | test(frontend): 补 capabilities updater/process ACL 回归测试 |
+| （本次） | #task-035 | docs(state): 修复 task-035 updater ACL P0 bug |
 
 ---
 变更轨迹：
@@ -387,3 +409,5 @@ DocsKeeper（文档与状态管家）
 - 2026-10-13  debt-cleanup-002  M1 NSIS 安装包装干净目录后 5 个回归 bug：Envelope 未解包白屏/数字空（api() 解包 + ErrorBoundary）、plugin:event|listen ACL 拒（capabilities/default.json 授权 core:default + core:event:default）、release.yml pnpm 版本双声明（删 with: version: 11）、resolve hop 在 CI 8.3 短名下误判 1（改 symlink_metadata 查 REPARSE_POINT）、Dashboard 重试扫描残留进度（catch 里 setProgress(null)）。分支 feature/fix-m1-packaging-bugs 等评审。
 - 2026-10-14  debt-cleanup-003  NSIS 干净目录真机验收 2 个 P0：scan_start 前端漏传 scope 必填参数（传 { scope:'full', targetDrive:null }）、current_dir() 在 Program Files 只读导致 DB EACCES（新建 AppPaths State，data_root 走 app_data_dir()，rules/scripts 打包为 bundle.resources，首次复制 rules 到 data_root）。Bug-3（设置页错误信息坍缩）+ Bug-4（Dashboard 数字卡片空白）留 debt-cleanup-004。分支 feature/fix-m1-postinstall-v2 等评审。
 - 2026-10-14  debt-cleanup-004  二轮真机验收 3 个回归：Dashboard CleanupStats/ScanProgress interface snake_case 与后端 serde camelCase 不匹配（数字卡片空白 + 进度文字卡死「准备中...」，顺带修 History AuditLogEntry）、rules_check_update/apply_update 所有错误坍缩成 INTERNAL（网络错→RULE_NETWORK_ERROR 3003，SHA 校验错→RULE_CHECKSUM_MISMATCH 3002）。已知遗留：后端 runner percent 统一发 0（单脚本内不知总量），进度条宽度不动留后续任务。同分支 feature/fix-m1-postinstall-v2 追加提交等评审。
+- 2026-10-14  task-035  tauri-plugin-updater + 签名密钥对 + plugins.updater 配置 + Settings 应用更新卡片 + release.yml 签名/latest.json，M2 自动更新最小闭环。
+- 2026-10-14  task-035  评审前清障：独立复跑 clippy/fmt/test/pnpm lint/pnpm test/pnpm build 全绿（137 条后端测试无回退，前端 9 断言全过，vite build 164.6KB gzip 52.5KB）；确认 tauri.conf.json plugins.updater 命名空间（active/endpoints/pubkey，非任务书顶层 updater）、lib.rs 挂 tauri_plugin_updater::Builder、Cargo.toml 加 tauri-plugin-updater=2 + serde_json=1、Settings.tsx 应用更新卡片 check/downloadAndInstall/relaunch 状态机正确（idle/checking/downloading/error）、release.yml Setup signing key 写 ~/.tauri/cclean.key + TAURI_SIGNING_PRIVATE_KEY_PATH 注入 + Generate latest.json 读 .msi.sig 生成 JSON 并随 Release 上传；私钥未入仓（git log -p 自审无 BEGIN PRIVATE）；GitHub Secret TAURI_SIGNING_PRIVATE_KEY 需用户手动配置（第三档已登记）；latest.json push 回 main 分支未自动化（raw URL 拿到的是占位，第三档已登记）；后台自动检查弹窗/增量更新/真机端到端升级验证留 task-036+（第三档已登记）

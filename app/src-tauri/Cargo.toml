@@ -17,5 +17,12 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { workspace = true }
+# task-035：updater 插件，配合 tauri.conf.plugins.updater + 签名私钥做自动更新
+tauri-plugin-updater = "2"
+# bugfix/task-035-updater-acl：前端 downloadAndInstall 后调 relaunch()，
+# 必须注册 process 插件后端（此前只加了 JS @tauri-apps/plugin-process，Rust 侧漏注册）。
+tauri-plugin-process = "2"
+# generate_context 解析 plugins.updater 配置时需要 serde_json
+serde_json = "1"
 # 链接仓库内 engine 核心库，验证 Rust workspace 链路打通。
 engine = { path = "../../engine" }

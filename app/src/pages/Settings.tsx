@@ -8,6 +8,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../utils/invoke";
+import { check as checkApp, type Update } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
 
 interface CheckUpdateResp {
   hasUpdate: boolean;
@@ -57,6 +59,11 @@ export default function Settings() {
   const [msg, setMsg] = useState<string>("");
   const [toast, setToast] = useState<{ ok: boolean; text: string } | null>(null);
 
+  // task-035：应用自更新状态
+  const [appUpdate, setAppUpdate] = useState<Update | null>(null);
+  const [appPhase, setAppPhase] = useState<"idle" | "checking" | "downloading" | "error">("idle");
+  const [appMsg, setAppMsg] = useState<string>("");
+
   // 启动时拉一次：拿当前版本 + 是否有更新。
   const check = useCallback(async (withToast = false) => {
     setPhase("checking");
@@ -96,6 +103,44 @@ export default function Settings() {
       setPhase("idle");
     }
   }, [check]);
+
+  // task-035：检查应用自更新（tauri updater）
+  const checkApplication = useCallback(async () => {
+    setAppPhase("checking");
+    setAppMsg("");
+    try {
+      const update = await checkApp();
+      if (!update) {
+        setAppUpdate(null);
+        setAppMsg("已是最新版本");
+        setAppPhase("idle");
+        return;
+      }
+      setAppUpdate(update);
+      setAppMsg(`发现新版本 ${update.version}`);
+      setAppPhase("idle");
+    } catch (e) {
+      setAppUpdate(null);
+      setAppMsg(String(e));
+      setAppPhase("error");
+    }
+  }, []);
+
+  // task-035：下载并安装应用更新
+  const downloadAndInstall = useCallback(async () => {
+    if (!appUpdate) return;
+    setAppPhase("downloading");
+    try {
+      await appUpdate.downloadAndInstall((event) => {
+        // 进度事件：下载中（event 类型 Progress 含 downloaded/total）
+        void event;
+      });
+      await relaunch();
+    } catch (e) {
+      setAppMsg(String(e));
+      setAppPhase("error");
+    }
+  }, [appUpdate]);
 
   return (
     <div>
@@ -180,6 +225,63 @@ export default function Settings() {
               }}
             >
               {phase === "applying" ? "应用中…" : "应用更新"}
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* task-035：应用自更新卡片（tauri updater） */}
+      <h2 style={{ margin: "24px 0 12px", fontSize: 16 }}>应用更新</h2>
+      <div style={cardStyle}>
+        <div style={rowStyle}>
+          <span>更新状态</span>
+          <span
+            style={{
+              color:
+                appPhase === "error"
+                  ? "#b91c1c"
+                  : appUpdate
+                    ? "#b45309"
+                    : "#166534",
+            }}
+          >
+            {appPhase === "checking"
+              ? "检查中…"
+              : appPhase === "downloading"
+                ? "下载安装中…"
+                : appMsg || "尚未检查"}
+          </span>
+        </div>
+        {appUpdate && (
+          <div style={rowStyle}>
+            <span>新版本</span>
+            <span style={monoStyle}>{appUpdate.version}</span>
+          </div>
+        )}
+        <div style={{ marginTop: 16, display: "flex", gap: 8 }}>
+          <button
+            onClick={checkApplication}
+            disabled={appPhase === "checking" || appPhase === "downloading"}
+          >
+            {appPhase === "checking" ? "检查中…" : "检查应用更新"}
+          </button>
+          {appUpdate && (
+            <button
+              onClick={downloadAndInstall}
+              disabled={appPhase === "checking" || appPhase === "downloading"}
+              style={{
+                padding: "6px 14px",
+                borderRadius: 6,
+                border: "1px solid #16a34a",
+                background: appPhase === "downloading" ? "#bbf7d0" : "#16a34a",
+                color: "#fff",
+                cursor:
+                  appPhase === "checking" || appPhase === "downloading"
+                    ? "not-allowed"
+                    : "pointer",
+              }}
+            >
+              {appPhase === "downloading" ? "安装中…" : "立即更新并重启"}
             </button>
           )}
         </div>

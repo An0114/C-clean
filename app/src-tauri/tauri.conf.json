@@ -46,5 +46,14 @@
         "languages": ["SimpChinese"]
       }
     }
+  },
+  "plugins": {
+    "updater": {
+      "active": true,
+      "endpoints": [
+        "https://raw.githubusercontent.com/An0114/C-clean/main/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDE4MTg5ODNBOTMwMkVCNDAKUldSQTZ3S1RPcGdZR0dlNE53L1pZUm4zTkFnOVk1aE03SlpTRHpvR2N4YVJianBOT2Q0d2Q4eUgK"
+    }
   }
 }
