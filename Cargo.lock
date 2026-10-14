@@ -297,6 +297,7 @@ name = "cdisk-cleaner"
 version = "0.1.0"
 dependencies = [
  "engine",
+ "serde_json",
  "tauri",
  "tauri-build",
  "tauri-plugin-updater",
