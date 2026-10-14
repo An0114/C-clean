@@ -30,6 +30,12 @@ interface PurgeManyResult {
   errors: string[];
 }
 
+interface BatchOpResult {
+  succeeded: number;
+  failed: number;
+  errors: string[];
+}
+
 type Status = "loading" | "ok" | "error";
 
 const thStyle: React.CSSProperties = {
@@ -57,6 +63,7 @@ export default function SafeBox() {
   const [purgingId, setPurgingId] = useState<number | null>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [batchPurging, setBatchPurging] = useState(false);
+  const [batchRestoring, setBatchRestoring] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
 
   const load = useCallback(async () => {
@@ -163,12 +170,40 @@ export default function SafeBox() {
     }
   }, [selected, load]);
 
+  // task-039：批量恢复——复用 selected Set，confirm 后调 restore_many。
+  const restoreMany = useCallback(async () => {
+    const ids = Array.from(selected);
+    if (ids.length === 0) return;
+    const ok = window.confirm(`确定恢复 ${ids.length} 个文件到原路径？`);
+    if (!ok) return;
+    setBatchRestoring(true);
+    setResult(null);
+    try {
+      const r = await api<BatchOpResult>("safe_box_restore_many", { itemIds: ids });
+      const parts: string[] = [];
+      if (r.succeeded > 0) parts.push(`成功 ${r.succeeded} 条`);
+      if (r.failed > 0) parts.push(`失败 ${r.failed} 条：${r.errors.join("；")}`);
+      setResult({
+        ok: r.failed === 0,
+        text: parts.join("，") || "无操作",
+      });
+      setSelected(new Set());
+      await load();
+    } catch (e) {
+      setResult({ ok: false, text: `批量恢复失败：${String(e)}` });
+    } finally {
+      setBatchRestoring(false);
+    }
+  }, [selected, load]);
+
   return (
     <div>
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
         <button
           onClick={load}
-          disabled={restoringId !== null || purgingId !== null || batchPurging}
+          disabled={
+            restoringId !== null || purgingId !== null || batchPurging || batchRestoring
+          }
         >
           刷新
         </button>
@@ -176,10 +211,37 @@ export default function SafeBox() {
           共 {totalItems} 项 / 总大小 {formatBytes(totalBytes)}
         </span>
         <button
-          onClick={purgeMany}
-          disabled={selected.size === 0 || batchPurging || restoringId !== null || purgingId !== null}
+          onClick={restoreMany}
+          disabled={
+            selected.size === 0 ||
+            batchPurging ||
+            batchRestoring ||
+            restoringId !== null ||
+            purgingId !== null
+          }
           style={{
             marginLeft: "auto",
+            padding: "6px 12px",
+            fontSize: 12,
+            borderRadius: 4,
+            border: "1px solid #16a34a",
+            background: selected.size === 0 ? "#bbf7d0" : "#16a34a",
+            color: "#fff",
+            cursor: selected.size === 0 ? "not-allowed" : "pointer",
+          }}
+        >
+          {batchRestoring ? "恢复中…" : `批量恢复已选(${selected.size})`}
+        </button>
+        <button
+          onClick={purgeMany}
+          disabled={
+            selected.size === 0 ||
+            batchPurging ||
+            batchRestoring ||
+            restoringId !== null ||
+            purgingId !== null
+          }
+          style={{
             padding: "6px 12px",
             fontSize: 12,
             borderRadius: 4,
@@ -234,7 +296,9 @@ export default function SafeBox() {
                   type="checkbox"
                   checked={allChecked}
                   onChange={toggleAll}
-                  disabled={batchPurging || restoringId !== null || purgingId !== null}
+                  disabled={
+                    batchPurging || batchRestoring || restoringId !== null || purgingId !== null
+                  }
                 />
               </th>
               <th style={thStyle}>原路径</th>
@@ -251,7 +315,9 @@ export default function SafeBox() {
                     type="checkbox"
                     checked={selected.has(r.id)}
                     onChange={() => toggleOne(r.id)}
-                    disabled={batchPurging || restoringId !== null || purgingId !== null}
+                    disabled={
+                      batchPurging || batchRestoring || restoringId !== null || purgingId !== null
+                    }
                   />
                 </td>
                 <td style={{ ...tdStyle, fontFamily: "monospace", fontSize: 12 }}>
