@@ -371,3 +371,58 @@ pub fn list_safe_box(conn: &Connection) -> Result<SafeBoxListResp, String> {
         total_bytes,
     })
 }
+
+// ===================== task-037: purge =====================
+
+/// 按 id 永久删除保险箱条目：删磁盘文件 + 删 DB 行 + 写 audit_log。
+///
+/// - 磁盘文件不存在不报错（手动清理过的场景仍能删行）；
+/// - DB 行不存在返回 `Err("safe_box item not found")`；
+/// - audit_log action='purge'，target=original_path，detail 含 safe_rel_path。
+pub fn purge_item(
+    conn: &Connection,
+    box_dir: &Path,
+    item_id: i64,
+) -> Result<(), String> {
+    // 1. 查行
+    let row: (String, String) = conn
+        .query_row(
+            "SELECT original_path, safe_rel_path FROM safe_box
+             WHERE id=?1 AND status='in_box'",
+            [item_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(|_| format!("safe_box item not found: id={item_id}"))?;
+    let (original_path, rel) = row;
+
+    // 2. 删磁盘文件（NotFound 吞掉）
+    let box_abs = box_dir.join(&rel);
+    match fs::remove_file(&box_abs) {
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("remove {box_abs:?}: {e}")),
+    }
+
+    // 3. 删 DB 行（purge 即永久删除，不保留 status='purged' 行）
+    conn.execute("DELETE FROM safe_box WHERE id=?1", [item_id])
+        .map_err(|e| format!("delete safe_box row: {e}"))?;
+
+    // 4. audit_log
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let detail = serde_json::json!({
+        "safe_box_id": item_id,
+        "safe_rel_path": rel,
+    })
+    .to_string();
+    conn.execute(
+        "INSERT INTO audit_log (ts, actor, action, target, detail, result)
+         VALUES (?1, 'user', 'purge', ?2, ?3, 'success')",
+        params![now, original_path, detail],
+    )
+    .map_err(|e| format!("insert audit_log: {e}"))?;
+
+    Ok(())
+}
