@@ -1,0 +1,11 @@
+{
+  "version": "0.1.0",
+  "notes": "v0.1.0 首次发版占位。首次 workflow_dispatch 触发后，release.yml 会用真实签名覆盖此文件。",
+  "pub_date": "2026-10-14T00:00:00Z",
+  "platforms": {
+    "windows-x86_64": {
+      "signature": "PLACEHOLDER_REPLACED_BY_CI",
+      "url": "https://github.com/An0114/C-clean/releases/download/v0.1.0/C-Disk-Cleaner_0.1.0_x64_en-US.msi"
+    }
+  }
+}
