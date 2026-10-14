@@ -48,6 +48,7 @@ export default function SafeBox() {
   const [totalBytes, setTotalBytes] = useState(0);
   const [msg, setMsg] = useState<string>("");
   const [restoringId, setRestoringId] = useState<number | null>(null);
+  const [purgingId, setPurgingId] = useState<number | null>(null);
   const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
 
   const load = useCallback(async () => {
@@ -89,10 +90,30 @@ export default function SafeBox() {
     [load]
   );
 
+  // task-037：永久删除——confirm 后才执行，删磁盘文件 + DB 行 + audit_log。
+  const purge = useCallback(
+    async (item: SafeBoxEntry) => {
+      const ok = window.confirm("确定永久删除该文件？此操作不可恢复。");
+      if (!ok) return;
+      setPurgingId(item.id);
+      setResult(null);
+      try {
+        await api("safe_box_purge", { itemId: item.id });
+        setResult({ ok: true, text: `已永久删除：${item.originalPath}` });
+        await load();
+      } catch (e) {
+        setResult({ ok: false, text: `永久删除失败：${String(e)}` });
+      } finally {
+        setPurgingId(null);
+      }
+    },
+    [load]
+  );
+
   return (
     <div>
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
-        <button onClick={load} disabled={restoringId !== null}>
+        <button onClick={load} disabled={restoringId !== null || purgingId !== null}>
           刷新
         </button>
         <span style={{ fontSize: 13, color: "#374151" }}>
@@ -139,7 +160,7 @@ export default function SafeBox() {
               <th style={thStyle}>原路径</th>
               <th style={{ ...thStyle, width: 100 }}>大小</th>
               <th style={{ ...thStyle, width: 160 }}>移入时间</th>
-              <th style={{ ...thStyle, width: 90 }}>操作</th>
+              <th style={{ ...thStyle, width: 160 }}>操作</th>
             </tr>
           </thead>
           <tbody>
@@ -151,21 +172,44 @@ export default function SafeBox() {
                 <td style={tdStyle}>{formatBytes(r.sizeBytes)}</td>
                 <td style={tdStyle}>{formatTs(r.quarantinedAt)}</td>
                 <td style={tdStyle}>
-                  <button
-                    onClick={() => restore(r)}
-                    disabled={restoringId !== null}
-                    style={{
-                      padding: "4px 10px",
-                      fontSize: 12,
-                      borderRadius: 4,
-                      border: "1px solid #2563eb",
-                      background: restoringId === r.id ? "#bfdbfe" : "#2563eb",
-                      color: "#fff",
-                      cursor: restoringId !== null ? "not-allowed" : "pointer",
-                    }}
-                  >
-                    {restoringId === r.id ? "恢复中…" : "恢复"}
-                  </button>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <button
+                      onClick={() => restore(r)}
+                      disabled={restoringId !== null || purgingId !== null}
+                      style={{
+                        padding: "4px 10px",
+                        fontSize: 12,
+                        borderRadius: 4,
+                        border: "1px solid #2563eb",
+                        background: restoringId === r.id ? "#bfdbfe" : "#2563eb",
+                        color: "#fff",
+                        cursor:
+                          restoringId !== null || purgingId !== null
+                            ? "not-allowed"
+                            : "pointer",
+                      }}
+                    >
+                      {restoringId === r.id ? "恢复中…" : "恢复"}
+                    </button>
+                    <button
+                      onClick={() => purge(r)}
+                      disabled={restoringId !== null || purgingId !== null}
+                      style={{
+                        padding: "4px 10px",
+                        fontSize: 12,
+                        borderRadius: 4,
+                        border: "1px solid #dc2626",
+                        background: purgingId === r.id ? "#fecaca" : "#dc2626",
+                        color: "#fff",
+                        cursor:
+                          restoringId !== null || purgingId !== null
+                            ? "not-allowed"
+                            : "pointer",
+                      }}
+                    >
+                      {purgingId === r.id ? "删除中…" : "永久删除"}
+                    </button>
+                  </div>
                 </td>
               </tr>
             ))}
