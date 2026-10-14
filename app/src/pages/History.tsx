@@ -6,13 +6,14 @@ import { useCallback, useEffect, useState } from "react";
 import { formatTs } from "../utils/formatTimestamp";
 import { api } from "../utils/invoke";
 
+// engine AuditLogEntry 是 #[serde(rename_all = "camelCase")]，前端用 camelCase。
 interface AuditLogEntry {
   id: number;
-  session_id: number;
-  event_type: string;
+  sessionId: number;
+  eventType: string;
   path: string;
   detail: string | null;
-  created_at: number;
+  createdAt: number;
 }
 
 type Status = "loading" | "ok" | "error";
@@ -117,8 +118,8 @@ export default function History() {
               )}
               {rows.map((r) => (
                 <tr key={r.id}>
-                  <td style={{ ...tdStyle, whiteSpace: "nowrap" }}>{formatTs(r.created_at)}</td>
-                  <td style={{ ...tdStyle, whiteSpace: "nowrap" }}>{r.event_type}</td>
+                  <td style={{ ...tdStyle, whiteSpace: "nowrap" }}>{formatTs(r.createdAt)}</td>
+                  <td style={{ ...tdStyle, whiteSpace: "nowrap" }}>{r.eventType}</td>
                   <td style={{ ...tdStyle, maxWidth: 360, wordBreak: "break-all" }}>{r.path}</td>
                   <td style={{ ...tdStyle, maxWidth: 320, wordBreak: "break-all", color: "#6b7280" }}>
                     {r.detail ?? "-"}

@@ -2,8 +2,10 @@
 //!
 //! 注册命令：ping（task-001）、scan_start / cleanup_dry_run（task-004）。
 //! sessionId 计数器用简单的 `Mutex<i64>` State 注入（task-004）。
+//! debt-cleanup-003：AppPaths 在 setup 内构造并 manage，所有命令从 State 取路径。
 
 mod commands;
+pub mod paths;
 pub mod progress;
 
 use tauri::Manager;
@@ -19,7 +21,10 @@ pub fn run() {
     tauri::Builder::default()
         .manage(std::sync::Mutex::new(0_i64))
         // task-007：在 setup 闭包里拿 AppHandle，构造全局进度 State 并注入。
+        // debt-cleanup-003：构造 AppPaths（data_root/rules_dir/scripts_dir/box_dir）并注入。
         .setup(|app| {
+            let paths = paths::AppPaths::from_app(app.handle())?;
+            app.manage(paths);
             app.manage(progress::ProgressState::new(app.handle().clone()));
             Ok(())
         })

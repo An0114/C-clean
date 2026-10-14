@@ -24,6 +24,15 @@
   "bundle": {
     "active": true,
     "targets": ["nsis", "msi"],
+    "resources": [
+      "../../rules/cache_rules.json",
+      "../../rules/rules_meta.json",
+      "../../scripts/scan_temp.ps1",
+      "../../scripts/scan_windows_update.ps1",
+      "../../scripts/scan_prefetch.ps1",
+      "../../scripts/scan_browser_cache.ps1",
+      "../../scripts/scan_dev_cache.ps1"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
