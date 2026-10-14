@@ -3,7 +3,7 @@
 > **特别声明**：本文件是项目唯一真实数据源，也是「每次任务结束必更新、必单独提交」的文件。后续所有 Agent 必须遵守：任何任务完成后都要先更新本文件，再单独提交一次（commit message 形如 `docs(state): ... (#task-00X)`），不得与业务代码混在同一个 commit。
 
 ## 当前目标
-M2 自动更新闭环已就位（tauri-plugin-updater + 启动自动 check + 非阻塞 banner）；safe_box 单条 purge 已就绪；下一轮：①safe_box 批量恢复 / 批量 purge（task-038）②品牌图标设计 ③首次 v0.1.1 发版验证 updater 闭环。
+M2 自动更新闭环已就位（tauri-plugin-updater + 启动自动 check + 非阻塞 banner）；safe_box 单条 + 批量 purge 已就绪；下一轮：①safe_box 批量恢复（task-039）②品牌图标设计 ③首次 v0.1.1 发版验证 updater 闭环。
 
 ## 最近一次变更
 2026-10-11：完成 PRD / TRD / ARCHITECTURE / AGENTS / 立项决策记录全套长期基线文档，并初始化本状态白板。
@@ -81,6 +81,12 @@ M2 自动更新闭环已就位（tauri-plugin-updater + 启动自动 check + 非
   - 3 条集成测试（删文件+DB 行 / 缺文件仍删行 / 未找到返 Err）全绿；
   - 前端 `SafeBox.tsx` 操作列加红色「永久删除」按钮，`window.confirm` 兜底，成功重拉列表，失败红条。
   自验：cargo check/clippy/fmt/test=0（engine 140 条）；pnpm lint/test/build=0（166.43 kB / gzip 52.97 kB）。
+2026-10-14：task-038 完成——safe_box 批量 purge：
+  - `engine/src/execute/safe_box.rs` 新增 `purge_many` + `PurgeManyResult{deleted,failed,errors}`：循环调 `purge_item`，单个失败不中断，收集 `id=<id>: <err>`；
+  - Tauri 命令 `safe_box_purge_many(item_ids: Vec<i64>)` 接 `commands.rs`，注册到 `lib.rs`；
+  - 3 条集成测试（全成功 / 部分失败 / 空 Vec）全绿；
+  - 前端 `SafeBox.tsx` 加 checkbox 列（行内 + 表头全选）+ 顶部「批量删除已选(N)」红色按钮，confirm 后调 `purge_many`，绿/红条显示成功/失败数，清空 selected 并重拉列表。
+  自验：cargo check/clippy/fmt/test=0（engine 143 条）；pnpm lint/test/build=0（167.71 kB / gzip 53.34 kB）。
 
 ## 已完成事项
 - [x] 项目立项与仓库初始化（commit 67990f5 / 4972f9d）
@@ -129,6 +135,7 @@ M2 自动更新闭环已就位（tauri-plugin-updater + 启动自动 check + 非
 - [x] 035：tauri updater 自动更新最小闭环——签名密钥对 + plugins.updater 配置 + Settings 应用更新卡片 + release.yml 签名/latest.json 生成
 - [x] 036：启动自动 check + 非阻塞 banner——App.tsx useEffect 自动 check()，有新版本顶部蓝条提示 + 立即更新/稍后按钮
 - [x] 037：safe_box purge 单条永久删除——后端 purge_item + Tauri 命令 + 前端红色按钮 + confirm
+- [x] 038：safe_box 批量 purge——后端 purge_many + Tauri 命令 + 前端 checkbox 列 + 批量删除按钮
 
 ## 已知问题
 - [B 中] task-021 仅做「报告」（who_is_locking 结果写 audit_log + 返回前端），**未实现 RmShutdown/RmRestart（请求关闭占用进程）**，前端 UI toast 也未接；notepad 端到端真机验证 CI 用例 `#[ignore]`。请求关闭与前端展示留 task-022+。
@@ -359,6 +366,11 @@ DocsKeeper（文档与状态管家）
 | 90ed07c | #task-037 | test(execute): safe_box_purge 集成测试（删文件+DB/缺文件/未找到） |
 | 44f2c38 | #task-037 | feat(frontend): SafeBox 行加「永久删除」红色按钮 + confirm |
 | （本次） | #task-037 | docs(state): 任务037完成，safe_box purge 就绪 |
+| 81528dd | #task-038 | feat(execute): purge_many——循环 purge_item 收集成功/失败计数 |
+| f0d8a50 | #task-038 | feat(tauri): safe_box_purge_many 命令并注册 |
+| 8df9c70 | #task-038 | test(execute): purge_many 集成测试（全成功/部分失败/空 Vec） |
+| 5895db0 | #task-038 | feat(frontend): SafeBox 加 checkbox 列 + 批量删除已选按钮 |
+| （本次） | #task-038 | docs(state): 任务038完成，safe_box 批量 purge 就绪 |
 
 ---
 变更轨迹：
@@ -437,3 +449,5 @@ DocsKeeper（文档与状态管家）
 - 2026-10-14  task-036  评审前清障：独立复跑 clippy/fmt/test/pnpm lint/pnpm test/pnpm build 全绿（137 条后端测试无回退，前端 12 断言全过，vite build 165.8KB gzip 52.8KB）；修复 P1 bug——App.tsx banner 更新说明文字条件 `!bannerPhase` 恒 false（bannerPhase 初始值是字符串 "idle"，!"idle"=false），导致 update.body 永远不显示，改为 `bannerPhase === "idle"`；确认启动 useEffect 自动 check() 静默 catch、banner 三态（idle/downloading/error）、立即更新走 downloadAndInstall+relaunch、稍后按钮 setDismissed(true)、ErrorBoundary 包裹 tab 渲染正确；强制更新/下载进度条/定时轮询/"不再提示此版本"持久化/真机端到端升级验证留 task-037+（第三档已登记）
 - 2026-10-14  task-037  safe_box.purge 单条永久删除（后端 purge_item + Tauri 命令 + 前端红色按钮 + confirm）。
 - 2026-10-14  task-037  评审前清障：独立复跑 clippy/fmt/test/pnpm lint/pnpm test/pnpm build 全绿（140 条后端测试含 safe_box_purge 3/3，无回退，vite build 166.4KB gzip 53.0KB）；核验 purge_item 逻辑正确（查 in_box 行→删磁盘文件 NotFound 吞→DELETE DB 行→audit_log action='purge'）、Tauri 命令 safe_box_purge 入参 item_id i64 + Envelope<bool> 已注册 lib.rs、前端 purge 走 api() 解包 Envelope + window.confirm + 红色按钮 per-row purgingId 禁用；无第一档修复项；批量 purge/批量恢复/quota UI/真机端到端删文件验证留 task-038+（第三档已登记）
+- 2026-10-14  task-038  safe_box.purge_many 批量永久删除（后端 batch + 前端 checkbox 列）。
+- 2026-10-14  task-038  评审前清障：独立复跑 check/clippy/fmt/test/pnpm lint/fe-test/build 全绿（143 条后端测试含 safe_box_purge_many 3/3，无回退，vite build 167.7KB gzip 53.3KB）；核验 purge_many 循环调 purge_item 不中断、PurgeManyResult camelCase（deleted/failed/errors）与前端 interface 对齐、safe_box_purge_many 入参 itemIds Vec<i64> 驼峰对应 Rust item_ids、批量按钮 N=0 禁用、表头全选 toggle 逻辑正确；无第一档修复项；批量恢复/进度条/跨页全选/真机端到端批量删验证留 task-039+（第三档已登记）
