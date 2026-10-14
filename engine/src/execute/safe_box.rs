@@ -458,3 +458,39 @@ pub fn purge_many(
     }
     out
 }
+
+// ===================== task-039: restore_many =====================
+
+/// 批量操作结果（前端 UI 用，restore / purge 通用 shape；purge 用 deleted、restore 用 succeeded）。
+#[derive(Debug, Clone, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchOpResult {
+    /// 成功条数（restore 语义）。
+    pub succeeded: usize,
+    /// 失败条数。
+    pub failed: usize,
+    /// 失败原因列表（`id=<id>: <err>`）。
+    pub errors: Vec<String>,
+}
+
+/// 批量恢复：循环调 [`restore_from_safe_box`]，单个失败不中断，收集 errors。
+///
+/// - 空 slice 直接返默认空结果；
+/// - 单个恢复失败（如 ParentMissing / TargetOccupied / NotFound）→ `failed += 1` 并 push 一条错误。
+pub fn restore_many(
+    conn: &Connection,
+    box_dir: &Path,
+    item_ids: &[i64],
+) -> BatchOpResult {
+    let mut out = BatchOpResult::default();
+    for &id in item_ids {
+        match restore_from_safe_box(conn, box_dir, id) {
+            Ok(_) => out.succeeded += 1,
+            Err(e) => {
+                out.failed += 1;
+                out.errors.push(format!("id={id}: {e}"));
+            }
+        }
+    }
+    out
+}
