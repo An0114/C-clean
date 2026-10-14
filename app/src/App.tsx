@@ -78,6 +78,9 @@ export default function App() {
   // task-036：启动时自动 check 一次应用更新（不弹窗、不阻塞）。
   // 无更新 / 网络失败都静默；有更新才在顶部 banner 提示。
   const [update, setUpdate] = useState<Update | null>(null);
+  const [dismissed, setDismissed] = useState(false);
+  const [bannerPhase, setBannerPhase] = useState<"idle" | "downloading" | "error">("idle");
+  const [bannerError, setBannerError] = useState("");
   useEffect(() => {
     (async () => {
       try {
@@ -88,6 +91,20 @@ export default function App() {
       }
     })();
   }, []);
+
+  // task-036：banner「立即更新」——下载安装后自动重启
+  const onUpdateNow = async () => {
+    if (!update) return;
+    setBannerPhase("downloading");
+    setBannerError("");
+    try {
+      await update.downloadAndInstall();
+      await relaunch();
+    } catch (e) {
+      setBannerPhase("error");
+      setBannerError(String(e));
+    }
+  };
   return (
     <div
       style={{
@@ -99,6 +116,67 @@ export default function App() {
       }}
     >
       <h1 style={{ margin: "0 0 16px" }}>C-Disk Cleaner</h1>
+
+      {/* task-036：非阻塞更新 banner——有新版本才显示，不挡操作 */}
+      {update && !dismissed && (
+        <div
+          style={{
+            background: bannerPhase === "error" ? "#fee2e2" : "#dbeafe",
+            border: `1px solid ${bannerPhase === "error" ? "#fca5a5" : "#93c5fd"}`,
+            color: bannerPhase === "error" ? "#b91c1c" : "#1e3a8a",
+            padding: "10px 14px",
+            borderRadius: 8,
+            marginBottom: 12,
+            display: "flex",
+            gap: 12,
+            alignItems: "center",
+          }}
+        >
+          <div style={{ flex: 1 }}>
+            <div style={{ fontWeight: 600 }}>
+              {bannerPhase === "error"
+                ? `更新失败：${bannerError}`
+                : bannerPhase === "downloading"
+                  ? "下载安装中…（应用即将重启）"
+                  : `发现新版本 v${update.version}`}
+            </div>
+            {!bannerPhase && update.body && (
+              <div style={{ fontSize: 12, color: "#374151", marginTop: 4 }}>
+                {update.body}
+              </div>
+            )}
+          </div>
+          {bannerPhase !== "error" && (
+            <button
+              onClick={onUpdateNow}
+              disabled={bannerPhase === "downloading"}
+              style={{
+                background: "#10b981",
+                color: "#fff",
+                border: 0,
+                padding: "6px 12px",
+                borderRadius: 6,
+                cursor: bannerPhase === "downloading" ? "not-allowed" : "pointer",
+              }}
+            >
+              {bannerPhase === "downloading" ? "安装中…" : "立即更新"}
+            </button>
+          )}
+          <button
+            onClick={() => setDismissed(true)}
+            style={{
+              background: "#fff",
+              border: "1px solid #d1d5db",
+              padding: "6px 12px",
+              borderRadius: 6,
+              cursor: "pointer",
+            }}
+          >
+            稍后
+          </button>
+        </div>
+      )}
+
       <div style={{ marginBottom: 16 }}>
         <button style={tabBtnStyle(tab === "dashboard")} onClick={() => setTab("dashboard")}>
           仪表盘
