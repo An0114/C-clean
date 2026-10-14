@@ -24,6 +24,12 @@ interface SafeBoxListResp {
   totalBytes: number;
 }
 
+interface PurgeManyResult {
+  deleted: number;
+  failed: number;
+  errors: string[];
+}
+
 type Status = "loading" | "ok" | "error";
 
 const thStyle: React.CSSProperties = {
@@ -49,6 +55,8 @@ export default function SafeBox() {
   const [msg, setMsg] = useState<string>("");
   const [restoringId, setRestoringId] = useState<number | null>(null);
   const [purgingId, setPurgingId] = useState<number | null>(null);
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [batchPurging, setBatchPurging] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
 
   const load = useCallback(async () => {
@@ -110,15 +118,79 @@ export default function SafeBox() {
     [load]
   );
 
+  // task-038：批量勾选切换。
+  const toggleOne = useCallback((id: number) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const allChecked = entries.length > 0 && selected.size === entries.length;
+
+  const toggleAll = useCallback(() => {
+    setSelected(() => {
+      if (allChecked) return new Set<number>();
+      return new Set(entries.map((e) => e.id));
+    });
+  }, [allChecked, entries]);
+
+  // task-038：批量永久删除——confirm 后调 purge_many。
+  const purgeMany = useCallback(async () => {
+    const ids = Array.from(selected);
+    if (ids.length === 0) return;
+    const ok = window.confirm(`确定永久删除 ${ids.length} 个文件？此操作不可恢复。`);
+    if (!ok) return;
+    setBatchPurging(true);
+    setResult(null);
+    try {
+      const r = await api<PurgeManyResult>("safe_box_purge_many", { itemIds: ids });
+      const parts: string[] = [];
+      if (r.deleted > 0) parts.push(`成功 ${r.deleted} 条`);
+      if (r.failed > 0) parts.push(`失败 ${r.failed} 条：${r.errors.join("；")}`);
+      setResult({
+        ok: r.failed === 0,
+        text: parts.join("，") || "无操作",
+      });
+      setSelected(new Set());
+      await load();
+    } catch (e) {
+      setResult({ ok: false, text: `批量删除失败：${String(e)}` });
+    } finally {
+      setBatchPurging(false);
+    }
+  }, [selected, load]);
+
   return (
     <div>
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
-        <button onClick={load} disabled={restoringId !== null || purgingId !== null}>
+        <button
+          onClick={load}
+          disabled={restoringId !== null || purgingId !== null || batchPurging}
+        >
           刷新
         </button>
         <span style={{ fontSize: 13, color: "#374151" }}>
           共 {totalItems} 项 / 总大小 {formatBytes(totalBytes)}
         </span>
+        <button
+          onClick={purgeMany}
+          disabled={selected.size === 0 || batchPurging || restoringId !== null || purgingId !== null}
+          style={{
+            marginLeft: "auto",
+            padding: "6px 12px",
+            fontSize: 12,
+            borderRadius: 4,
+            border: "1px solid #dc2626",
+            background: selected.size === 0 ? "#fca5a5" : "#dc2626",
+            color: "#fff",
+            cursor: selected.size === 0 ? "not-allowed" : "pointer",
+          }}
+        >
+          {batchPurging ? "删除中…" : `批量删除已选(${selected.size})`}
+        </button>
       </div>
 
       {result && (
@@ -157,6 +229,14 @@ export default function SafeBox() {
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
             <tr>
+              <th style={{ ...thStyle, width: 32 }}>
+                <input
+                  type="checkbox"
+                  checked={allChecked}
+                  onChange={toggleAll}
+                  disabled={batchPurging || restoringId !== null || purgingId !== null}
+                />
+              </th>
               <th style={thStyle}>原路径</th>
               <th style={{ ...thStyle, width: 100 }}>大小</th>
               <th style={{ ...thStyle, width: 160 }}>移入时间</th>
@@ -166,6 +246,14 @@ export default function SafeBox() {
           <tbody>
             {entries.map((r) => (
               <tr key={r.id}>
+                <td style={tdStyle}>
+                  <input
+                    type="checkbox"
+                    checked={selected.has(r.id)}
+                    onChange={() => toggleOne(r.id)}
+                    disabled={batchPurging || restoringId !== null || purgingId !== null}
+                  />
+                </td>
                 <td style={{ ...tdStyle, fontFamily: "monospace", fontSize: 12 }}>
                   {r.originalPath}
                 </td>
