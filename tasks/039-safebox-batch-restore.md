@@ -137,3 +137,45 @@ DevAgent 交付物（后续执行结果）：
 4. 本任务文档本身**由 DocsKeeper 在派发时**单独提交一次：
    `docs(task): 新增任务039-safe_box 批量恢复 (#task-039)`，
    该提交只含 `tasks/039-safebox-batch-restore.md` 一个文件，落在 `feature/task-039-safebox-batch-restore` 分支最前端。
+
+## 实现备注（DevAgent 回填 + 评审前清障补记）
+
+### 实际改动文件
+
+| 文件 | 改动 |
+|---|---|
+| `engine/src/execute/safe_box.rs` | 新增 `BatchOpResult` + `restore_many` |
+| `engine/tests/safe_box_restore_many.rs` | 新建，4 条集成测试 |
+| `app/src-tauri/src/commands.rs` | 新增 `safe_box_restore_many` 命令 |
+| `app/src-tauri/src/lib.rs` | 注册命令 |
+| `app/src/pages/SafeBox.tsx` | 加「批量恢复已选(N)」绿色按钮 + 批量状态 state |
+
+### BatchOpResult 是复用还是新建
+
+**新建**（未复用 task-038 的 `PurgeManyResult`）。理由：两者语义字段不同（purge 用 `deleted`、restore 用 `succeeded`），强行合并会让字段名与行为错位。任务书 §A.4 明确允许「抽公共结构或直接用同名结构」二选一，此处取后者并保留各自结构。
+
+### 自验输出
+
+- `cargo check --workspace --all-targets` = 0
+- `cargo clippy --workspace --all-targets -- -D warnings` = 0
+- `cargo test -p engine` = 0（147 条 passed / 0 failed）
+- `cargo fmt --all -- --check` = 0
+- `pnpm --filter app lint` = 0
+- `pnpm --filter app test` = 0（3 文件 12 断言）
+- `pnpm --filter app build` = 0（168.51 kB / gzip 53.43 kB）
+
+### 与任务书的偏差
+
+1. `restore_many` 实际签名为 `(conn, box_dir, item_ids) -> BatchOpResult`，不是任务书 §A.1 写的 `(conn, item_ids) -> Result<BatchOpResult, String>`。对齐既有 `purge_many` / `restore_from_safe_box` 的 `box_dir` 传参约定；批量语义下单个失败不抛硬错，故不返回 `Result`（失败已收集进 `errors`）。
+2. 前端「批量恢复」按钮放在「批量删除」左边（任务书 §C.6 要求），且 `N=0` 时禁用。
+
+### 评审前清障补记（2026-10-15）
+
+清障阶段修复 3 项第一档问题并补 1 条测试，详见 `docs/PROJECT_STATE.md` 变更轨迹 `task-039 评审前清障` 行。
+
+### 遗留问题（留 task-040+）
+
+- 「全部恢复」/「全部 purge」一键操作（本任务明确不做）；
+- 批量操作进度条（本任务明确不做）；
+- 跨页全选（列表本身无分页，本任务明确不做）；
+- 真机端到端批量恢复验证（自动化环境无法取得 GUI 数据行，需装包后人工勾选多个文件恢复；已登记已知问题）。
