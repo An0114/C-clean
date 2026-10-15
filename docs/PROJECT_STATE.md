@@ -159,7 +159,9 @@ M2 自动更新闭环已就位（tauri-plugin-updater + 启动自动 check + 非
 - [B 低] task-006 CI 未接 Dependabot / cargo audit / npm audit（任务边界明确不做）；~~package.json 的 lint/test 为 echo 占位，CI 也不跑这两个命令~~（task-032 已接入 ESLint 10 flat config + Vitest 2.1，CI 已加 Lint/Test 两步）。CI 仅 windows-latest 单平台，跨平台矩阵（macOS/Linux）本项目明确不做；~~NSIS 出包矩阵未配~~（task-033 已配 Windows 单平台 nsis+msi，artifact 名 cclean-windows-installer）。
 - [B 中] task-033 installer 未做代码签名：未购 EV/OV 证书，用户首次运行 .exe/.msi 会有 SmartScreen「Windows 已保护你的电脑」警告，需要手动「更多信息→仍要运行」；正式发版前需评估代码签名（自签/商业证书）。
 - [B 低] task-033 应用图标仍为 Tauri 默认占位（task-001 生成的 17 个文件），未做品牌图标设计；待设计出 1024×1024 源 PNG 后跑 `tauri icon` 重生成全套。
-- [B 低] task-039 safe_box 批量恢复真机端到端未跑：自动化环境无法在 GUI 里取得保险箱数据行（无真实扫描产出的文件），checkbox 勾选 + 批量恢复按钮全链路未经真机点击验证。补偿：后端 `restore_many` 4 条集成测试（全成功 / 部分失败 / 空 Vec / 中间失败不阻断后续）+ 前端 lint/单测/build 全绿 + 代码走查（selected Set 复用、confirm、绿红条、清空 selected 重拉列表）。需装包后人工造数据验证。
+- [B 低] task-039 safe_box 批量恢复真机端到端未跑：自动化环境无法在 GUI 里取得保险箱数据行（无真实扫描产出的文件），checkbox 勾选 + 批量恢复按钮全链路未经真机点击验证。补偿：后端 `restore_many` 4 条集成测试（全成功 / 部分失败 / 空 Vec / 中间失败不阻断后续）+ 前端 lint/单测/build 全绿 + 代码走查（selected Set 复用、confirm、绿红条、清空 selected 重拉列表）。需装包后人工造数据验证。（2026-10-15 评审侧已补齐：评审 Agent 用造数据在 `pnpm tauri dev` 真机跑通 checkbox 勾选 → 批量恢复全链路（2 成功 / 1 失败父目录缺失），证据见 `docs/reviews/task-039-batch-restore-review.md`；安装包级干净目录安装冒烟仍留发版任务。）
+- [B 中] task-039 评审运行时冒烟发现（**非本任务引入**，设置页属 task-022/031 范围）：每次文档加载后**首次**进入「设置」tab 调用 `rules_check_update` 会打印 2 条红色 console error（source=network，`http://ipc.localhost/rules_check_update`，ERR_CONNECTION_REFUSED）+ 2 条 Tauri「IPC custom protocol failed, will use postMessage」warning；同条件点历史/清理/仪表盘 IPC 均 0 红错，同文档内再次进设置页也不再复现。功能经 postMessage 回退仍可用。建议 `bugfix/task-039-settings-ipc-redconsole` 排查 Tauri 2.x ipc.localhost 首调与 `useCustomProtocol` 回退策略。
+- [B 中] task-039 评审运行时冒烟发现：设置页规则库检查长时间停留「检查中…」（实测 ≥8s 无收敛、无失败态）；本机 `https://raw.githubusercontent.com/An0114/C-clean/main/latest.json` 实测 404（私有仓 raw 不可达），Rust 侧外呼无短超时/失败收敛。需补显式超时 + 可读失败文案，并评估更新端点改走 Releases 资产（与 task-034/035 同类问题）。
 
 ## 下一步计划
 M2 updater 闭环完成（手动 Settings 检查 + 启动自动 banner）；safe_box 单条/批量 purge/恢复全部就绪。下一轮进入：①派发 task-040：dry-run 预览 UI——前端「预览可清理项」按钮，调 cleanup.dryRun 显示大小汇总 ②首次 v0.1.1 发版验证完整 updater 流程（GitHub Secret 已配好，可直接 workflow_dispatch）③品牌图标设计（用户手动）。
@@ -389,6 +391,9 @@ DocsKeeper（文档与状态管家）
 | 54dd237 | #task-039 | test(execute): 补 restore_many 中间失败不阻断后续 id 用例 |
 | de107af | #task-039 | fix(frontend): 批量操作进行中禁用行内恢复/永久删除按钮 |
 | （本次） | #task-039 | docs(state): 评审前清障完成 |
+| cbc5aaa | #task-039 | merge: task-039 safe_box 批量恢复（评审通过后 --no-ff 合并，双亲 2068fcd + daf7adf） |
+| 882ed67 | #task-039 | docs(review): 任务039评审报告（真机冒烟 + 分支/主干 CI 实查） |
+| （本次） | #task-039 | docs(state): 评审登记 2 条非阻塞已知问题与合并记录 |
 
 ---
 变更轨迹：
@@ -472,3 +477,4 @@ DocsKeeper（文档与状态管家）
 - 2026-10-14  task-039  safe_box.restore_many 批量恢复（复用 task-038 checkbox UI）。
 - 2026-10-14  task-039  评审前清障：独立复跑 check/clippy/fmt/test/pnpm lint/fe-test/build 全绿（146 条后端测试含 safe_box_restore_many 3/3，无回退，vite build 168.5KB gzip 53.4KB）；核验 restore_many 循环调 restore_from_safe_box 单个失败不中断、新建 BatchOpResult{succeeded,failed,errors} camelCase 与 PurgeManyResult 解耦（purge 用 deleted、restore 用 succeeded）、safe_box_restore_many 命令入参 itemIds Vec<i64> 已注册 lib.rs、前端绿色「批量恢复已选(N)」按钮在红色批量删除左边 + 复用 selected Set + confirm + 结果绿/红条 + 成功后清空 selected 重拉列表；无第一档修复项；全部恢复/全部 purge 一键/进度条/跨页全选/真机端到端批量恢复验证留 task-040+（第三档已登记）
 - 2026-10-15  task-039  评审前清障（二轮，清障 Agent）：① 第一档修复——`cargo fmt --all -- --check` 在 HEAD 与 main 上均红灯（task-038 提交的 `purge_many`/`insert_box_row` 多行签名 + 断言未展开，task-038 评审「fmt 全绿」系误报），已 cargo fmt 对齐并提交；② 第一档修复——SafeBox 行内「恢复 / 永久删除」按钮禁用条件漏了 `batchPurging`/`batchRestoring`，批量操作进行中仍可点单条按钮造成竞态，已补禁用；③ 第一档补测——`restore_many` 原 partial_fail 失败项在末尾，无法证明「单个失败不阻断后续 id」，补 `restore_many_failure_in_middle_does_not_stop_rest`（ParentMissing 夹中间，断言后续 id 仍成功）并修正 `BatchOpResult` 误导性 doc 注释；④ 第三档登记——批量恢复真机端到端未跑（无 GUI 数据行）。修复后 check/clippy/fmt/test（147 条）/pnpm lint/fe-test/build 全绿（vite build 168.51KB gzip 53.43KB）
+- 2026-10-15  task-039  评审通过：真机冒烟（pnpm tauri dev + WebView2 CDP 挂载 9222）逐个点过五 tab 并造数据跑通「勾选 → 批量恢复已选 → confirm → 绿/红条 → 清空 selected 重拉列表」全链路（3 条：2 成功回原路径 + 1 失败父目录缺失保留 in_box），文件/DB/audit_log 三方一致，本任务页面 Console 0 红错 0 exception；回归批量删除正常；本地门禁独立复跑全绿（fmt/clippy/147 后端测试/lint/12 前端断言/build 168.51KB gzip 53.43KB）；**CI 实查**：分支 run 38671216149（PR #2）绿，合并前 main 2068fcd run 38571515030 因 task-038 fmt 问题红（本分支 adcba07 已修），合并后 main run 38673720322 绿；merge --no-ff → `cbc5aaa`，feature 分支已删；新增登记 2 条非阻塞已知问题（设置页首次 rules_check_update 红错、规则检查无超时收敛，均非本任务引入）
