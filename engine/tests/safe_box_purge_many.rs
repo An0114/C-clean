@@ -12,11 +12,7 @@ fn setup() -> (tempfile::TempDir, rusqlite::Connection, std::path::PathBuf) {
 }
 
 /// 插一行 safe_box 并写对应磁盘文件，返回 id。
-fn insert_box_row(
-    conn: &rusqlite::Connection,
-    box_dir: &std::path::Path,
-    rel: &str,
-) -> i64 {
+fn insert_box_row(conn: &rusqlite::Connection, box_dir: &std::path::Path, rel: &str) -> i64 {
     std::fs::write(box_dir.join(rel), vec![0u8; 10]).unwrap();
     conn.execute(
         "INSERT INTO safe_box (original_path, safe_rel_path, size_bytes, quarantined_at, expires_at, status)
@@ -53,7 +49,11 @@ fn purge_many_partial_fail() {
     assert_eq!(r.deleted, 2);
     assert_eq!(r.failed, 1);
     assert_eq!(r.errors.len(), 1);
-    assert!(r.errors[0].contains(&format!("id={ghost}")), "{}", r.errors[0]);
+    assert!(
+        r.errors[0].contains(&format!("id={ghost}")),
+        "{}",
+        r.errors[0]
+    );
 }
 
 #[test]

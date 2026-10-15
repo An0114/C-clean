@@ -40,6 +40,7 @@ pub fn run() {
             commands::safe_box_list,
             commands::safe_box_purge,
             commands::safe_box_purge_many,
+            commands::safe_box_restore_many,
             commands::rules_check_update,
             commands::rules_apply_update,
             commands::audit_log_list,

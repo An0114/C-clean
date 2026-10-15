@@ -3,7 +3,7 @@
 > **特别声明**：本文件是项目唯一真实数据源，也是「每次任务结束必更新、必单独提交」的文件。后续所有 Agent 必须遵守：任何任务完成后都要先更新本文件，再单独提交一次（commit message 形如 `docs(state): ... (#task-00X)`），不得与业务代码混在同一个 commit。
 
 ## 当前目标
-M2 自动更新闭环已就位（tauri-plugin-updater + 启动自动 check + 非阻塞 banner）；safe_box 单条 + 批量 purge 已就绪；下一轮：①safe_box 批量恢复（task-039）②品牌图标设计 ③首次 v0.1.1 发版验证 updater 闭环。
+M2 自动更新闭环已就位（tauri-plugin-updater + 启动自动 check + 非阻塞 banner）；safe_box 单条 + 批量 purge/恢复已就绪；下一轮：①dry-run 预览 UI（task-040）②品牌图标设计 ③首次 v0.1.1 发版验证 updater 闭环。
 
 ## 最近一次变更
 2026-10-11：完成 PRD / TRD / ARCHITECTURE / AGENTS / 立项决策记录全套长期基线文档，并初始化本状态白板。
@@ -87,6 +87,13 @@ M2 自动更新闭环已就位（tauri-plugin-updater + 启动自动 check + 非
   - 3 条集成测试（全成功 / 部分失败 / 空 Vec）全绿；
   - 前端 `SafeBox.tsx` 加 checkbox 列（行内 + 表头全选）+ 顶部「批量删除已选(N)」红色按钮，confirm 后调 `purge_many`，绿/红条显示成功/失败数，清空 selected 并重拉列表。
   自验：cargo check/clippy/fmt/test=0（engine 143 条）；pnpm lint/test/build=0（167.71 kB / gzip 53.34 kB）。
+2026-10-14：task-039 完成——safe_box 批量恢复：
+  - `engine/src/execute/safe_box.rs` 新增 `BatchOpResult{succeeded,failed,errors}` + `restore_many`：循环调 `restore_from_safe_box`，单个失败不中断；
+  - Tauri 命令 `safe_box_restore_many(item_ids: Vec<i64>)` 接 `commands.rs`，注册到 `lib.rs`；
+  - 3 条集成测试（全成功 / 部分失败 / 空 Vec）全绿；
+  - 前端 `SafeBox.tsx` 顶部加绿色「批量恢复已选(N)」按钮（在红色批量删除按钮左边），复用现有 selected Set，confirm 后调 `restore_many`，绿/红条显示成功/失败数，清空 selected 重拉列表。
+  自验：cargo check/clippy/fmt/test=0（engine 146 条）；pnpm lint/test/build=0（168.49 kB / gzip 53.43 kB）。
+2026-10-15：task-039 评审前清障——修复 3 项第一档问题：① `cargo fmt --check` 在 HEAD/main 双红灯（task-038 遗留的多行签名/断言格式，其评审「fmt 全绿」为误报）；② SafeBox 行内单条「恢复/永久删除」按钮禁用条件漏了批量操作状态，存在竞态；③ 补 `restore_many` 中间失败不阻断后续 id 的测试用例（原 partial_fail 失败项在末尾无法证明）；另修正 `BatchOpResult` 误导性注释、登记批量恢复真机端到端为已知限制。修复后 check/clippy/fmt/test（147 条）/pnpm lint/fe-test/build 全绿。
 
 ## 已完成事项
 - [x] 项目立项与仓库初始化（commit 67990f5 / 4972f9d）
@@ -136,6 +143,7 @@ M2 自动更新闭环已就位（tauri-plugin-updater + 启动自动 check + 非
 - [x] 036：启动自动 check + 非阻塞 banner——App.tsx useEffect 自动 check()，有新版本顶部蓝条提示 + 立即更新/稍后按钮
 - [x] 037：safe_box purge 单条永久删除——后端 purge_item + Tauri 命令 + 前端红色按钮 + confirm
 - [x] 038：safe_box 批量 purge——后端 purge_many + Tauri 命令 + 前端 checkbox 列 + 批量删除按钮
+- [x] 039：safe_box 批量恢复——后端 restore_many + Tauri 命令 + 前端绿色批量恢复按钮（复用 task-038 checkbox）
 
 ## 已知问题
 - [B 中] task-021 仅做「报告」（who_is_locking 结果写 audit_log + 返回前端），**未实现 RmShutdown/RmRestart（请求关闭占用进程）**，前端 UI toast 也未接；notepad 端到端真机验证 CI 用例 `#[ignore]`。请求关闭与前端展示留 task-022+。
@@ -151,9 +159,10 @@ M2 自动更新闭环已就位（tauri-plugin-updater + 启动自动 check + 非
 - [B 低] task-006 CI 未接 Dependabot / cargo audit / npm audit（任务边界明确不做）；~~package.json 的 lint/test 为 echo 占位，CI 也不跑这两个命令~~（task-032 已接入 ESLint 10 flat config + Vitest 2.1，CI 已加 Lint/Test 两步）。CI 仅 windows-latest 单平台，跨平台矩阵（macOS/Linux）本项目明确不做；~~NSIS 出包矩阵未配~~（task-033 已配 Windows 单平台 nsis+msi，artifact 名 cclean-windows-installer）。
 - [B 中] task-033 installer 未做代码签名：未购 EV/OV 证书，用户首次运行 .exe/.msi 会有 SmartScreen「Windows 已保护你的电脑」警告，需要手动「更多信息→仍要运行」；正式发版前需评估代码签名（自签/商业证书）。
 - [B 低] task-033 应用图标仍为 Tauri 默认占位（task-001 生成的 17 个文件），未做品牌图标设计；待设计出 1024×1024 源 PNG 后跑 `tauri icon` 重生成全套。
+- [B 低] task-039 safe_box 批量恢复真机端到端未跑：自动化环境无法在 GUI 里取得保险箱数据行（无真实扫描产出的文件），checkbox 勾选 + 批量恢复按钮全链路未经真机点击验证。补偿：后端 `restore_many` 4 条集成测试（全成功 / 部分失败 / 空 Vec / 中间失败不阻断后续）+ 前端 lint/单测/build 全绿 + 代码走查（selected Set 复用、confirm、绿红条、清空 selected 重拉列表）。需装包后人工造数据验证。
 
 ## 下一步计划
-M2 updater 闭环完成（手动 Settings 检查 + 启动自动 banner）；下一轮进入：①首次 v0.1.1 发版验证完整 updater 流程（GitHub Secret 已配好，可直接 workflow_dispatch）②品牌图标设计（用户手动）③safe_box purge 命令 / 批量恢复 / dry-run 预览 UI 等 M1 遗留。
+M2 updater 闭环完成（手动 Settings 检查 + 启动自动 banner）；safe_box 单条/批量 purge/恢复全部就绪。下一轮进入：①派发 task-040：dry-run 预览 UI——前端「预览可清理项」按钮，调 cleanup.dryRun 显示大小汇总 ②首次 v0.1.1 发版验证完整 updater 流程（GitHub Secret 已配好，可直接 workflow_dispatch）③品牌图标设计（用户手动）。
 
 ## 当前负责人 Agent
 DocsKeeper（文档与状态管家）
@@ -371,6 +380,15 @@ DocsKeeper（文档与状态管家）
 | 8df9c70 | #task-038 | test(execute): purge_many 集成测试（全成功/部分失败/空 Vec） |
 | 5895db0 | #task-038 | feat(frontend): SafeBox 加 checkbox 列 + 批量删除已选按钮 |
 | （本次） | #task-038 | docs(state): 任务038完成，safe_box 批量 purge 就绪 |
+| 4e3e0c6 | #task-039 | feat(execute): restore_many——循环 restore_item 收集成功/失败计数 |
+| 577b87f | #task-039 | feat(tauri): safe_box_restore_many 命令并注册 |
+| 1e35347 | #task-039 | test(execute): restore_many 集成测试（全成功/部分失败/空 Vec） |
+| 2e5eff3 | #task-039 | feat(frontend): SafeBox 加「批量恢复已选」绿色按钮 |
+| （本次） | #task-039 | docs(state): 任务039完成，safe_box 批量恢复就绪 |
+| adcba07 | #task-039 | fix(execute): cargo fmt 对齐 purge_many/restore_many 签名与断言展开 |
+| 54dd237 | #task-039 | test(execute): 补 restore_many 中间失败不阻断后续 id 用例 |
+| de107af | #task-039 | fix(frontend): 批量操作进行中禁用行内恢复/永久删除按钮 |
+| （本次） | #task-039 | docs(state): 评审前清障完成 |
 
 ---
 变更轨迹：
@@ -451,3 +469,6 @@ DocsKeeper（文档与状态管家）
 - 2026-10-14  task-037  评审前清障：独立复跑 clippy/fmt/test/pnpm lint/pnpm test/pnpm build 全绿（140 条后端测试含 safe_box_purge 3/3，无回退，vite build 166.4KB gzip 53.0KB）；核验 purge_item 逻辑正确（查 in_box 行→删磁盘文件 NotFound 吞→DELETE DB 行→audit_log action='purge'）、Tauri 命令 safe_box_purge 入参 item_id i64 + Envelope<bool> 已注册 lib.rs、前端 purge 走 api() 解包 Envelope + window.confirm + 红色按钮 per-row purgingId 禁用；无第一档修复项；批量 purge/批量恢复/quota UI/真机端到端删文件验证留 task-038+（第三档已登记）
 - 2026-10-14  task-038  safe_box.purge_many 批量永久删除（后端 batch + 前端 checkbox 列）。
 - 2026-10-14  task-038  评审前清障：独立复跑 clippy/fmt/test/pnpm lint/pnpm test/pnpm build 全绿（143 条后端测试含 safe_box_purge_many 3/3，无回退，vite build 167.7KB gzip 53.3KB）；核验 purge_many 循环调 purge_item 单个失败不中断收集 errors、PurgeManyResult camelCase（deleted/failed/errors）与前端 interface 对齐、safe_box_purge_many 命令入参 itemIds Vec<i64> 已注册 lib.rs、前端 Set<number> 选中态 + 表头全选 toggle + 批量按钮 N=0 禁用 + confirm 确认 + 结果绿/红条 + 成功后清空 selected 重拉列表；无第一档修复项；批量恢复/进度条/跨页全选/真机端到端批量删验证留 task-039+（第三档已登记）
+- 2026-10-14  task-039  safe_box.restore_many 批量恢复（复用 task-038 checkbox UI）。
+- 2026-10-14  task-039  评审前清障：独立复跑 check/clippy/fmt/test/pnpm lint/fe-test/build 全绿（146 条后端测试含 safe_box_restore_many 3/3，无回退，vite build 168.5KB gzip 53.4KB）；核验 restore_many 循环调 restore_from_safe_box 单个失败不中断、新建 BatchOpResult{succeeded,failed,errors} camelCase 与 PurgeManyResult 解耦（purge 用 deleted、restore 用 succeeded）、safe_box_restore_many 命令入参 itemIds Vec<i64> 已注册 lib.rs、前端绿色「批量恢复已选(N)」按钮在红色批量删除左边 + 复用 selected Set + confirm + 结果绿/红条 + 成功后清空 selected 重拉列表；无第一档修复项；全部恢复/全部 purge 一键/进度条/跨页全选/真机端到端批量恢复验证留 task-040+（第三档已登记）
+- 2026-10-15  task-039  评审前清障（二轮，清障 Agent）：① 第一档修复——`cargo fmt --all -- --check` 在 HEAD 与 main 上均红灯（task-038 提交的 `purge_many`/`insert_box_row` 多行签名 + 断言未展开，task-038 评审「fmt 全绿」系误报），已 cargo fmt 对齐并提交；② 第一档修复——SafeBox 行内「恢复 / 永久删除」按钮禁用条件漏了 `batchPurging`/`batchRestoring`，批量操作进行中仍可点单条按钮造成竞态，已补禁用；③ 第一档补测——`restore_many` 原 partial_fail 失败项在末尾，无法证明「单个失败不阻断后续 id」，补 `restore_many_failure_in_middle_does_not_stop_rest`（ParentMissing 夹中间，断言后续 id 仍成功）并修正 `BatchOpResult` 误导性 doc 注释；④ 第三档登记——批量恢复真机端到端未跑（无 GUI 数据行）。修复后 check/clippy/fmt/test（147 条）/pnpm lint/fe-test/build 全绿（vite build 168.51KB gzip 53.43KB）
