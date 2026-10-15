@@ -57,7 +57,11 @@ fn restore_many_partial_fail() {
     assert_eq!(r.succeeded, 1);
     assert_eq!(r.failed, 1);
     assert_eq!(r.errors.len(), 1);
-    assert!(r.errors[0].contains(&format!("id={ghost}")), "{}", r.errors[0]);
+    assert!(
+        r.errors[0].contains(&format!("id={ghost}")),
+        "{}",
+        r.errors[0]
+    );
     assert!(p1.exists());
 }
 
@@ -68,4 +72,33 @@ fn restore_many_empty() {
     assert_eq!(r.succeeded, 0);
     assert_eq!(r.failed, 0);
     assert!(r.errors.is_empty());
+}
+
+/// 失败项夹在成功项中间：证明单个失败不阻断「后续 id」继续处理
+/// （partial_fail 的失败项在末尾，无法证明这一点），且错误文案区分 ParentMissing。
+#[test]
+fn restore_many_failure_in_middle_does_not_stop_rest() {
+    let (dir, conn, box_dir) = setup();
+    let p1 = dir.path().join("first.bin");
+    // 父目录不存在 → restore_from_safe_box 返 ParentMissing。
+    let p2 = dir.path().join("no_such_dir").join("second.bin");
+    let p3 = dir.path().join("third.bin");
+    let id1 = insert_box_row(&conn, &box_dir, "m1.tmp", &p1);
+    let id2 = insert_box_row(&conn, &box_dir, "m2.tmp", &p2);
+    let id3 = insert_box_row(&conn, &box_dir, "m3.tmp", &p3);
+
+    let r = restore_many(&conn, &box_dir, &[id1, id2, id3]);
+    assert_eq!(r.succeeded, 2);
+    assert_eq!(r.failed, 1);
+    assert_eq!(r.errors.len(), 1);
+    assert!(
+        r.errors[0].contains(&format!("id={id2}")),
+        "{}",
+        r.errors[0]
+    );
+    assert!(r.errors[0].contains("父目录"), "{}", r.errors[0]);
+    // 中间失败后，第三个 id 仍被处理并成功。
+    assert!(p1.exists());
+    assert!(p3.exists());
+    assert!(!p2.exists());
 }
