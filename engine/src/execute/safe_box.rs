@@ -441,11 +441,7 @@ pub struct PurgeManyResult {
 ///
 /// - 空 slice 直接返默认空结果；
 /// - 单个 purge_item 失败 → `failed += 1` 并 push 一条错误，不阻断后续 id。
-pub fn purge_many(
-    conn: &Connection,
-    box_dir: &Path,
-    item_ids: &[i64],
-) -> PurgeManyResult {
+pub fn purge_many(conn: &Connection, box_dir: &Path, item_ids: &[i64]) -> PurgeManyResult {
     let mut out = PurgeManyResult::default();
     for &id in item_ids {
         match purge_item(conn, box_dir, id) {
@@ -461,7 +457,7 @@ pub fn purge_many(
 
 // ===================== task-039: restore_many =====================
 
-/// 批量操作结果（前端 UI 用，restore / purge 通用 shape；purge 用 deleted、restore 用 succeeded）。
+/// 批量恢复结果（前端 UI 用）。purge 走独立的 [`PurgeManyResult`]（字段名叫 `deleted`），两者不共用结构。
 #[derive(Debug, Clone, Default, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BatchOpResult {
@@ -477,11 +473,7 @@ pub struct BatchOpResult {
 ///
 /// - 空 slice 直接返默认空结果；
 /// - 单个恢复失败（如 ParentMissing / TargetOccupied / NotFound）→ `failed += 1` 并 push 一条错误。
-pub fn restore_many(
-    conn: &Connection,
-    box_dir: &Path,
-    item_ids: &[i64],
-) -> BatchOpResult {
+pub fn restore_many(conn: &Connection, box_dir: &Path, item_ids: &[i64]) -> BatchOpResult {
     let mut out = BatchOpResult::default();
     for &id in item_ids {
         match restore_from_safe_box(conn, box_dir, id) {
