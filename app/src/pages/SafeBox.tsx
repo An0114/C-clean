@@ -329,7 +329,12 @@ export default function SafeBox() {
                   <div style={{ display: "flex", gap: 6 }}>
                     <button
                       onClick={() => restore(r)}
-                      disabled={restoringId !== null || purgingId !== null}
+                      disabled={
+                        restoringId !== null ||
+                        purgingId !== null ||
+                        batchPurging ||
+                        batchRestoring
+                      }
                       style={{
                         padding: "4px 10px",
                         fontSize: 12,
@@ -338,7 +343,10 @@ export default function SafeBox() {
                         background: restoringId === r.id ? "#bfdbfe" : "#2563eb",
                         color: "#fff",
                         cursor:
-                          restoringId !== null || purgingId !== null
+                          restoringId !== null ||
+                          purgingId !== null ||
+                          batchPurging ||
+                          batchRestoring
                             ? "not-allowed"
                             : "pointer",
                       }}
@@ -347,7 +355,12 @@ export default function SafeBox() {
                     </button>
                     <button
                       onClick={() => purge(r)}
-                      disabled={restoringId !== null || purgingId !== null}
+                      disabled={
+                        restoringId !== null ||
+                        purgingId !== null ||
+                        batchPurging ||
+                        batchRestoring
+                      }
                       style={{
                         padding: "4px 10px",
                         fontSize: 12,
@@ -356,7 +369,10 @@ export default function SafeBox() {
                         background: purgingId === r.id ? "#fecaca" : "#dc2626",
                         color: "#fff",
                         cursor:
-                          restoringId !== null || purgingId !== null
+                          restoringId !== null ||
+                          purgingId !== null ||
+                          batchPurging ||
+                          batchRestoring
                             ? "not-allowed"
                             : "pointer",
                       }}
