@@ -105,6 +105,12 @@ M2 自动更新闭环已就位（tauri-plugin-updater + 启动自动 check + 非
   - R2（NSIS 干净目录安装冒烟，已通过）：`/S` 静默安装到全新 temp 目录（13 文件：cdisk-cleaner.exe 16MB + uninstall.exe + rules/scripts 资源）；安装目录零写入（9 个静态文件，无 DB）；DB 落在 `%APPDATA%\com.and0114.cclean\data\cdiskcleaner.db`（57KB SQLite），rules 复制到 `%APPDATA%\com.and0114.cclean\rules\`——数据目录隔离验证通过。
   - R3（CI，待补）：需开 PR 到 main 触发 ci.yml windows-latest 五道闸（fmt/clippy/cargo test/pnpm lint+test/pnpm build+tauri build），当前无 gh CLI 鉴权，需用户手动开 PR 或授权。
   - 已知限制：干净目录安装后扫描未产出待清理项（安装目录 `_up_` 资源路径与运行时 `app_data_dir/rules/` 首次复制逻辑需真实环境验证，非 task-040 代码问题）；因此预览按钮的「点击→面板渲染」全链路因无数据行未能触发，但按钮存在性、禁用逻辑、页面渲染、Console 零红错均已验证。
+2026-10-16：task-040 **R3 CI 缺口已补开 PR**（第二轮评审仍因 C3-C6 面板未真机渲染 + CI 未跑打回）：
+  - 经 GitHub 插件开 **draft PR #3**（`feature/task-040-dryrun-preview-ui` → `main`，base 不合并）：https://github.com/An0114/C-clean/pull/3
+  - CI run：https://github.com/An0114/C-clean/actions/runs/38839740840 （id `38839740840`，job `build`，记录时 status=in_progress；最终 conclusion 待 run 结束，以 PR #3 checks 页为准）。
+  - 代码层面第二轮评审确认无 bug、不改业务代码、不开 bugfix 子分支。
+  - 仍待测试 Agent（提示词 9）补：C3-C6 四个面板分支（code=0 汇总 / 2002 红线 / 2001 空 / error）真机 innerText 证据——需 CDP 调 `scan_start(scope='full')` 造数据行后点预览抓面板文案（评审 §R1-R3）。
+  - 注：本地一个评审 markdown 提交 `1ac7182` 经远端 PR head 已可见（PR head sha = 1ac7182）。
 
 ## 已完成事项
 - [x] 项目立项与仓库初始化（commit 67990f5 / 4972f9d）
