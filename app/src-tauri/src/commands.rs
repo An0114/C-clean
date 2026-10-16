@@ -347,9 +347,7 @@ pub async fn rules_apply_update(
 
 /// `rules_has_backup`：返回是否存在可回滚的 `.bak`（前端用来决定是否显示「回滚」按钮）。
 #[tauri::command]
-pub async fn rules_has_backup(
-    paths: tauri::State<'_, AppPaths>,
-) -> Result<Envelope<bool>, String> {
+pub async fn rules_has_backup(paths: tauri::State<'_, AppPaths>) -> Result<Envelope<bool>, String> {
     Ok(Envelope::ok(has_backup(&paths.rules_dir)))
 }
 

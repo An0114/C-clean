@@ -73,7 +73,8 @@ pub fn rollback(rules_dir: &Path, conn: &Connection) -> Result<RollbackResult, S
 
     // 2. 把 .bak 内容覆盖回 cache_rules.json。
     let cache_target = cache_path(rules_dir);
-    std::fs::write(&cache_target, &bytes).map_err(|e| format!("写回 cache_rules.json 失败: {e}"))?;
+    std::fs::write(&cache_target, &bytes)
+        .map_err(|e| format!("写回 cache_rules.json 失败: {e}"))?;
 
     // 3. 同步恢复 rules_meta.json.bak（若存在）。失败只告警，不阻断主流程。
     let mbak = meta_bak_path(rules_dir);

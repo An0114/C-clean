@@ -1,7 +1,7 @@
 //! task-044 集成测试：rules 手动回滚。
 
 use engine::db::conn::open;
-use engine::rules::rollback::{has_backup, rollback, cache_bak_path, cache_path};
+use engine::rules::rollback::{cache_bak_path, cache_path, has_backup, rollback};
 
 /// 造一个最小合法的 cache_rules.json 字节。
 fn make_cache(version: &str) -> Vec<u8> {
