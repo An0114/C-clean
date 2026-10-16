@@ -271,12 +271,13 @@ pub fn restore_from_safe_box(
     if orig.exists() {
         return Err(RestoreError::TargetOccupied(original_path));
     }
-    // 3. 父目录必须存在
-    match orig.parent() {
-        Some(p) if !p.exists() => {
-            return Err(RestoreError::ParentMissing(p.to_string_lossy().into()))
+    // 3. 父目录缺失时自动 create_dir_all（task-043）。
+    //    之前直接报 ParentMissing 让用户手动建目录；现在自动建多层父目录。
+    if let Some(p) = orig.parent() {
+        if !p.exists() {
+            std::fs::create_dir_all(p)
+                .map_err(|e| RestoreError::Io(format!("无法创建父目录 {}: {e}", p.display())))?;
         }
-        _ => {}
     }
 
     // 4. rename box → original
