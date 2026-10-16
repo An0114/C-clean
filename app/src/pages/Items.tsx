@@ -3,12 +3,25 @@
 // - checkbox 多选 + 底部「已选 N 项，共 X MB」+「清理已选」按钮；
 // - 清理中按钮禁用；完成后自动重拉列表 + 成功/失败提示。
 //
+// task-040：加「预览可清理项」按钮 + dryRun 只读预览面板。
+// - 走 apiRaw（不是 api）：cleanup.dryRun 的 2002 用 err_with_data，
+//   失败信封的 data 非 null 且带 blockedByL3 明细，api() 会把它抛掉；
+// - 只预览不执行：面板内不新增第二个执行入口，确认后仍走既有「清理已选」。
+//
 // 与任务书偏差：cleanup_item 表无 status/scanned_at 列；
 // PendingItem 仅 id/path/sizeBytes/moduleCode/sessionId，无时间列展示。
 
 import { useCallback, useEffect, useState } from "react";
 import { formatBytes } from "../utils/formatBytes";
-import { api } from "../utils/invoke";
+import { api, apiRaw } from "../utils/invoke";
+import {
+  describeDenial,
+  formatBreakdownLine,
+  formatDryRunHeadline,
+  sortBreakdown,
+  type BlockedItem,
+  type DryRunResp,
+} from "../utils/dryRun";
 
 interface PendingItem {
   id: number;
@@ -19,6 +32,24 @@ interface PendingItem {
 }
 
 type Status = "loading" | "ok" | "error";
+
+/** task-040：预览面板状态（判别联合，便于按 kind 分支渲染与整体清空）。 */
+type Preview =
+  | { kind: "ok"; resp: DryRunResp }
+  | { kind: "empty" }
+  | { kind: "blocked"; blocked: BlockedItem[] }
+  | { kind: "error"; message: string };
+
+/** 预览面板统一底色/文字/边框（与既有 result 提示条同风格）。 */
+const panelStyle = (bg: string, fg: string, border: string): React.CSSProperties => ({
+  marginBottom: 12,
+  padding: 10,
+  borderRadius: 6,
+  fontSize: 13,
+  background: bg,
+  color: fg,
+  border: `1px solid ${border}`,
+});
 
 const thStyle: React.CSSProperties = {
   textAlign: "left",
@@ -42,10 +73,15 @@ export default function Items() {
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [cleaning, setCleaning] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
+  // task-040 预览态。
+  const [previewing, setPreviewing] = useState(false);
+  const [preview, setPreview] = useState<Preview | null>(null);
 
   const load = useCallback(async () => {
     setStatus("loading");
     setMsg("");
+    // C8：列表重拉后旧预览可能已过期，先清掉。
+    setPreview(null);
     try {
       const list = await api<PendingItem[]>("cleanup_list_pending", { limit: 100 });
       setRows(list);
@@ -62,6 +98,8 @@ export default function Items() {
   }, [load]);
 
   const toggle = (id: number) => {
+    // C8：勾选集合一变，旧预览就失效。
+    setPreview(null);
     setSelected((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
@@ -78,6 +116,8 @@ export default function Items() {
     if (selected.size === 0 || cleaning) return;
     setCleaning(true);
     setResult(null);
+    // C8：清理成功后清单会变，预览必然过期。
+    setPreview(null);
     try {
       const ids = Array.from(selected);
       await api("cleanup_execute", { itemIds: ids });
@@ -91,6 +131,36 @@ export default function Items() {
     }
   }, [selected, cleaning, load]);
 
+  // task-040 C2：只读预览。走 apiRaw 以拿回 2002 信封里的 blockedByL3。
+  const previewSelection = useCallback(async () => {
+    if (selected.size === 0 || cleaning || previewing) return;
+    setPreviewing(true);
+    setPreview(null);
+    try {
+      const env = await apiRaw<DryRunResp>("cleanup_dry_run", {
+        itemIds: Array.from(selected),
+      });
+      if (env.code === 0 && env.data) {
+        // C3
+        setPreview({ kind: "ok", resp: env.data });
+      } else if (env.code === 2002) {
+        // C4：L3 命中明细就在失败信封的 data 上。
+        setPreview({ kind: "blocked", blocked: env.data?.blockedByL3 ?? [] });
+      } else if (env.code === 2001) {
+        // C5
+        setPreview({ kind: "empty" });
+      } else {
+        // C6
+        setPreview({ kind: "error", message: env.message });
+      }
+    } catch (e) {
+      // C6：invoke 本身 reject（命令未注册 / 序列化失败等）。
+      setPreview({ kind: "error", message: String(e) });
+    } finally {
+      setPreviewing(false);
+    }
+  }, [selected, cleaning, previewing]);
+
   return (
     <div>
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
@@ -100,6 +170,21 @@ export default function Items() {
         <span style={{ fontSize: 13, color: "#374151" }}>
           已选 {selected.size} 项，共 {formatBytes(totalSelectedBytes)}
         </span>
+        <button
+          onClick={previewSelection}
+          disabled={selected.size === 0 || cleaning || previewing}
+          style={{
+            padding: "6px 14px",
+            borderRadius: 6,
+            border: "1px solid #2563eb",
+            background: selected.size === 0 || cleaning || previewing ? "#bfdbfe" : "#2563eb",
+            color: "#fff",
+            cursor:
+              selected.size === 0 || cleaning || previewing ? "not-allowed" : "pointer",
+          }}
+        >
+          {previewing ? "预览中…" : "预览可清理项"}
+        </button>
         <button
           onClick={cleanup}
           disabled={selected.size === 0 || cleaning}
@@ -132,6 +217,51 @@ export default function Items() {
         </div>
       )}
 
+      {/* task-040 预览面板：只读展示，面板内不提供执行入口。 */}
+      {preview?.kind === "ok" && (
+        <div style={panelStyle("#eff6ff", "#1e3a8a", "#93c5fd")}>
+          <div style={{ fontWeight: 600, marginBottom: 6 }}>
+            {formatDryRunHeadline(preview.resp)}
+          </div>
+          {sortBreakdown(preview.resp.breakdown).map((row) => (
+            <div key={`${row.moduleCode}/${row.category}`} style={{ marginBottom: 2 }}>
+              {formatBreakdownLine(row)}
+            </div>
+          ))}
+          <div style={{ marginTop: 8, color: "#1d4ed8" }}>
+            确认无误后点上方「清理已选」执行
+          </div>
+        </div>
+      )}
+
+      {preview?.kind === "blocked" && (
+        <div style={panelStyle("#fee2e2", "#b91c1c", "#fca5a5")}>
+          <div style={{ fontWeight: 600, marginBottom: 6 }}>
+            {preview.blocked.length} 项命中红线，已阻止清理
+          </div>
+          {preview.blocked.map((b) => (
+            <div key={b.itemId} style={{ marginBottom: 2 }}>
+              <span style={{ fontFamily: "monospace", fontSize: 12 }}>#{b.itemId}</span>{" "}
+              <span style={{ fontFamily: "monospace", fontSize: 12 }}>{b.path}</span>
+              {" · "}
+              {describeDenial(b.denialReason)}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {preview?.kind === "empty" && (
+        <div style={panelStyle("#fef9c3", "#854d0e", "#fde047")}>
+          已选条目已不在待清理列表（可能已被清理或扫描会话已过期），请点「刷新」
+        </div>
+      )}
+
+      {preview?.kind === "error" && (
+        <div style={panelStyle("#fee2e2", "#b91c1c", "#fca5a5")}>
+          预览失败：{preview.message}
+        </div>
+      )}
+
       {status === "loading" && <div style={{ color: "#6b7280", fontSize: 13 }}>加载中...</div>}
 
       {status === "error" && (
@@ -149,6 +279,8 @@ export default function Items() {
                   type="checkbox"
                   checked={rows.length > 0 && selected.size === rows.length}
                   onChange={(e) => {
+                    // C8：全选/全不选同样让旧预览失效。
+                    setPreview(null);
                     if (e.target.checked) setSelected(new Set(rows.map((r) => r.id)));
                     else setSelected(new Set());
                   }}

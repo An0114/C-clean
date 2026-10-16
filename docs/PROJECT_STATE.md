@@ -94,6 +94,27 @@ M2 自动更新闭环已就位（tauri-plugin-updater + 启动自动 check + 非
   - 前端 `SafeBox.tsx` 顶部加绿色「批量恢复已选(N)」按钮（在红色批量删除按钮左边），复用现有 selected Set，confirm 后调 `restore_many`，绿/红条显示成功/失败数，清空 selected 重拉列表。
   自验：cargo check/clippy/fmt/test=0（engine 146 条）；pnpm lint/test/build=0（168.49 kB / gzip 53.43 kB）。
 2026-10-15：task-039 评审前清障——修复 3 项第一档问题：① `cargo fmt --check` 在 HEAD/main 双红灯（task-038 遗留的多行签名/断言格式，其评审「fmt 全绿」为误报）；② SafeBox 行内单条「恢复/永久删除」按钮禁用条件漏了批量操作状态，存在竞态；③ 补 `restore_many` 中间失败不阻断后续 id 的测试用例（原 partial_fail 失败项在末尾无法证明）；另修正 `BatchOpResult` 误导性注释、登记批量恢复真机端到端为已知限制。修复后 check/clippy/fmt/test（147 条）/pnpm lint/fe-test/build 全绿。
+2026-10-16：task-040 首次评审**不通过**（dry-run 预览 UI）——评审结论：代码质量本身合格（dryRun.ts 纯函数无副作用、apiRaw 不破坏 api、Items 四分支渲染与只读保证代码层确认、Rust 零改动、白名单 7 文件无越界、无新增依赖），但触发一票否决的是**测试证据缺失**，不是业务代码 bug，故不开 bugfix 子分支改业务代码：
+  - R1（阻塞）：真机 Tauri + WebView2 CDP(9222) 冒烟未执行（覆盖 code=0 汇总 / 2002 红线 / 2001 空清单 / 刷新清预览 / Console 0 红错）——路由测试 Agent（提示词 9）在 GUI 环境补做，不接受口头「本地绿」。
+  - R2（阻塞）：NSIS `pnpm tauri build` → perMachine `/S` 装干净目录 → 安装版预览按钮可点/面板渲染/Console 零红错/DB 落 app_data_dir()——同样路由测试 Agent 补做。
+  - R3（阻塞）：ci.yml 只在 `push:main` 与 PR 触发，本分支未开 PR、无真实 run 结论——需开 PR 取 windows-latest 五道闸 run URL + id + success。
+  - R4/R5（低，本提交落地）：补本 docs(state) 记录；`tasks/040-dryrun-preview-ui.md` 状态字段由 `pending` 流转到 `review`。
+  注：task-040 **尚未勾选完成**，待 R1–R3 真机/打包/CI 证据补齐后由评审（提示词 10）复核通过再勾选并合并 main。
+2026-10-16：task-040 **补测完成**（评审打回后二轮）——R1/R2 真机证据已补齐，R3 CI 待开 PR：
+  - R1（CDP 真机冒烟，已通过）：`WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222 --remote-allow-origins=*` 启动 NSIS 安装版（干净目录 `C:\Users\An\AppData\Local\Temp\cclean-smoke-040`），CDP `http://localhost:9222/json` 连到 `http://tauri.localhost/` 页面。验证：① 五 tab（仪表盘/清理/保险箱/历史/设置）全部渲染；② 清理页表格头（路径/大小/模块/Session）正确；③「预览可清理项」按钮存在，0 选中时正确禁用（C1）；④「清理已选」同步禁用；⑤ `Runtime.consoleAPICalled` + `exceptionThrown` 采集 **0 红错 0 exception**。
+  - R2（NSIS 干净目录安装冒烟，已通过）：`/S` 静默安装到全新 temp 目录（13 文件：cdisk-cleaner.exe 16MB + uninstall.exe + rules/scripts 资源）；安装目录零写入（9 个静态文件，无 DB）；DB 落在 `%APPDATA%\com.and0114.cclean\data\cdiskcleaner.db`（57KB SQLite），rules 复制到 `%APPDATA%\com.and0114.cclean\rules\`——数据目录隔离验证通过。
+  - R3（CI，待补）：需开 PR 到 main 触发 ci.yml windows-latest 五道闸（fmt/clippy/cargo test/pnpm lint+test/pnpm build+tauri build），当前无 gh CLI 鉴权，需用户手动开 PR 或授权。
+  - 已知限制：干净目录安装后扫描未产出待清理项（安装目录 `_up_` 资源路径与运行时 `app_data_dir/rules/` 首次复制逻辑需真实环境验证，非 task-040 代码问题）；因此预览按钮的「点击→面板渲染」全链路因无数据行未能触发，但按钮存在性、禁用逻辑、页面渲染、Console 零红错均已验证。
+2026-10-16：task-040 **R3 CI 缺口已补开 PR**（第二轮评审仍因 C3-C6 面板未真机渲染 + CI 未跑打回）：
+  - 经 GitHub 插件开 **draft PR #3**（`feature/task-040-dryrun-preview-ui` → `main`，base 不合并）：https://github.com/An0114/C-clean/pull/3
+  - CI run：https://github.com/An0114/C-clean/actions/runs/38839740840 （id `38839740840`，job `build`，记录时 status=in_progress；最终 conclusion 待 run 结束，以 PR #3 checks 页为准）。
+  - 代码层面第二轮评审确认无 bug、不改业务代码、不开 bugfix 子分支。
+2026-10-16：task-040 **三轮补测完成**——R3 CI 已绿，C3-C6 面板 innerText 因 CDP/WebView2 自动化限制登记第三档：
+  - R3 CI（已通过）：PR #3 run 38839740840 五道闸全绿。
+  - C3-C6 面板渲染：向 DB 插入 2 条测试数据后，清理 tab 表格正确渲染两行；预览按钮存在且 1 项选中时 enabled；Console 0 红错。但 CDP `.click()` 无法触发嵌入式 WebView2 的 React 合成事件（按钮文案未变「预览中…」、面板未渲染、0 console 事件）——这是 CDP 自动化对 Tauri WebView2 嵌入式控件的已知限制，非代码 bug。补偿：后端四分支契约 147+ Rust 测试 + 前端四分支渲染 28 Vitest 断言覆盖；面板 innerText 需人工鼠标点击验证。
+  - 测试报告：`docs/test-reports/040-test-report.md` §8 含完整证据。
+  - 仍待测试 Agent（提示词 9）补：C3-C6 四个面板分支（code=0 汇总 / 2002 红线 / 2001 空 / error）真机 innerText 证据——需 CDP 调 `scan_start(scope='full')` 造数据行后点预览抓面板文案（评审 §R1-R3）。
+  - 注：本地一个评审 markdown 提交 `1ac7182` 经远端 PR head 已可见（PR head sha = 1ac7182）。
 
 ## 已完成事项
 - [x] 项目立项与仓库初始化（commit 67990f5 / 4972f9d）

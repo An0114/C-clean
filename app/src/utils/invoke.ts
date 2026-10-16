@@ -12,7 +12,7 @@
 import { invoke } from "@tauri-apps/api/core";
 
 /// 与 engine::ipc::envelope::Envelope 对齐的 JSON shape。
-interface Envelope<T> {
+export interface Envelope<T> {
   code: number;
   message: string;
   data: T | null;
@@ -30,4 +30,18 @@ export async function api<T>(
   }
   // 成功路径 data 一定是 Some(T)；失败路径已抛错。
   return env.data as T;
+}
+
+/// 原样返回信封的 IPC 调用（task-040）。
+///
+/// `api()` 在 `code !== 0` 时抛错，会丢掉失败信封里的 `data`；但 cleanup.dryRun 的
+/// 2002（L3 红线）**显式偏离 TRD §5.1**，用的是 `err_with_data` —— 失败时 `data`
+/// 非 null 且带 `blockedByL3` 明细。预览要展示这份明细，就必须读原始信封。
+///
+/// 本函数对任何 `code` 都不抛错，由调用方按 code 自行分支。
+export async function apiRaw<T>(
+  cmd: string,
+  args?: Record<string, unknown>,
+): Promise<Envelope<T>> {
+  return invoke<Envelope<T>>(cmd, args);
 }
