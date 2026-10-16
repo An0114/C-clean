@@ -1,8 +1,12 @@
 //! task-022：远端 rules_meta.json 拉取（只查版本，不下载 cache_rules.json）。
 //! task-023：apply_update——下载新 cache_rules.json + SHA-256 校验 + 备份替换 + upsert DB。
+//! task-041：reqwest 统一加 10s 超时 + 5s 连接超时，错误映射为中文可读文案；
+//!          超时常量可通过环境变量 `RULES_HTTP_TIMEOUT_SECS` / `RULES_HTTP_CONNECT_SECS`
+//!          覆盖，便于单测用短超时替身（默认 10s / 5s）。
 
 use sha2::{Digest, Sha256};
 use std::path::Path;
+use std::time::Duration;
 
 /// 远端 rules_meta.json 的硬编码地址（公共仓库匿名拉取）。
 pub const REMOTE_RULES_META_URL: &str =
@@ -31,31 +35,89 @@ pub struct CheckUpdateResp {
     pub remote_sha256: String,
 }
 
+/// 读取超时常量（默认 10s，单测用 `RULES_HTTP_TIMEOUT_SECS` 覆盖为 1s 级）。
+fn timeout_secs() -> u64 {
+    std::env::var("RULES_HTTP_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(10)
+}
+
+/// 读取连接超时常量（默认 5s，单测用 `RULES_HTTP_CONNECT_SECS` 覆盖）。
+fn connect_timeout_secs() -> u64 {
+    std::env::var("RULES_HTTP_CONNECT_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(5)
+}
+
+/// 构造带超时的 reqwest blocking client。
+fn build_client() -> Result<reqwest::blocking::Client, String> {
+    reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(timeout_secs()))
+        .connect_timeout(Duration::from_secs(connect_timeout_secs()))
+        .build()
+        .map_err(|e| format!("init http client: {e}"))
+}
+
+/// 把 reqwest 错误映射为中文可读文案（前端红条直接展示）。
+///
+/// - 超时 → "规则库检查超时（10s），请检查网络后重试"
+/// - 连接失败 → "无法连接规则库服务器，请检查网络"
+/// - 404 → "规则库元文件不存在（404），请联系开发者"
+/// - 其他 → reqwest error 原文前 200 字
+fn map_http_error(e: reqwest::Error) -> String {
+    let debug = format!("{e:?}");
+    if e.is_timeout() || debug.contains("operation timed out") || debug.contains("timeout") {
+        return format!("规则库检查超时（{}s），请检查网络后重试", timeout_secs());
+    }
+    if e.is_connect() {
+        return "无法连接规则库服务器，请检查网络".to_string();
+    }
+    if let Some(status) = e.status() {
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return "规则库元文件不存在（404），请联系开发者".to_string();
+        }
+        return format!("规则库服务器返回错误：HTTP {status}");
+    }
+    let raw = format!("{e}");
+    format!("规则库检查失败：{}", &raw[..raw.len().min(200)])
+}
+
+/// 带超时的 GET，错误已映射为中文文案。
+fn http_get(url: &str) -> Result<reqwest::blocking::Response, String> {
+    let client = build_client()?;
+    let resp = client.get(url).send().map_err(map_http_error)?;
+    resp.error_for_status().map_err(map_http_error)
+}
+
 /// GET 远端 rules_meta.json 并反序列化为 [`RemoteRulesMeta`]。
 ///
 /// 失败（网络不通 / 非 2xx / JSON 错）统一包装为 `Err(String)`，不做重试。
 pub fn fetch_remote_meta() -> Result<RemoteRulesMeta, String> {
-    let resp = reqwest::blocking::get(REMOTE_RULES_META_URL)
-        .map_err(|e| format!("GET {REMOTE_RULES_META_URL}: {e}"))?;
-    let resp = resp
-        .error_for_status()
-        .map_err(|e| format!("remote non-2xx: {e}"))?;
+    fetch_remote_meta_with_url(REMOTE_RULES_META_URL)
+}
+
+/// 按指定 URL 拉 rules_meta（单测用本地 tiny server 注入）。
+pub fn fetch_remote_meta_with_url(url: &str) -> Result<RemoteRulesMeta, String> {
+    let resp = http_get(url)?;
     resp.json::<RemoteRulesMeta>()
-        .map_err(|e| format!("decode remote rules_meta: {e}"))
+        .map_err(|e| format!("解析远端 rules_meta 失败：{e}"))
 }
 
 /// GET 远端 cache_rules.json 字节流（不解析、不校验）。
 ///
 /// task-023：拉到字节后由后续 apply_update 算 SHA-256 与 remote_meta 比对。
 pub fn fetch_remote_rules_bytes() -> Result<Vec<u8>, String> {
-    let resp = reqwest::blocking::get(REMOTE_RULES_URL)
-        .map_err(|e| format!("GET {REMOTE_RULES_URL}: {e}"))?;
-    let resp = resp
-        .error_for_status()
-        .map_err(|e| format!("remote non-2xx: {e}"))?;
+    fetch_remote_rules_bytes_with_url(REMOTE_RULES_URL)
+}
+
+/// 按指定 URL 拉 cache_rules 字节（单测用）。
+pub fn fetch_remote_rules_bytes_with_url(url: &str) -> Result<Vec<u8>, String> {
+    let resp = http_get(url)?;
     resp.bytes()
         .map(|b| b.to_vec())
-        .map_err(|e| format!("read body: {e}"))
+        .map_err(|e| format!("读取远端 rules 字节失败：{e}"))
 }
 
 /// 算字节流 SHA-256（小写 hex，无 `0x` 前缀）。
