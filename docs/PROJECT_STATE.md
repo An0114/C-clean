@@ -127,6 +127,11 @@ M2 updater 闭环已端到端跑通：项目仓库已转 public（updater endpoi
   - `engine/tests/rules_offline_mode.rs` 3 条：Offline（永不响应端口 1s 超时）/ UpToDate（mock server 返回同 sha）/ NewVersion（返回更高 version），总耗时 1.1s。
   - `app/src/pages/Settings.tsx`：按 status 渲染三态提示条——upToDate 绿条「规则库已是最新」、newVersion 蓝条「发现新版本 vX.Y.Z」、offline 黄条「离线模式：使用本地规则库 vX.Y.Z（<message>）」；应用更新按钮仅在 newVersion 时出现。
   自验：cargo check/clippy/fmt/test=0（engine 156 条）；pnpm lint/test/build=0（172.01 kB / gzip 54.78 kB）。applyUpdate 命令的网络错误仍返回错误信封（本任务不改）。
+2026-10-16：task-043 完成——safe_box restore 自动 create_dir_all 父目录（task-017 已知问题闭环）：
+  - `engine/src/execute/safe_box.rs` `restore_from_safe_box` step 3：原 `ParentMissing(p) => Err(...)` 改为 `if !parent.exists() { std::fs::create_dir_all(parent).map_err(|e| Io("无法创建父目录 {p}: {e}"))? }`；`ParentMissing` 枚举变体保留但不再返回。
+  - `engine/tests/safe_box_restore_mkdir.rs` 3 条新建：缺目录自动建多层 / 已存在目录 sibling 文件不被覆盖 / 父路径不可用（父组件是文件）返回错误。
+  - 旧用例适配：`safe_box_restore.rs` 的 `restore_parent_missing_returns_error` 改为 `restore_parent_missing_auto_creates_dirs`（正向断言）；`safe_box_restore_many.rs` 的中间失败注入从 ParentMissing 改为 TargetOccupied（预置同名文件）。
+  自验：cargo check/clippy/fmt/test=0（engine 159 条）；pnpm lint/test/build=0（前端零改动）。真机/打包冒烟按任务书裁剪。
 2026-10-16：用户决策落地（DocsKeeper 同步状态，无代码改动）：
   - **项目仓库已转 public**：updater endpoint（task-041 已改 `releases/latest/download/latest.json`）直拉可达，无需 token header；task-039 评审遗留的「私有仓 raw 404」正式关闭。
   - **品牌图标决策：暂时不做**：沿用 Tauri 默认占位，v0.1.x 发版不阻塞；待后续有 1024×1024 源 PNG 再跑 `tauri icon`。
@@ -186,7 +191,7 @@ M2 updater 闭环已端到端跑通：项目仓库已转 public（updater endpoi
 ## 已知问题
 - [B 中] task-021 仅做「报告」（who_is_locking 结果写 audit_log + 返回前端），**未实现 RmShutdown/RmRestart（请求关闭占用进程）**，前端 UI toast 也未接；notepad 端到端真机验证 CI 用例 `#[ignore]`。请求关闭与前端展示留 task-022+。
 - [B 低] task-018 list 边界：无分页（保险箱总量 ≤5GB，条目数有限）、无 session 过滤（先返回全部）、无单条 purge 命令、未接前端 React UI。真多了再加 LIMIT / 前端列表组件留后续。
-- [B 低] task-017 restore 边界：不自动建原父目录（ParentMissing 直接报错让用户手动处理）、不支持批量恢复、未加 `restored_at` 审计列（DELETE 行 + audit_log action='restore' 已留痕）。批量恢复与父目录自动 mkdir 留后续。
+- [B 低] ~~task-017 restore 边界：不自动建原父目录（ParentMissing 直接报错让用户手动处理）、不支持批量恢复、未加 `restored_at` 审计列（DELETE 行 + audit_log action='restore' 已留痕）。批量恢复与父目录自动 mkdir 留后续。~~ **已由 task-043 解决**（restore_from_safe_box 在父目录缺失时自动 `std::fs::create_dir_all`，mkdir 失败返回「无法创建父目录 <path>: <os error>」；ParentMissing 枚举变体保留但不再返回）。遗留：未加 `restored_at` 审计列。
 - [B 中] task-016 保险箱原子性：`fs::rename` 成功但 `INSERT INTO safe_box` 失败时，文件已在 box 目录但 DB 无行——当前简单报错，不做回滚；跨盘 rename 走 copy+remove 也非原子。补偿：下次 enforce_quota 扫到磁盘上有孤儿文件时会 NotFound 直接标 purged（不会重复占用 quota）。
 - [B 低] task-016 跨盘 rename：`fs::rename` 遇 EXDEV(17)/跨盘错误时 fallback 到 copy+remove；CI 单盘未实测跨盘用例。
 - [B 中] task-015 文件占用时删除失败：Windows 下 `std::fs::remove_file` 遇 SharingViolation 直接返 Err，不做重试/Restart Manager；命中占用的 item 记为 fail 并写 audit_log result='fail'。Restart Manager 集成留 M1-D 后续任务。
@@ -202,7 +207,7 @@ M2 updater 闭环已端到端跑通：项目仓库已转 public（updater endpoi
 - [B 中] ~~task-039 评审运行时冒烟发现：设置页规则库检查长时间停留「检查中…」（实测 ≥8s 无收敛、无失败态）；本机 raw URL 404（私有仓 raw 不可达），Rust 侧外呼无短超时/失败收敛。~~ **已由 task-041 解决**（reqwest 加 10s/5s 超时 + 中文错误映射 + updater endpoint 改 Releases/latest/download URL）。~~遗留：仓库 public/private 决策待用户拍板（推荐转 public），token header 留 task-042+。~~ **已落地（2026-10-16）：项目仓库已转 public，无需 token header，Releases 资产直拉可达。**
 
 ## 下一步计划
-M2 updater 端到端已闭环（仓库 public + 首次 v0.1.1 发版已手动执行 + rules 超时/离线降级就位）；品牌图标决策暂时不做。下一轮进入：①首次 v0.1.1 升级链路真机验证（用户在已装 v0.1.0 的机器上启动应用，观察 updater banner 是否正确弹出 v0.1.1）②task-043 起继续清 M1 遗留（safe_box list 分页 / restore 自动建父目录 / rules 手动回滚 .bak 命令 / L3 占用进程 RmShutdown 可选）③持续 debt-cleanup。
+M2 updater 端到端已闭环（仓库 public + 首次 v0.1.1 发版已手动执行 + rules 超时/离线降级就位）；品牌图标决策暂时不做；task-043 safe_box restore 自动建父目录已闭环。下一轮进入：①派发 task-044：rules 手动回滚命令（从 .bak 恢复）——applyUpdate 已留 .bak，补回滚命令 + Settings 按钮 ②首次 v0.1.1 升级链路真机验证（用户在已装 v0.1.0 的机器上启动应用，观察 updater banner 是否正确弹出 v0.1.1）③继续清 M1 遗留（safe_box list 分页 / L3 占用进程 RmShutdown 可选）。
 
 ## 当前负责人 Agent
 DocsKeeper（文档与状态管家）
@@ -443,6 +448,11 @@ DocsKeeper（文档与状态管家）
 | afbccff | #task-042 | test(rules): 补离线模式 / UpToDate / NewVersion 三分支单测 |
 | 8ced0be | #task-042 | feat(frontend): Settings 规则库卡片按 status 渲染三态（绿/蓝/黄） |
 | （本次） | #task-042 | docs(state): 任务042完成，rules 离线模式降级就绪 |
+| 86bbb61 | #task-043 | docs(task): 新增任务043-restore 自动建父目录 |
+| 6b65bcb | #task-043 | fix(execute): restore_item 在父目录缺失时自动 create_dir_all |
+| 2e14188 | #task-043 | test(execute): 补 restore 自动建父目录单测（缺目录/已存在目录/不可用父路径） |
+| ca936c1 | #task-043 | test(execute): 适配 task-043——旧 ParentMissing 用例改为正向自动建目录断言 |
+| （本次） | #task-043 | docs(state): 任务043完成，safe_box restore 自动建父目录就绪 |
 
 ---
 变更轨迹：
@@ -529,3 +539,4 @@ DocsKeeper（文档与状态管家）
 - 2026-10-15  task-039  评审通过：真机冒烟（pnpm tauri dev + WebView2 CDP 挂载 9222）逐个点过五 tab 并造数据跑通「勾选 → 批量恢复已选 → confirm → 绿/红条 → 清空 selected 重拉列表」全链路（3 条：2 成功回原路径 + 1 失败父目录缺失保留 in_box），文件/DB/audit_log 三方一致，本任务页面 Console 0 红错 0 exception；回归批量删除正常；本地门禁独立复跑全绿（fmt/clippy/147 后端测试/lint/12 前端断言/build 168.51KB gzip 53.43KB）；**CI 实查**：分支 run 38671216149（PR #2）绿，合并前 main 2068fcd run 38571515030 因 task-038 fmt 问题红（本分支 adcba07 已修），合并后 main run 38673720322 绿；merge --no-ff → `cbc5aaa`，feature 分支已删；新增登记 2 条非阻塞已知问题（设置页首次 rules_check_update 红错、规则检查无超时收敛，均非本任务引入）
 - 2026-10-16  task-041  rules reqwest 超时收敛 + updater endpoint 改 Releases 资产（task-039 评审 P0 真机卡死修复）
 - 2026-10-16  task-042  rules.checkUpdate 加 Offline 三态，断网时本地规则库照常工作 + UI 黄条提示
+- 2026-10-16  task-043  safe_box.restore_item 自动 mkdir -p 父目录（task-017 已知问题闭环）
