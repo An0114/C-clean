@@ -28,6 +28,13 @@ interface ApplyResult {
   newSha256: string;
 }
 
+// task-044：回滚结果。
+interface RollbackResult {
+  previousVersion: string;
+  restoredSha256: string;
+  message: string;
+}
+
 type Phase =
   | "loading"
   | "idle"
@@ -62,6 +69,9 @@ export default function Settings() {
   const [info, setInfo] = useState<CheckUpdateResult | null>(null);
   const [msg, setMsg] = useState<string>("");
   const [toast, setToast] = useState<{ ok: boolean; text: string } | null>(null);
+  // task-044：是否存在可回滚的 .bak。
+  const [hasBak, setHasBak] = useState<boolean>(false);
+  const [rollingBack, setRollingBack] = useState<boolean>(false);
 
   // task-035：应用自更新状态
   const [appUpdate, setAppUpdate] = useState<Update | null>(null);
@@ -93,6 +103,37 @@ export default function Settings() {
   useEffect(() => {
     check();
   }, [check]);
+
+  // task-044：刷新「是否有 .bak」状态（启动时 + 应用/回滚后）。
+  const refreshHasBak = useCallback(async () => {
+    try {
+      const v = await api<boolean>("rules_has_backup", {});
+      setHasBak(Boolean(v));
+    } catch {
+      setHasBak(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshHasBak();
+  }, [refreshHasBak]);
+
+  // task-044：回滚到上一版。
+  const rollback = useCallback(async () => {
+    if (!window.confirm("确定回滚到上一版规则库？")) return;
+    setRollingBack(true);
+    setToast(null);
+    try {
+      const r = await api<RollbackResult>("rules_rollback", {});
+      setToast({ ok: true, text: r.message });
+      await refreshHasBak();
+      await check();
+    } catch (e) {
+      setToast({ ok: false, text: `回滚失败：${String(e)}` });
+    } finally {
+      setRollingBack(false);
+    }
+  }, [check, refreshHasBak]);
 
   const apply = useCallback(async () => {
     setPhase("applying");
@@ -282,6 +323,27 @@ export default function Settings() {
               }}
             >
               {phase === "applying" ? "应用中…" : "应用更新"}
+            </button>
+          )}
+
+          {/* task-044：灰色「回滚到上一版」按钮，仅在存在 .bak 时显示 */}
+          {hasBak && (
+            <button
+              onClick={rollback}
+              disabled={phase === "checking" || phase === "applying" || rollingBack}
+              style={{
+                padding: "6px 14px",
+                borderRadius: 6,
+                border: "1px solid #9ca3af",
+                background: "#f3f4f6",
+                color: "#374151",
+                cursor:
+                  phase === "checking" || phase === "applying" || rollingBack
+                    ? "not-allowed"
+                    : "pointer",
+              }}
+            >
+              {rollingBack ? "回滚中…" : "回滚到上一版"}
             </button>
           )}
         </div>
