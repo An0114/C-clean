@@ -165,3 +165,38 @@ DevAgent 交付物（后续执行结果）：
 4. 本任务文档本身**由 DocsKeeper 在派发时**单独提交一次：
    `docs(task): 新增任务042-rules 离线模式 (#task-042)`，
    该提交只含 `tasks/042-rules-offline-mode.md` 一个文件，落在 `feature/task-042-rules-offline-mode` 分支最前端。
+
+## 实现备注
+
+### 实际改动文件
+- engine/src/rules/remote.rs（新增 CheckStatus 枚举 + CheckUpdateResult struct + classify 构造器）
+- engine/src/rules/mod.rs（re-export）
+- engine/tests/rules_offline_mode.rs（新建 3 条集成测试）
+- app/src-tauri/src/commands.rs（rules_check_update 返回 Envelope<CheckUpdateResult>，网络失败返回 status=Offline 而非错误信封）
+- app/src/pages/Settings.tsx（按 status 渲染绿/蓝/黄三态提示条）
+
+### CheckUpdateResult 最终定义
+`ust
+pub enum CheckStatus { UpToDate, NewVersion, Offline }  // serde camelCase
+pub struct CheckUpdateResult {
+    pub status: CheckStatus,
+    pub local_version: String,
+    pub local_sha256: String,
+    pub remote_version: Option<String>,
+    pub remote_sha256: Option<String>,
+    pub message: String,
+}
+`
+
+### 验证
+- cargo check/clippy/fmt/test=0（engine 156 条含 rules_offline_mode 3/3）
+- pnpm lint/test/build=0（172.01 kB / gzip 54.78 kB）
+- 真机/打包冒烟：由测试 Agent 在 L4 完成
+- CI：由测试 Agent 在 L5 验证
+
+### 偏差
+- 原 CheckUpdateResp 结构保留（未删），新命令直接返回 CheckUpdateResult；前端 Settings 已切到新结构，无其他调用点。
+- applyUpdate 命令的网络错误仍返回 RULE_NETWORK_ERROR 错误信封（本任务不改）。
+
+### 遗留
+- updater token header / 仓库 public/private 决策留 task-043+。
