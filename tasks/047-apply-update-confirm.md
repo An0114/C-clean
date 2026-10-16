@@ -141,3 +141,29 @@ DevAgent 交付物（后续执行结果）：
 4. 本任务文档本身**由 DocsKeeper 在派发时**单独提交一次：
    `docs(task): 新增任务047-applyUpdate 确认弹窗 (#task-047)`，
    该提交只含 `tasks/047-apply-update-confirm.md` 一个文件，落在 `feature/task-047-apply-update-confirm` 分支最前端。
+
+## 实现备注
+
+### 实际改动文件
+- pp/src/pages/Settings.tsx：pply useCallback 开头加 window.confirm(...)，文案嵌入 info.localVersion / info.remoteVersion；取消直接 return，不进 setPhase/不调 invoke。依赖数组补 info。
+
+### confirm 文案最终版本
+`
+即将应用规则库 v{remoteVer}（当前本地 v{localVer}）。
+应用后旧版将备份为 cache_rules.json.bak，可随时通过「回滚到上一版」恢复。
+是否继续？
+`
+- 版本号兜底：info?.localVersion ?? "?" / info?.remoteVersion ?? "?"（极端情况下 info 为 null 不崩）。
+
+### 验证
+- cargo check/clippy/fmt/test -p engine 全绿（后端零改动）。
+- pnpm lint/test/build = 0（vite 173.98 kB / gzip 55.41 kB）。
+
+### 偏差
+- 无。用 window.confirm 原生实现，未引入自定义 modal。
+
+### 真机/打包冒烟
+由测试 Agent 在 L4 完成（造 newVersion 状态 → 点应用更新弹 confirm → 取消无 IPC → 确定成功更新）。
+
+### 遗留
+- 差量更新 / 更新进度条 / 「不再提示」记忆 留 task-048+。

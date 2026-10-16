@@ -151,6 +151,10 @@ M2 updater 闭环已端到端跑通：项目仓库已转 public（updater endpoi
   - `app/src-tauri/src/commands.rs`：`safe_box_list(page,page_size,session_id,state)`；新增 `safe_box_list_sessions(state) -> Envelope<Vec<SessionSummary>>`；lib.rs 注册。
   - `app/src/pages/SafeBox.tsx`：state 加 sessionFilter/sessions；分页栏左侧加 `<select>`（全部 session / session #N (M 条)）；切换时 page=1、清空 selected、重拉 list。
   自验：cargo check/clippy/fmt/test=0（engine 173 条）；pnpm lint/test/build=0（173.78 kB / gzip 55.27 kB）。真机/打包冒烟由测试 Agent 在 L4 完成。
+2026-10-16：task-047 完成——rules.applyUpdate 前端 window.confirm 弹窗：
+  - `app/src/pages/Settings.tsx`：`apply` useCallback 开头加 `window.confirm(...)`，文案嵌入 `info.localVersion / info.remoteVersion`；取消直接 return，不进 setPhase/不调 invoke；依赖数组补 `info`。
+  - confirm 文案：「即将应用规则库 v{remoteVer}（当前本地 v{localVer}）。应用后旧版将备份为 cache_rules.json.bak，可随时通过「回滚到上一版」恢复。是否继续？」。
+  自验：cargo check/clippy/fmt/test=0（后端零改动，engine 173 条）；pnpm lint/test/build=0（173.98 kB / gzip 55.41 kB）。真机/打包冒烟由测试 Agent 在 L4 完成。
 2026-10-16：用户决策落地（DocsKeeper 同步状态，无代码改动）：
   - **项目仓库已转 public**：updater endpoint（task-041 已改 `releases/latest/download/latest.json`）直拉可达，无需 token header；task-039 评审遗留的「私有仓 raw 404」正式关闭。
   - **品牌图标决策：暂时不做**：沿用 Tauri 默认占位，v0.1.x 发版不阻塞；待后续有 1024×1024 源 PNG 再跑 `tauri icon`。
@@ -221,7 +225,7 @@ M2 updater 闭环已端到端跑通：项目仓库已转 public（updater endpoi
 - [B 中] task-015 文件占用时删除失败：Windows 下 `std::fs::remove_file` 遇 SharingViolation 直接返 Err，不做重试/Restart Manager；命中占用的 item 记为 fail 并写 audit_log result='fail'。Restart Manager 集成留 M1-D 后续任务。
 - [B 低] UNC 路径 `\\server\share\...` task-008 评估结论：**沿用保守拒绝**（normalize 层 NotAbsolute + resolve 层 Io 双保险）；网络盘 L3 红线策略留待真实 NAS/企业盘场景出现时再开。
 - [B 低] task-007 WebView2 devtools console 的 `listen('scan://progress')` 真机截图未在本轮自动化环境内取得（tauri dev 窗口启动后 GUI 自动化无法稳定聚焦 console）；通道本身已由编译期类型 + engine 节流单测保证，留待 UI 联调任务补截图。
-- [B 低] task-005 rules_meta 落 DB + checkUpdate + applyUpdate 均已在 task-022/023 落地；~~GitHub Token/私有仓、失败重试/离线降级、手动回滚命令（从 .bak 恢复）~~（~~GitHub Token/私有仓~~：项目已转 public，无需 token；~~离线降级~~：task-042 已落地 Offline 三态；~~手动回滚~~：task-044 已落地 rules_rollback + 前端按钮）、前端 UI 「确认更新」弹窗、差量更新 仍未做，留后续。
+- [B 低] task-005 rules_meta 落 DB + checkUpdate + applyUpdate 均已在 task-022/023 落地；~~GitHub Token/私有仓、失败重试/离线降级、手动回滚命令（从 .bak 恢复）、前端 UI 「确认更新」弹窗~~（~~GitHub Token/私有仓~~：项目已转 public，无需 token；~~离线降级~~：task-042 已落地 Offline 三态；~~手动回滚~~：task-044 已落地 rules_rollback + 前端按钮；~~前端确认弹窗~~：task-047 已落地 window.confirm 嵌入版本号 + 回滚提示）、差量更新 仍未做，留后续。
 - [B 低] task-005 外部红线命中统一记为 `DenialReason::L3SystemPath`（遵守「whitelist.rs 仅新增函数、不改枚举/常量」约束）；后续审计若需区分内置/外部红线来源，再拆 DenialReason 变体。
 - [B 低] task-006 CI 未接 Dependabot / cargo audit / npm audit（任务边界明确不做）；~~package.json 的 lint/test 为 echo 占位，CI 也不跑这两个命令~~（task-032 已接入 ESLint 10 flat config + Vitest 2.1，CI 已加 Lint/Test 两步）。CI 仅 windows-latest 单平台，跨平台矩阵（macOS/Linux）本项目明确不做；~~NSIS 出包矩阵未配~~（task-033 已配 Windows 单平台 nsis+msi，artifact 名 cclean-windows-installer）。
 - [B 中] task-033 installer 未做代码签名：未购 EV/OV 证书，用户首次运行 .exe/.msi 会有 SmartScreen「Windows 已保护你的电脑」警告，需要手动「更多信息→仍要运行」；正式发版前需评估代码签名（自签/商业证书）。
@@ -231,7 +235,7 @@ M2 updater 闭环已端到端跑通：项目仓库已转 public（updater endpoi
 - [B 中] ~~task-039 评审运行时冒烟发现：设置页规则库检查长时间停留「检查中…」（实测 ≥8s 无收敛、无失败态）；本机 raw URL 404（私有仓 raw 不可达），Rust 侧外呼无短超时/失败收敛。~~ **已由 task-041 解决**（reqwest 加 10s/5s 超时 + 中文错误映射 + updater endpoint 改 Releases/latest/download URL）。~~遗留：仓库 public/private 决策待用户拍板（推荐转 public），token header 留 task-042+。~~ **已落地（2026-10-16）：项目仓库已转 public，无需 token header，Releases 资产直拉可达。**
 
 ## 下一步计划
-M2 updater 端到端已闭环（仓库 public + 首次 v0.1.1 发版已手动执行 + rules 超时/离线降级/手动回滚就位）；品牌图标决策暂时不做；task-043 safe_box restore 自动建父目录已闭环；task-044 rules_rollback 已闭环；task-045 safe_box list 分页已闭环；task-046 safe_box session 过滤已闭环。下一轮进入：①派发 task-047：v0.1.1 真机升级验证收尾——用户在已装 v0.1.0 的机器上启动应用，观察 updater banner 是否正确弹出 v0.1.1，验证后正式关闭 M2 ②继续清 M1 遗留（L3 占用进程 RmShutdown 可选）③safe_box 时间范围筛选 / 多选 session / audit_log 联表 留 task-048+。
+M2 updater 端到端已闭环（仓库 public + 首次 v0.1.1 发版已手动执行 + rules 超时/离线降级/手动回滚就位）；品牌图标决策暂时不做；task-043 safe_box restore 自动建父目录已闭环；task-044 rules_rollback 已闭环；task-045 safe_box list 分页已闭环；task-046 safe_box session 过滤已闭环；task-047 rules.applyUpdate 前端确认弹窗已闭环。下一轮进入：①派发 task-048：v0.1.1 真机升级验证收尾——用户在已装 v0.1.0 的机器上启动应用，观察 updater banner 是否正确弹出 v0.1.1，验证后正式关闭 M2 ②继续清 M1 遗留（L3 占用进程 RmShutdown 可选）③safe_box 时间范围筛选 / 多选 session / audit_log 联表 留 task-049+。
 
 ## 当前负责人 Agent
 DocsKeeper（文档与状态管家）
@@ -496,6 +500,9 @@ DocsKeeper（文档与状态管家）
 | 8effbc4 | #task-046 | test(execute): 补 session 过滤集成测试（全部/按 session/无匹配/list_sessions 分组） |
 | a629150 | #task-046 | feat(frontend): SafeBox 加分页栏左侧 session 下拉（全部/session #N） |
 | （本次） | #task-046 | docs(state): 任务046完成，safe_box session 过滤就绪 |
+| 41afc60 | #task-047 | docs(task): 新增任务047-applyUpdate 确认弹窗 |
+| 36c9f76 | #task-047 | feat(frontend): Settings 点「应用更新」前 window.confirm 嵌入版本号 |
+| （本次） | #task-047 | docs(state): 任务047完成，rules applyUpdate 前端确认弹窗就绪 |
 
 ---
 变更轨迹：
@@ -586,3 +593,4 @@ DocsKeeper（文档与状态管家）
 - 2026-10-16  task-044  rules_rollback 单版回滚（后端命令 + 前端灰色按钮 + confirm）
 - 2026-10-16  task-045  safe_box_list 分页（LIMIT/OFFSET + total + 前端分页栏）
 - 2026-10-16  task-046  safe_box list session 过滤（可选 session_id 参数 + list_sessions + 前端下拉）
+- 2026-10-16  task-047  rules.applyUpdate 前端 window.confirm 弹窗（嵌入版本号 + 回滚提示）
