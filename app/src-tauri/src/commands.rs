@@ -179,11 +179,13 @@ pub async fn safe_box_restore(
 /// `safe_box.list`：分页列出当前保险箱里未剔除条目（task-045）。
 ///
 /// - `page` 从 1 起；`page_size` 后端 clamp 到 [1,200]；
+/// - `session_id` 可选：按 safe_box.source_task_id 等值过滤（task-046）；
 /// - 返回 `SafeBoxPage { items, total, page, pageSize, totalBytes }`。
 #[tauri::command]
 pub async fn safe_box_list(
     page: u32,
     page_size: u32,
+    session_id: Option<i64>,
     paths: tauri::State<'_, AppPaths>,
 ) -> Result<Envelope<engine::execute::safe_box::SafeBoxPage>, String> {
     let conn = match engine::db::conn::open(&paths.data_root) {
@@ -193,10 +195,31 @@ pub async fn safe_box_list(
             return Ok(Envelope::err(INTERNAL));
         }
     };
-    match engine::execute::safe_box::list_paged(&conn, page, page_size) {
+    match engine::execute::safe_box::list_paged(&conn, page, page_size, session_id) {
         Ok(r) => Ok(Envelope::ok(r)),
         Err(e) => {
             eprintln!("[safe_box_list] list_paged: {e}");
+            Ok(Envelope::err(INTERNAL))
+        }
+    }
+}
+
+/// `safe_box.list_sessions`：按 source_task_id 分组列出有哪些 session 进过保险箱（task-046）。
+#[tauri::command]
+pub async fn safe_box_list_sessions(
+    paths: tauri::State<'_, AppPaths>,
+) -> Result<Envelope<Vec<engine::execute::safe_box::SessionSummary>>, String> {
+    let conn = match engine::db::conn::open(&paths.data_root) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[safe_box_list_sessions] open db: {e}");
+            return Ok(Envelope::err(INTERNAL));
+        }
+    };
+    match engine::execute::safe_box::list_sessions(&conn) {
+        Ok(r) => Ok(Envelope::ok(r)),
+        Err(e) => {
+            eprintln!("[safe_box_list_sessions] list_sessions: {e}");
             Ok(Envelope::err(INTERNAL))
         }
     }

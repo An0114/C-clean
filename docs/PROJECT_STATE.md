@@ -144,11 +144,23 @@ M2 updater 闭环已端到端跑通：项目仓库已转 public（updater endpoi
   - `app/src-tauri/src/commands.rs`：`safe_box_list(page:u32,page_size:u32) -> Envelope<SafeBoxPage>`。
   - `app/src/pages/SafeBox.tsx`：state 加 page/pageSize/total；表格下加分页栏（上一页 / 第 X / Y 页（共 N 条） / 下一页）；翻页清空 selected。
   自验：cargo check/clippy/fmt/test=0（engine 169 条）；pnpm lint/test/build=0（173.18 kB / gzip 55.10 kB）。真机/打包冒烟由测试 Agent 在 L4 完成。
+2026-10-16：task-046 完成——safe_box list session 过滤（可选 session_id 参数 + list_sessions 分组 + 前端下拉）：
+  - `engine/src/execute/safe_box.rs`：`list_paged(conn,page,page_size,session_id:Option<i64>)`；None 全表、Some(id) 同步加 `AND source_task_id=?` 到 COUNT/SUM/items；新增 `SessionSummary{sessionId,itemCount,createdTs}` + `list_sessions(conn)` 按 source_task_id GROUP BY。
+  - 偏差：真实 safe_box schema 没有 session_id 列，只有 `source_task_id` 外键；实现上把 source_task_id 当作「session」语义，未加列、未做 scan_session 联表。
+  - `engine/tests/safe_box_session_filter.rs` 4 条：全部返回 / 按 session 过滤 / 无匹配 / list_sessions 分组。
+  - `app/src-tauri/src/commands.rs`：`safe_box_list(page,page_size,session_id,state)`；新增 `safe_box_list_sessions(state) -> Envelope<Vec<SessionSummary>>`；lib.rs 注册。
+  - `app/src/pages/SafeBox.tsx`：state 加 sessionFilter/sessions；分页栏左侧加 `<select>`（全部 session / session #N (M 条)）；切换时 page=1、清空 selected、重拉 list。
+  自验：cargo check/clippy/fmt/test=0（engine 173 条）；pnpm lint/test/build=0（173.78 kB / gzip 55.27 kB）。真机/打包冒烟由测试 Agent 在 L4 完成。
 2026-10-16：用户决策落地（DocsKeeper 同步状态，无代码改动）：
   - **项目仓库已转 public**：updater endpoint（task-041 已改 `releases/latest/download/latest.json`）直拉可达，无需 token header；task-039 评审遗留的「私有仓 raw 404」正式关闭。
   - **品牌图标决策：暂时不做**：沿用 Tauri 默认占位，v0.1.x 发版不阻塞；待后续有 1024×1024 源 PNG 再跑 `tauri icon`。
   - **首次 v0.1.1 发版已手动 workflow_dispatch 执行**：release workflow 已产出安装包 + latest.json（含签名），updater 端到端待用户在已装 v0.1.0 的机器上启动应用真机验证 banner 是否弹 v0.1.1。
   - 同期用户侧已做的发版准备 commit（未走任务流程）：`3fe5268 chore: 更换 updater 签名公钥`、`8f65b6b fix(release): 修正签名环境变量名，未配置 secret 时优雅跳过 latest.json`、`25aafb6 fix(release): 移除 pnpm/action-setup 的 version 字段`、`37c5c97 Update .gitignore`。
+2026-10-16：task-046 rustfmt CI 红灯修复（bugfix 子分支闭环）：
+  - 现象：PR #8（feature/task-046-safebox-session-filter）CI run 38875797117 的「Rustfmt 检查」步骤 exit 1——`engine/src/execute/safe_box.rs:434` `Some(s) => conn` 折多行压回单行；`engine/tests/safe_box_pagination.rs` 文件头 BOM + 文件尾多余空行。
+  - 修复：跑 `cargo fmt --all` 自动收敛（纯格式/空白改动，无逻辑变更）；bugfix 子分支 `bugfix/task-046-rustfmt-ci-red`，提交 `659013c`，已 `--no-ff` 合回 feature（merge `bf8a133`）。
+  - 自验：`cargo fmt --all -- --check` exit 0；clippy -D warnings 无告警；safe_box_pagination 5/5、safe_box_session_filter 4/4 测试通过。
+  - 结果：PR #8 重跑 CI run 38876741430 **conclusion=success**（08:53→08:58，五道闸全绿）。状态置 testing，待测试/评审复核。
 
 ## 已完成事项
 - [x] 项目立项与仓库初始化（commit 67990f5 / 4972f9d）
@@ -202,7 +214,7 @@ M2 updater 闭环已端到端跑通：项目仓库已转 public（updater endpoi
 
 ## 已知问题
 - [B 中] task-021 仅做「报告」（who_is_locking 结果写 audit_log + 返回前端），**未实现 RmShutdown/RmRestart（请求关闭占用进程）**，前端 UI toast 也未接；notepad 端到端真机验证 CI 用例 `#[ignore]`。请求关闭与前端展示留 task-022+。
-- [B 低] ~~task-018 list 边界：无分页（保险箱总量 ≤5GB，条目数有限）、~~无 session 过滤（先返回全部）、~~无单条 purge 命令、未接前端 React UI~~（~~无分页~~：task-045 已落地 list_paged LIMIT/OFFSET + 前端分页栏）。真多了再加 session 过滤 / 列排序 留 task-046+。
+- [B 低] ~~task-018 list 边界：无分页（保险箱总量 ≤5GB，条目数有限）、无 session 过滤（先返回全部）、无单条 purge 命令、未接前端 React UI~~（~~无分页~~：task-045 已落地 list_paged LIMIT/OFFSET + 前端分页栏；~~无 session 过滤~~：task-046 已落地 session_id 可选参数 + list_sessions + 前端下拉）。真多了再加 时间范围筛选 / 多选 session / audit_log 联表 留 task-047+。
 - [B 低] ~~task-017 restore 边界：不自动建原父目录（ParentMissing 直接报错让用户手动处理）、不支持批量恢复、未加 `restored_at` 审计列（DELETE 行 + audit_log action='restore' 已留痕）。批量恢复与父目录自动 mkdir 留后续。~~ **已由 task-043 解决**（restore_from_safe_box 在父目录缺失时自动 `std::fs::create_dir_all`，mkdir 失败返回「无法创建父目录 <path>: <os error>」；ParentMissing 枚举变体保留但不再返回）。遗留：未加 `restored_at` 审计列。
 - [B 中] task-016 保险箱原子性：`fs::rename` 成功但 `INSERT INTO safe_box` 失败时，文件已在 box 目录但 DB 无行——当前简单报错，不做回滚；跨盘 rename 走 copy+remove 也非原子。补偿：下次 enforce_quota 扫到磁盘上有孤儿文件时会 NotFound 直接标 purged（不会重复占用 quota）。
 - [B 低] task-016 跨盘 rename：`fs::rename` 遇 EXDEV(17)/跨盘错误时 fallback 到 copy+remove；CI 单盘未实测跨盘用例。
@@ -219,7 +231,7 @@ M2 updater 闭环已端到端跑通：项目仓库已转 public（updater endpoi
 - [B 中] ~~task-039 评审运行时冒烟发现：设置页规则库检查长时间停留「检查中…」（实测 ≥8s 无收敛、无失败态）；本机 raw URL 404（私有仓 raw 不可达），Rust 侧外呼无短超时/失败收敛。~~ **已由 task-041 解决**（reqwest 加 10s/5s 超时 + 中文错误映射 + updater endpoint 改 Releases/latest/download URL）。~~遗留：仓库 public/private 决策待用户拍板（推荐转 public），token header 留 task-042+。~~ **已落地（2026-10-16）：项目仓库已转 public，无需 token header，Releases 资产直拉可达。**
 
 ## 下一步计划
-M2 updater 端到端已闭环（仓库 public + 首次 v0.1.1 发版已手动执行 + rules 超时/离线降级/手动回滚就位）；品牌图标决策暂时不做；task-043 safe_box restore 自动建父目录已闭环；task-044 rules_rollback 已闭环；task-045 safe_box list 分页已闭环。下一轮进入：①派发 task-046：safe_box list session 过滤（按 cleanup session 筛选）——task-018 已知问题第二项 ②首次 v0.1.1 升级链路真机验证（用户在已装 v0.1.0 的机器上启动应用，观察 updater banner 是否正确弹出 v0.1.1）③继续清 M1 遗留（L3 占用进程 RmShutdown 可选）。
+M2 updater 端到端已闭环（仓库 public + 首次 v0.1.1 发版已手动执行 + rules 超时/离线降级/手动回滚就位）；品牌图标决策暂时不做；task-043 safe_box restore 自动建父目录已闭环；task-044 rules_rollback 已闭环；task-045 safe_box list 分页已闭环；task-046 safe_box session 过滤已闭环。下一轮进入：①派发 task-047：v0.1.1 真机升级验证收尾——用户在已装 v0.1.0 的机器上启动应用，观察 updater banner 是否正确弹出 v0.1.1，验证后正式关闭 M2 ②继续清 M1 遗留（L3 占用进程 RmShutdown 可选）③safe_box 时间范围筛选 / 多选 session / audit_log 联表 留 task-048+。
 
 ## 当前负责人 Agent
 DocsKeeper（文档与状态管家）
@@ -478,6 +490,12 @@ DocsKeeper（文档与状态管家）
 | 2a35eaf | #task-045 | test(execute): 补 safe_box 分页集成测试（首页/次页/clamp/越界/ID DESC） |
 | 02b31bb | #task-045 | feat(frontend): SafeBox 表格下加分页栏（上一页/下一页/页码/total） |
 | （本次） | #task-045 | docs(state): 任务045完成，safe_box list 分页就绪 |
+| 734ab6b | #task-046 | docs(task): 新增任务046-safe_box session 过滤 |
+| f7069f4 | #task-046 | feat(execute): list_paged 加可选 session_id 过滤 + 新增 list_sessions |
+| 69e1f95 | #task-046 | feat(tauri): safe_box_list 入参加 session_id，新增 safe_box_list_sessions 命令 |
+| 8effbc4 | #task-046 | test(execute): 补 session 过滤集成测试（全部/按 session/无匹配/list_sessions 分组） |
+| a629150 | #task-046 | feat(frontend): SafeBox 加分页栏左侧 session 下拉（全部/session #N） |
+| （本次） | #task-046 | docs(state): 任务046完成，safe_box session 过滤就绪 |
 
 ---
 变更轨迹：
@@ -567,3 +585,4 @@ DocsKeeper（文档与状态管家）
 - 2026-10-16  task-043  safe_box.restore_item 自动 mkdir -p 父目录（task-017 已知问题闭环）
 - 2026-10-16  task-044  rules_rollback 单版回滚（后端命令 + 前端灰色按钮 + confirm）
 - 2026-10-16  task-045  safe_box_list 分页（LIMIT/OFFSET + total + 前端分页栏）
+- 2026-10-16  task-046  safe_box list session 过滤（可选 session_id 参数 + list_sessions + 前端下拉）
