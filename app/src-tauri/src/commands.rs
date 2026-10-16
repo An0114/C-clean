@@ -22,8 +22,8 @@ use engine::rules::loader::load as load_rules;
 use engine::rules::meta_store::{get_active_rules_meta, upsert_active_rules_meta};
 use engine::rules::remote::fetch_remote_meta;
 use engine::rules::{
-    apply_update, fetch_remote_rules_bytes, ApplyError, ApplyResult, CheckUpdateResult,
-    REMOTE_RULES_META_URL,
+    apply_update, fetch_remote_rules_bytes, has_backup, rollback, ApplyError, ApplyResult,
+    CheckUpdateResult, RollbackResult, REMOTE_RULES_META_URL,
 };
 use engine::scan::ScanOrchestrator;
 
@@ -340,6 +340,37 @@ pub async fn rules_apply_update(
         }
         Err(e) => {
             eprintln!("[rules_apply_update] apply: {e}");
+            Ok(Envelope::err(INTERNAL))
+        }
+    }
+}
+
+/// `rules_has_backup`：返回是否存在可回滚的 `.bak`（前端用来决定是否显示「回滚」按钮）。
+#[tauri::command]
+pub async fn rules_has_backup(
+    paths: tauri::State<'_, AppPaths>,
+) -> Result<Envelope<bool>, String> {
+    Ok(Envelope::ok(has_backup(&paths.rules_dir)))
+}
+
+/// `rules_rollback`：从 `.bak` 恢复 cache_rules.json 到上一版。
+///
+/// 失败时返回 INTERNAL 错误信封；具体中文原因 eprintln 到 stderr。
+#[tauri::command]
+pub async fn rules_rollback(
+    paths: tauri::State<'_, AppPaths>,
+) -> Result<Envelope<RollbackResult>, String> {
+    let conn = match engine::db::conn::open(&paths.data_root) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[rules_rollback] open db: {e}");
+            return Ok(Envelope::err(INTERNAL));
+        }
+    };
+    match rollback(&paths.rules_dir, &conn) {
+        Ok(r) => Ok(Envelope::ok(r)),
+        Err(e) => {
+            eprintln!("[rules_rollback] {e}");
             Ok(Envelope::err(INTERNAL))
         }
     }
