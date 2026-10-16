@@ -94,6 +94,12 @@ M2 自动更新闭环已就位（tauri-plugin-updater + 启动自动 check + 非
   - 前端 `SafeBox.tsx` 顶部加绿色「批量恢复已选(N)」按钮（在红色批量删除按钮左边），复用现有 selected Set，confirm 后调 `restore_many`，绿/红条显示成功/失败数，清空 selected 重拉列表。
   自验：cargo check/clippy/fmt/test=0（engine 146 条）；pnpm lint/test/build=0（168.49 kB / gzip 53.43 kB）。
 2026-10-15：task-039 评审前清障——修复 3 项第一档问题：① `cargo fmt --check` 在 HEAD/main 双红灯（task-038 遗留的多行签名/断言格式，其评审「fmt 全绿」为误报）；② SafeBox 行内单条「恢复/永久删除」按钮禁用条件漏了批量操作状态，存在竞态；③ 补 `restore_many` 中间失败不阻断后续 id 的测试用例（原 partial_fail 失败项在末尾无法证明）；另修正 `BatchOpResult` 误导性注释、登记批量恢复真机端到端为已知限制。修复后 check/clippy/fmt/test（147 条）/pnpm lint/fe-test/build 全绿。
+2026-10-16：task-040 首次评审**不通过**（dry-run 预览 UI）——评审结论：代码质量本身合格（dryRun.ts 纯函数无副作用、apiRaw 不破坏 api、Items 四分支渲染与只读保证代码层确认、Rust 零改动、白名单 7 文件无越界、无新增依赖），但触发一票否决的是**测试证据缺失**，不是业务代码 bug，故不开 bugfix 子分支改业务代码：
+  - R1（阻塞）：真机 Tauri + WebView2 CDP(9222) 冒烟未执行（覆盖 code=0 汇总 / 2002 红线 / 2001 空清单 / 刷新清预览 / Console 0 红错）——路由测试 Agent（提示词 9）在 GUI 环境补做，不接受口头「本地绿」。
+  - R2（阻塞）：NSIS `pnpm tauri build` → perMachine `/S` 装干净目录 → 安装版预览按钮可点/面板渲染/Console 零红错/DB 落 app_data_dir()——同样路由测试 Agent 补做。
+  - R3（阻塞）：ci.yml 只在 `push:main` 与 PR 触发，本分支未开 PR、无真实 run 结论——需开 PR 取 windows-latest 五道闸 run URL + id + success。
+  - R4/R5（低，本提交落地）：补本 docs(state) 记录；`tasks/040-dryrun-preview-ui.md` 状态字段由 `pending` 流转到 `review`。
+  注：task-040 **尚未勾选完成**，待 R1–R3 真机/打包/CI 证据补齐后由评审（提示词 10）复核通过再勾选并合并 main。
 
 ## 已完成事项
 - [x] 项目立项与仓库初始化（commit 67990f5 / 4972f9d）

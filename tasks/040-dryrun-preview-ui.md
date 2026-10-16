@@ -8,7 +8,7 @@
 
 ## 状态字段
 
-`pending`
+`review`
 
 - 初始值 `pending`；流转：`pending` → `in_progress`（DevAgent 认领）→ `review`（提交待评审）→ `done`（评审 Approve 且合并 main 后由 DocsKeeper 置位）。
 - 状态变更只在本任务文档与 `docs/PROJECT_STATE.md` 两处同步，不在别处另记一份进度。
