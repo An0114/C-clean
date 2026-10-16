@@ -335,6 +335,22 @@ pub struct SafeBoxListResp {
     pub total_bytes: u64,
 }
 
+/// task-045：分页响应。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SafeBoxPage {
+    /// 当前页条目。
+    pub items: Vec<SafeBoxEntry>,
+    /// 全表 total（与页大小无关）。
+    pub total: i64,
+    /// 当前页（1 起）。
+    pub page: i64,
+    /// 实际使用的 page_size（已 clamp 到 [1,200]）。
+    pub page_size: i64,
+    /// 全表字节汇总（保留原 UI 顶栏显示）。
+    pub total_bytes: u64,
+}
+
 /// 列出当前 `status='in_box'` 的所有条目，按 quarantined_at DESC（最新在前）。
 ///
 /// 与任务书 §A 的偏差（按 v1__init.sql 真实 schema 适配）：
@@ -370,6 +386,64 @@ pub fn list_safe_box(conn: &Connection) -> Result<SafeBoxListResp, String> {
         entries,
         total_items,
         total_bytes,
+    })
+}
+
+/// task-045：分页列出 `status='in_box'` 条目。
+///
+/// - `page` 从 1 起，<1 按 1 处理；
+/// - `page_size` clamp 到 [1, 200]（防前端传 99999）；
+/// - ORDER BY id DESC（最新在前，稳定排序）；
+/// - 同时跑 `SELECT COUNT(*)` 拿 total，SUM(size_bytes) 拿全表字节汇总。
+pub fn list_paged(conn: &Connection, page: u32, page_size: u32) -> Result<SafeBoxPage, String> {
+    let page = (page.max(1)) as i64;
+    let page_size = (page_size.clamp(1, 200)) as i64;
+    let offset = (page - 1) * page_size;
+
+    let total: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM safe_box WHERE status='in_box'",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(|e| format!("count safe_box: {e}"))?;
+
+    let total_bytes: i64 = conn
+        .query_row(
+            "SELECT COALESCE(SUM(size_bytes),0) FROM safe_box WHERE status='in_box'",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(|e| format!("sum safe_box: {e}"))?;
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, original_path, size_bytes, quarantined_at
+             FROM safe_box WHERE status='in_box'
+             ORDER BY id DESC
+             LIMIT ?1 OFFSET ?2",
+        )
+        .map_err(|e| format!("prepare list_paged: {e}"))?;
+
+    let items: Vec<SafeBoxEntry> = stmt
+        .query_map([page_size, offset], |r| {
+            Ok(SafeBoxEntry {
+                id: r.get(0)?,
+                original_path: r.get(1)?,
+                size_bytes: r.get::<_, i64>(2).map(|v| v as u64)?,
+                quarantined_at: r.get(3)?,
+            })
+        })
+        .map_err(|e| format!("query_map list_paged: {e}"))?
+        .collect::<std::result::Result<_, _>>()
+        .map_err(|e| format!("collect list_paged: {e}"))?;
+
+    Ok(SafeBoxPage {
+        items,
+        total,
+        page,
+        page_size,
+        total_bytes: total_bytes.max(0) as u64,
     })
 }
 
