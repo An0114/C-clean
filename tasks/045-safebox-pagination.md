@@ -189,3 +189,41 @@ DevAgent 交付物（后续执行结果）：
 4. 本任务文档本身**由 DocsKeeper 在派发时**单独提交一次：
    `docs(task): 新增任务045-safe_box 分页 (#task-045)`，
    该提交只含 `tasks/045-safebox-pagination.md` 一个文件，落在 `feature/task-045-safebox-pagination` 分支最前端。
+
+## 实现备注
+
+### 实际改动文件
+- engine/src/execute/safe_box.rs：新增 SafeBoxPage{items,total,page,pageSize,totalBytes} + list_paged(conn,page,page_size)；原 list_safe_box 保留未删（避免破坏其他调用点）。
+- engine/tests/safe_box_pagination.rs（新建 5 条）。
+- pp/src-tauri/src/commands.rs：safe_box_list(page,page_size) 返回 Envelope<SafeBoxPage>。
+- pp/src/pages/SafeBox.tsx：state 加 page/pageSize/total；load 入参 (p, ps)；表格下加分页栏（上一页 / 第 X / Y 页（共 N 条） / 下一页）；翻页清空 selected。
+
+### page_size 上限 / 默认值
+- 默认 pageSize=50；后端 clamp 到 [1, 200]；page < 1 按 1 处理。
+
+### SafeBoxPage 最终定义
+`ust
+#[serde(rename_all = "camelCase")]
+pub struct SafeBoxPage {
+    pub items: Vec<SafeBoxEntry>,
+    pub total: i64,
+    pub page: i64,
+    pub page_size: i64,
+    pub total_bytes: u64,
+}
+`
+
+### 验证
+- cargo test -p engine 全绿（含 safe_box_pagination 5/5）。
+- pnpm lint/test/build=0（vite 173.18 kB / gzip 55.10 kB）。
+
+### 偏差
+- 原 list_safe_box（返回 SafeBoxListResp）保留未删，避免破坏其他潜在调用点；Tauri 命令已切到 list_paged。
+- 排序按任务书用 ORDER BY id DESC（旧 list 是 quarantined_at DESC）。
+- total_bytes 用全表 SUM（不是当前页），保留 UI 顶栏「总大小」显示。
+
+### 真机/打包冒烟
+由测试 Agent 在 L4 完成（造 60 行 → 第 1/2 页 → 翻页 → NSIS 空表 disabled）。
+
+### 遗留
+- session 过滤 / 列排序选择 留 task-046+。

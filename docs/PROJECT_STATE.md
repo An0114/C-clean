@@ -138,6 +138,12 @@ M2 updater 闭环已端到端跑通：项目仓库已转 public（updater endpoi
   - `app/src-tauri/src/commands.rs`：`rules_has_backup() -> Envelope<bool>` + `rules_rollback() -> Envelope<RollbackResult>`，错误用 INTERNAL 信封。
   - `app/src/pages/Settings.tsx`：启动时调 has_backup，true 时显示灰色「回滚到上一版」按钮；confirm 后 invoke rollback → 绿条「已回滚到 vX.Y.Z」。
   自验：cargo check/clippy/fmt/test=0（engine 164 条）；pnpm lint/test/build=0（172.68 kB / gzip 54.92 kB）。真机/打包冒烟由测试 Agent 在 L4 完成。
+2026-10-16：task-045 完成——safe_box list 分页（LIMIT/OFFSET + total + 前端分页栏）：
+  - `engine/src/execute/safe_box.rs`：新增 `SafeBoxPage{items,total,page,pageSize,totalBytes}` + `list_paged(conn,page,page_size)`；page_size clamp [1,200]、page<1 按 1；SQL `ORDER BY id DESC LIMIT ? OFFSET ?` + `COUNT(*)` + `SUM(size_bytes)`。
+  - `engine/tests/safe_box_pagination.rs` 5 条：首页 50 条 / 次页 10 条 / page_size=99999 clamp 到 200 / 越界页空 / id DESC 跨页递减。
+  - `app/src-tauri/src/commands.rs`：`safe_box_list(page:u32,page_size:u32) -> Envelope<SafeBoxPage>`。
+  - `app/src/pages/SafeBox.tsx`：state 加 page/pageSize/total；表格下加分页栏（上一页 / 第 X / Y 页（共 N 条） / 下一页）；翻页清空 selected。
+  自验：cargo check/clippy/fmt/test=0（engine 169 条）；pnpm lint/test/build=0（173.18 kB / gzip 55.10 kB）。真机/打包冒烟由测试 Agent 在 L4 完成。
 2026-10-16：用户决策落地（DocsKeeper 同步状态，无代码改动）：
   - **项目仓库已转 public**：updater endpoint（task-041 已改 `releases/latest/download/latest.json`）直拉可达，无需 token header；task-039 评审遗留的「私有仓 raw 404」正式关闭。
   - **品牌图标决策：暂时不做**：沿用 Tauri 默认占位，v0.1.x 发版不阻塞；待后续有 1024×1024 源 PNG 再跑 `tauri icon`。
@@ -196,7 +202,7 @@ M2 updater 闭环已端到端跑通：项目仓库已转 public（updater endpoi
 
 ## 已知问题
 - [B 中] task-021 仅做「报告」（who_is_locking 结果写 audit_log + 返回前端），**未实现 RmShutdown/RmRestart（请求关闭占用进程）**，前端 UI toast 也未接；notepad 端到端真机验证 CI 用例 `#[ignore]`。请求关闭与前端展示留 task-022+。
-- [B 低] task-018 list 边界：无分页（保险箱总量 ≤5GB，条目数有限）、无 session 过滤（先返回全部）、无单条 purge 命令、未接前端 React UI。真多了再加 LIMIT / 前端列表组件留后续。
+- [B 低] ~~task-018 list 边界：无分页（保险箱总量 ≤5GB，条目数有限）、~~无 session 过滤（先返回全部）、~~无单条 purge 命令、未接前端 React UI~~（~~无分页~~：task-045 已落地 list_paged LIMIT/OFFSET + 前端分页栏）。真多了再加 session 过滤 / 列排序 留 task-046+。
 - [B 低] ~~task-017 restore 边界：不自动建原父目录（ParentMissing 直接报错让用户手动处理）、不支持批量恢复、未加 `restored_at` 审计列（DELETE 行 + audit_log action='restore' 已留痕）。批量恢复与父目录自动 mkdir 留后续。~~ **已由 task-043 解决**（restore_from_safe_box 在父目录缺失时自动 `std::fs::create_dir_all`，mkdir 失败返回「无法创建父目录 <path>: <os error>」；ParentMissing 枚举变体保留但不再返回）。遗留：未加 `restored_at` 审计列。
 - [B 中] task-016 保险箱原子性：`fs::rename` 成功但 `INSERT INTO safe_box` 失败时，文件已在 box 目录但 DB 无行——当前简单报错，不做回滚；跨盘 rename 走 copy+remove 也非原子。补偿：下次 enforce_quota 扫到磁盘上有孤儿文件时会 NotFound 直接标 purged（不会重复占用 quota）。
 - [B 低] task-016 跨盘 rename：`fs::rename` 遇 EXDEV(17)/跨盘错误时 fallback 到 copy+remove；CI 单盘未实测跨盘用例。
@@ -213,7 +219,7 @@ M2 updater 闭环已端到端跑通：项目仓库已转 public（updater endpoi
 - [B 中] ~~task-039 评审运行时冒烟发现：设置页规则库检查长时间停留「检查中…」（实测 ≥8s 无收敛、无失败态）；本机 raw URL 404（私有仓 raw 不可达），Rust 侧外呼无短超时/失败收敛。~~ **已由 task-041 解决**（reqwest 加 10s/5s 超时 + 中文错误映射 + updater endpoint 改 Releases/latest/download URL）。~~遗留：仓库 public/private 决策待用户拍板（推荐转 public），token header 留 task-042+。~~ **已落地（2026-10-16）：项目仓库已转 public，无需 token header，Releases 资产直拉可达。**
 
 ## 下一步计划
-M2 updater 端到端已闭环（仓库 public + 首次 v0.1.1 发版已手动执行 + rules 超时/离线降级/手动回滚就位）；品牌图标决策暂时不做；task-043 safe_box restore 自动建父目录已闭环；task-044 rules_rollback 已闭环。下一轮进入：①派发 task-045：safe_box list 分页（LIMIT/OFFSET + 前端分页控件）——task-018 已知问题闭环 ②首次 v0.1.1 升级链路真机验证（用户在已装 v0.1.0 的机器上启动应用，观察 updater banner 是否正确弹出 v0.1.1）③继续清 M1 遗留（L3 占用进程 RmShutdown 可选）。
+M2 updater 端到端已闭环（仓库 public + 首次 v0.1.1 发版已手动执行 + rules 超时/离线降级/手动回滚就位）；品牌图标决策暂时不做；task-043 safe_box restore 自动建父目录已闭环；task-044 rules_rollback 已闭环；task-045 safe_box list 分页已闭环。下一轮进入：①派发 task-046：safe_box list session 过滤（按 cleanup session 筛选）——task-018 已知问题第二项 ②首次 v0.1.1 升级链路真机验证（用户在已装 v0.1.0 的机器上启动应用，观察 updater banner 是否正确弹出 v0.1.1）③继续清 M1 遗留（L3 占用进程 RmShutdown 可选）。
 
 ## 当前负责人 Agent
 DocsKeeper（文档与状态管家）
@@ -466,6 +472,12 @@ DocsKeeper（文档与状态管家）
 | 8013dee | #task-044 | feat(frontend): Settings 规则库卡片加「回滚到上一版」按钮 |
 | ff142be | #task-044 | style: cargo fmt |
 | （本次） | #task-044 | docs(state): 任务044完成，rules 手动回滚命令就绪 |
+| 8e56188 | #task-045 | docs(task): 新增任务045-safe_box 分页 |
+| 252c87a | #task-045 | feat(execute): safe_box.list_paged——LIMIT/OFFSET + COUNT total + page_size clamp |
+| 359a2de | #task-045 | feat(tauri): safe_box_list 入参加 page/page_size，返回 SafeBoxPage |
+| 2a35eaf | #task-045 | test(execute): 补 safe_box 分页集成测试（首页/次页/clamp/越界/ID DESC） |
+| 02b31bb | #task-045 | feat(frontend): SafeBox 表格下加分页栏（上一页/下一页/页码/total） |
+| （本次） | #task-045 | docs(state): 任务045完成，safe_box list 分页就绪 |
 
 ---
 变更轨迹：
@@ -554,3 +566,4 @@ DocsKeeper（文档与状态管家）
 - 2026-10-16  task-042  rules.checkUpdate 加 Offline 三态，断网时本地规则库照常工作 + UI 黄条提示
 - 2026-10-16  task-043  safe_box.restore_item 自动 mkdir -p 父目录（task-017 已知问题闭环）
 - 2026-10-16  task-044  rules_rollback 单版回滚（后端命令 + 前端灰色按钮 + confirm）
+- 2026-10-16  task-045  safe_box_list 分页（LIMIT/OFFSET + total + 前端分页栏）
