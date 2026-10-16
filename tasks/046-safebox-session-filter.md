@@ -197,3 +197,44 @@ DevAgent 交付物（后续执行结果）：
 4. 本任务文档本身**由 DocsKeeper 在派发时**单独提交一次：
    `docs(task): 新增任务046-safe_box session 过滤 (#task-046)`，
    该提交只含 `tasks/046-safebox-session-filter.md` 一个文件，落在 `feature/task-046-safebox-session-filter` 分支最前端。
+
+## 实现备注
+
+### 实际改动文件
+- engine/src/execute/safe_box.rs：list_paged 入参加 session_id: Option<i64>（按 source_task_id 过滤）；新增 SessionSummary{session_id,item_count,created_ts} + list_sessions(conn)（按 source_task_id GROUP BY，ORDER BY source_task_id DESC）。
+- engine/tests/safe_box_pagination.rs：5 条旧测试调用点补 None 实参。
+- engine/tests/safe_box_session_filter.rs（新建 4 条）。
+- pp/src-tauri/src/commands.rs：safe_box_list(page,page_size,session_id,state)；新增 safe_box_list_sessions(state) -> Envelope<Vec<SessionSummary>>。
+- pp/src-tauri/src/lib.rs：注册 safe_box_list_sessions。
+- pp/src/pages/SafeBox.tsx：state 加 sessionFilter/sessions；首次挂载拉一次 sessions 填下拉；分页栏左侧加 <select>；切换时 page=1、清空 selected、重拉 list。
+
+### SessionSummary 最终定义
+`ust
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionSummary {
+    pub session_id: i64,
+    pub item_count: i64,
+    pub created_ts: i64,
+}
+`
+
+### 与任务书偏差（重要）
+- 任务书写「safe_box 表已有 session_id 列（task-016 schema）」，**实际 schema 没有**：safe_box 只有 source_task_id INTEGER REFERENCES cleanup_task(id)。
+- 实现选择：把 source_task_id 当作前端语义上的「session」——一个 cleanup_task 对应一次清理执行，等价于一次 session。list_sessions 按 source_task_id GROUP BY，list_paged(session_id) 过滤 source_task_id = ?。
+- 未新增列、未做 scan_session 联表（保留「显示扫描来源路径」给 task-047+）。
+
+### None 时行为（向后兼容 task-045）
+- session_id=None → 不加 WHERE，全表 COUNT/SUM/分页；
+- session_id=Some(id) → 同步加 AND source_task_id = ? 到 COUNT/SUM/items 三处。
+
+### 验证
+- cargo test -p engine 全绿（safe_box_session_filter 4/4；safe_box_pagination 5/5 仍绿）。
+- cargo clippy --workspace --all-targets -- -D warnings = 0；cargo fmt --check = 0。
+- pnpm lint/test/build = 0（vite 173.78 kB / gzip 55.27 kB）。
+
+### 真机/打包冒烟
+由测试 Agent 在 L4 完成（造 5 行 2 session → 下拉切 session #1 只显 3 条 / 切回全部显 5 条 / NSIS 空表下拉只显「全部 session」）。
+
+### 遗留
+- 时间范围筛选 / 多选 session / audit_log 联表 留 task-047+。
