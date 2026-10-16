@@ -66,11 +66,7 @@ pub struct CheckUpdateResult {
 
 impl CheckUpdateResult {
     /// 远端可达 + 本地最新。
-    pub fn up_to_date(
-        local_version: String,
-        local_sha: String,
-        remote: &RemoteRulesMeta,
-    ) -> Self {
+    pub fn up_to_date(local_version: String, local_sha: String, remote: &RemoteRulesMeta) -> Self {
         Self {
             status: CheckStatus::UpToDate,
             local_version,
@@ -82,11 +78,7 @@ impl CheckUpdateResult {
     }
 
     /// 远端可达 + 有新版本。
-    pub fn new_version(
-        local_version: String,
-        local_sha: String,
-        remote: &RemoteRulesMeta,
-    ) -> Self {
+    pub fn new_version(local_version: String, local_sha: String, remote: &RemoteRulesMeta) -> Self {
         Self {
             status: CheckStatus::NewVersion,
             local_version,
@@ -106,6 +98,15 @@ impl CheckUpdateResult {
             remote_version: None,
             remote_sha256: None,
             message: err,
+        }
+    }
+
+    /// 根据本地 sha 与远端 meta 比对，返回 UpToDate / NewVersion。
+    pub fn classify(local_version: String, local_sha: String, remote: &RemoteRulesMeta) -> Self {
+        if local_sha == remote.checksum_sha256 {
+            Self::up_to_date(local_version, local_sha, remote)
+        } else {
+            Self::new_version(local_version, local_sha, remote)
         }
     }
 }

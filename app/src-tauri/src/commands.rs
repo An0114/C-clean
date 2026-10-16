@@ -302,11 +302,7 @@ pub async fn rules_check_update(
         }
     };
 
-    let result = if local_sha == remote.checksum_sha256 {
-        CheckUpdateResult::up_to_date(local_version, local_sha, &remote)
-    } else {
-        CheckUpdateResult::new_version(local_version, local_sha, &remote)
-    };
+    let result = CheckUpdateResult::classify(local_version, local_sha, &remote);
     Ok(Envelope::ok(result))
 }
 
