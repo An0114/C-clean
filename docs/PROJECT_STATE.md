@@ -115,6 +115,12 @@ M2 自动更新闭环已就位（tauri-plugin-updater + 启动自动 check + 非
   - 测试报告：`docs/test-reports/040-test-report.md` §8 含完整证据。
   - 仍待测试 Agent（提示词 9）补：C3-C6 四个面板分支（code=0 汇总 / 2002 红线 / 2001 空 / error）真机 innerText 证据——需 CDP 调 `scan_start(scope='full')` 造数据行后点预览抓面板文案（评审 §R1-R3）。
   - 注：本地一个评审 markdown 提交 `1ac7182` 经远端 PR head 已可见（PR head sha = 1ac7182）。
+2026-10-16：task-041 完成——rules reqwest 超时收敛 + updater endpoint 改 Releases 资产（task-039 评审 P0 真机卡死修复）：
+  - `engine/src/rules/remote.rs`：reqwest 统一走 `build_client()`，timeout=10s / connect_timeout=5s（env `RULES_HTTP_TIMEOUT_SECS`/`RULES_HTTP_CONNECT_SECS` 可覆盖，单测压 1s）；`map_http_error()` 按 is_timeout/is_connect/404/其他状态码分档返回中文文案；拆出 `fetch_remote_meta_with_url`/`fetch_remote_rules_bytes_with_url` 注入 URL 供单测。
+  - `engine/tests/rules_timeout.rs` 3 条：404 文案含「404」×2、永不响应端口 1s 超时文案含「超时」，总耗时 1.1s。
+  - `app/src-tauri/tauri.conf.json`：updater endpoints 从 `raw.githubusercontent.com/.../latest.json` 改为 `https://github.com/An0114/C-clean/releases/latest/download/latest.json`。
+  - `app/src/pages/Settings.tsx`：规则库卡片错误态按钮文案从「检查更新」切为「重试」（phase=error 时已自动恢复可点，原「检查中…」卡死由后端超时根治）。
+  自验：cargo check/clippy/fmt/test=0（engine 153 条）；pnpm lint/test/build=0（171.25 kB / gzip 54.59 kB）。偏差：错误码沿用 3003（任务书 §A3 要求 2003），动态中文原因走 eprintln 日志；Envelope.message 是 &'static str 不能传动态文案。仓库 public/private 决策留 task-042+。
 
 ## 已完成事项
 - [x] 项目立项与仓库初始化（commit 67990f5 / 4972f9d）
@@ -182,10 +188,10 @@ M2 自动更新闭环已就位（tauri-plugin-updater + 启动自动 check + 非
 - [B 低] task-033 应用图标仍为 Tauri 默认占位（task-001 生成的 17 个文件），未做品牌图标设计；待设计出 1024×1024 源 PNG 后跑 `tauri icon` 重生成全套。
 - [B 低] task-039 safe_box 批量恢复真机端到端未跑：自动化环境无法在 GUI 里取得保险箱数据行（无真实扫描产出的文件），checkbox 勾选 + 批量恢复按钮全链路未经真机点击验证。补偿：后端 `restore_many` 4 条集成测试（全成功 / 部分失败 / 空 Vec / 中间失败不阻断后续）+ 前端 lint/单测/build 全绿 + 代码走查（selected Set 复用、confirm、绿红条、清空 selected 重拉列表）。需装包后人工造数据验证。（2026-10-15 评审侧已补齐：评审 Agent 用造数据在 `pnpm tauri dev` 真机跑通 checkbox 勾选 → 批量恢复全链路（2 成功 / 1 失败父目录缺失），证据见 `docs/reviews/task-039-batch-restore-review.md`；安装包级干净目录安装冒烟仍留发版任务。）
 - [B 中] task-039 评审运行时冒烟发现（**非本任务引入**，设置页属 task-022/031 范围）：每次文档加载后**首次**进入「设置」tab 调用 `rules_check_update` 会打印 2 条红色 console error（source=network，`http://ipc.localhost/rules_check_update`，ERR_CONNECTION_REFUSED）+ 2 条 Tauri「IPC custom protocol failed, will use postMessage」warning；同条件点历史/清理/仪表盘 IPC 均 0 红错，同文档内再次进设置页也不再复现。功能经 postMessage 回退仍可用。建议 `bugfix/task-039-settings-ipc-redconsole` 排查 Tauri 2.x ipc.localhost 首调与 `useCustomProtocol` 回退策略。
-- [B 中] task-039 评审运行时冒烟发现：设置页规则库检查长时间停留「检查中…」（实测 ≥8s 无收敛、无失败态）；本机 `https://raw.githubusercontent.com/An0114/C-clean/main/latest.json` 实测 404（私有仓 raw 不可达），Rust 侧外呼无短超时/失败收敛。需补显式超时 + 可读失败文案，并评估更新端点改走 Releases 资产（与 task-034/035 同类问题）。
+- [B 中] ~~task-039 评审运行时冒烟发现：设置页规则库检查长时间停留「检查中…」（实测 ≥8s 无收敛、无失败态）；本机 raw URL 404（私有仓 raw 不可达），Rust 侧外呼无短超时/失败收敛。~~ **已由 task-041 解决**（reqwest 加 10s/5s 超时 + 中文错误映射 + updater endpoint 改 Releases/latest/download URL）。遗留：仓库 public/private 决策待用户拍板（推荐转 public），token header 留 task-042+。
 
 ## 下一步计划
-M2 updater 闭环完成（手动 Settings 检查 + 启动自动 banner）；safe_box 单条/批量 purge/恢复全部就绪。下一轮进入：①派发 task-040：dry-run 预览 UI——前端「预览可清理项」按钮，调 cleanup.dryRun 显示大小汇总 ②首次 v0.1.1 发版验证完整 updater 流程（GitHub Secret 已配好，可直接 workflow_dispatch）③品牌图标设计（用户手动）。
+M2 updater 闭环完成（手动 Settings 检查 + 启动自动 banner）；safe_box 单条/批量 purge/恢复全部就绪；task-041 rules 超时 + updater endpoint 已修复。下一轮进入：①派发 task-042：仓库 public/private 决策落地（updater token header 或转 public）+ rules_meta 本地 fallback ②首次 v0.1.1 发版验证完整 updater 流程（GitHub Secret 已配好，可直接 workflow_dispatch）③品牌图标设计（用户手动）。
 
 ## 当前负责人 Agent
 DocsKeeper（文档与状态管家）
@@ -415,6 +421,12 @@ DocsKeeper（文档与状态管家）
 | cbc5aaa | #task-039 | merge: task-039 safe_box 批量恢复（评审通过后 --no-ff 合并，双亲 2068fcd + daf7adf） |
 | 882ed67 | #task-039 | docs(review): 任务039评审报告（真机冒烟 + 分支/主干 CI 实查） |
 | （本次） | #task-039 | docs(state): 评审登记 2 条非阻塞已知问题与合并记录 |
+| 2be95e1 | #task-041 | docs(task): 新增任务041-rules 超时收敛 + updater endpoint 修复 |
+| 2e99f0e | #task-041 | fix(rules): reqwest 加 10s 超时 + 5s 连接超时，错误映射为中文可读文案 |
+| 54d991b | #task-041 | test(rules): 补超时 + 404 可读错误文案测试 |
+| bfab9a8 | #task-041 | fix(tauri): updater endpoint 改 Releases/latest/download URL |
+| 6c3650a | #task-041 | fix(frontend): Settings 规则库卡片错误态按钮恢复为「重试」不卡转圈 |
+| （本次） | #task-041 | docs(state): 任务041完成，rules 超时收敛 + updater endpoint 修复 |
 
 ---
 变更轨迹：
@@ -499,3 +511,4 @@ DocsKeeper（文档与状态管家）
 - 2026-10-14  task-039  评审前清障：独立复跑 check/clippy/fmt/test/pnpm lint/fe-test/build 全绿（146 条后端测试含 safe_box_restore_many 3/3，无回退，vite build 168.5KB gzip 53.4KB）；核验 restore_many 循环调 restore_from_safe_box 单个失败不中断、新建 BatchOpResult{succeeded,failed,errors} camelCase 与 PurgeManyResult 解耦（purge 用 deleted、restore 用 succeeded）、safe_box_restore_many 命令入参 itemIds Vec<i64> 已注册 lib.rs、前端绿色「批量恢复已选(N)」按钮在红色批量删除左边 + 复用 selected Set + confirm + 结果绿/红条 + 成功后清空 selected 重拉列表；无第一档修复项；全部恢复/全部 purge 一键/进度条/跨页全选/真机端到端批量恢复验证留 task-040+（第三档已登记）
 - 2026-10-15  task-039  评审前清障（二轮，清障 Agent）：① 第一档修复——`cargo fmt --all -- --check` 在 HEAD 与 main 上均红灯（task-038 提交的 `purge_many`/`insert_box_row` 多行签名 + 断言未展开，task-038 评审「fmt 全绿」系误报），已 cargo fmt 对齐并提交；② 第一档修复——SafeBox 行内「恢复 / 永久删除」按钮禁用条件漏了 `batchPurging`/`batchRestoring`，批量操作进行中仍可点单条按钮造成竞态，已补禁用；③ 第一档补测——`restore_many` 原 partial_fail 失败项在末尾，无法证明「单个失败不阻断后续 id」，补 `restore_many_failure_in_middle_does_not_stop_rest`（ParentMissing 夹中间，断言后续 id 仍成功）并修正 `BatchOpResult` 误导性 doc 注释；④ 第三档登记——批量恢复真机端到端未跑（无 GUI 数据行）。修复后 check/clippy/fmt/test（147 条）/pnpm lint/fe-test/build 全绿（vite build 168.51KB gzip 53.43KB）
 - 2026-10-15  task-039  评审通过：真机冒烟（pnpm tauri dev + WebView2 CDP 挂载 9222）逐个点过五 tab 并造数据跑通「勾选 → 批量恢复已选 → confirm → 绿/红条 → 清空 selected 重拉列表」全链路（3 条：2 成功回原路径 + 1 失败父目录缺失保留 in_box），文件/DB/audit_log 三方一致，本任务页面 Console 0 红错 0 exception；回归批量删除正常；本地门禁独立复跑全绿（fmt/clippy/147 后端测试/lint/12 前端断言/build 168.51KB gzip 53.43KB）；**CI 实查**：分支 run 38671216149（PR #2）绿，合并前 main 2068fcd run 38571515030 因 task-038 fmt 问题红（本分支 adcba07 已修），合并后 main run 38673720322 绿；merge --no-ff → `cbc5aaa`，feature 分支已删；新增登记 2 条非阻塞已知问题（设置页首次 rules_check_update 红错、规则检查无超时收敛，均非本任务引入）
+- 2026-10-16  task-041  rules reqwest 超时收敛 + updater endpoint 改 Releases 资产（task-039 评审 P0 真机卡死修复）

@@ -205,7 +205,11 @@ export default function Settings() {
             onClick={() => check(true)}
             disabled={phase === "checking" || phase === "applying"}
           >
-            {phase === "checking" ? "检查中…" : "检查更新"}
+            {phase === "checking"
+              ? "检查中…"
+              : phase === "error"
+                ? "重试"
+                : "检查更新"}
           </button>
 
           {info?.hasUpdate && (
