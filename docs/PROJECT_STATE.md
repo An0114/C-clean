@@ -121,6 +121,12 @@ M2 自动更新闭环已就位（tauri-plugin-updater + 启动自动 check + 非
   - `app/src-tauri/tauri.conf.json`：updater endpoints 从 `raw.githubusercontent.com/.../latest.json` 改为 `https://github.com/An0114/C-clean/releases/latest/download/latest.json`。
   - `app/src/pages/Settings.tsx`：规则库卡片错误态按钮文案从「检查更新」切为「重试」（phase=error 时已自动恢复可点，原「检查中…」卡死由后端超时根治）。
   自验：cargo check/clippy/fmt/test=0（engine 153 条）；pnpm lint/test/build=0（171.25 kB / gzip 54.59 kB）。偏差：错误码沿用 3003（任务书 §A3 要求 2003），动态中文原因走 eprintln 日志；Envelope.message 是 &'static str 不能传动态文案。仓库 public/private 决策留 task-042+。
+2026-10-16：task-042 完成——rules.checkUpdate 加 Offline 三态，断网时本地规则库照常工作 + UI 黄条提示：
+  - `engine/src/rules/remote.rs`：新增 `CheckStatus{UpToDate,NewVersion,Offline}` 枚举 + `CheckUpdateResult{status,localVersion,localSha256,remoteVersion?,remoteSha256?,message}`，提供 `up_to_date/new_version/offline/classify` 构造器。
+  - `app/src-tauri/src/commands.rs`：`rules_check_update` 返回 `Envelope<CheckUpdateResult>`，reqwest 失败不再返回错误信封，而是 `status=Offline, message=<task-041 中文错误文案>`。
+  - `engine/tests/rules_offline_mode.rs` 3 条：Offline（永不响应端口 1s 超时）/ UpToDate（mock server 返回同 sha）/ NewVersion（返回更高 version），总耗时 1.1s。
+  - `app/src/pages/Settings.tsx`：按 status 渲染三态提示条——upToDate 绿条「规则库已是最新」、newVersion 蓝条「发现新版本 vX.Y.Z」、offline 黄条「离线模式：使用本地规则库 vX.Y.Z（<message>）」；应用更新按钮仅在 newVersion 时出现。
+  自验：cargo check/clippy/fmt/test=0（engine 156 条）；pnpm lint/test/build=0（172.01 kB / gzip 54.78 kB）。applyUpdate 命令的网络错误仍返回错误信封（本任务不改）。
 
 ## 已完成事项
 - [x] 项目立项与仓库初始化（commit 67990f5 / 4972f9d）
@@ -191,7 +197,7 @@ M2 自动更新闭环已就位（tauri-plugin-updater + 启动自动 check + 非
 - [B 中] ~~task-039 评审运行时冒烟发现：设置页规则库检查长时间停留「检查中…」（实测 ≥8s 无收敛、无失败态）；本机 raw URL 404（私有仓 raw 不可达），Rust 侧外呼无短超时/失败收敛。~~ **已由 task-041 解决**（reqwest 加 10s/5s 超时 + 中文错误映射 + updater endpoint 改 Releases/latest/download URL）。遗留：仓库 public/private 决策待用户拍板（推荐转 public），token header 留 task-042+。
 
 ## 下一步计划
-M2 updater 闭环完成（手动 Settings 检查 + 启动自动 banner）；safe_box 单条/批量 purge/恢复全部就绪；task-041 rules 超时 + updater endpoint 已修复。下一轮进入：①派发 task-042：仓库 public/private 决策落地（updater token header 或转 public）+ rules_meta 本地 fallback ②首次 v0.1.1 发版验证完整 updater 流程（GitHub Secret 已配好，可直接 workflow_dispatch）③品牌图标设计（用户手动）。
+M2 updater 闭环完成（手动 Settings 检查 + 启动自动 banner）；safe_box 单条/批量 purge/恢复全部就绪；task-041 rules 超时 + updater endpoint 已修复；task-042 rules 离线模式降级就绪。下一轮进入：①派发 task-043：等用户决定仓库 public/private 后落地 updater token header（或转 public），验证 v0.1.1 真实升级流程 ②首次 v0.1.1 发版验证完整 updater 流程（GitHub Secret 已配好，可直接 workflow_dispatch）③品牌图标设计（用户手动）。
 
 ## 当前负责人 Agent
 DocsKeeper（文档与状态管家）
@@ -427,6 +433,11 @@ DocsKeeper（文档与状态管家）
 | bfab9a8 | #task-041 | fix(tauri): updater endpoint 改 Releases/latest/download URL |
 | 6c3650a | #task-041 | fix(frontend): Settings 规则库卡片错误态按钮恢复为「重试」不卡转圈 |
 | （本次） | #task-041 | docs(state): 任务041完成，rules 超时收敛 + updater endpoint 修复 |
+| b64e376 | #task-042 | docs(task): 新增任务042-rules 离线模式 |
+| 0cf879e | #task-042 | feat(rules): checkUpdate 返回 CheckUpdateResult 加 Offline 分支 |
+| afbccff | #task-042 | test(rules): 补离线模式 / UpToDate / NewVersion 三分支单测 |
+| 8ced0be | #task-042 | feat(frontend): Settings 规则库卡片按 status 渲染三态（绿/蓝/黄） |
+| （本次） | #task-042 | docs(state): 任务042完成，rules 离线模式降级就绪 |
 
 ---
 变更轨迹：
@@ -512,3 +523,4 @@ DocsKeeper（文档与状态管家）
 - 2026-10-15  task-039  评审前清障（二轮，清障 Agent）：① 第一档修复——`cargo fmt --all -- --check` 在 HEAD 与 main 上均红灯（task-038 提交的 `purge_many`/`insert_box_row` 多行签名 + 断言未展开，task-038 评审「fmt 全绿」系误报），已 cargo fmt 对齐并提交；② 第一档修复——SafeBox 行内「恢复 / 永久删除」按钮禁用条件漏了 `batchPurging`/`batchRestoring`，批量操作进行中仍可点单条按钮造成竞态，已补禁用；③ 第一档补测——`restore_many` 原 partial_fail 失败项在末尾，无法证明「单个失败不阻断后续 id」，补 `restore_many_failure_in_middle_does_not_stop_rest`（ParentMissing 夹中间，断言后续 id 仍成功）并修正 `BatchOpResult` 误导性 doc 注释；④ 第三档登记——批量恢复真机端到端未跑（无 GUI 数据行）。修复后 check/clippy/fmt/test（147 条）/pnpm lint/fe-test/build 全绿（vite build 168.51KB gzip 53.43KB）
 - 2026-10-15  task-039  评审通过：真机冒烟（pnpm tauri dev + WebView2 CDP 挂载 9222）逐个点过五 tab 并造数据跑通「勾选 → 批量恢复已选 → confirm → 绿/红条 → 清空 selected 重拉列表」全链路（3 条：2 成功回原路径 + 1 失败父目录缺失保留 in_box），文件/DB/audit_log 三方一致，本任务页面 Console 0 红错 0 exception；回归批量删除正常；本地门禁独立复跑全绿（fmt/clippy/147 后端测试/lint/12 前端断言/build 168.51KB gzip 53.43KB）；**CI 实查**：分支 run 38671216149（PR #2）绿，合并前 main 2068fcd run 38571515030 因 task-038 fmt 问题红（本分支 adcba07 已修），合并后 main run 38673720322 绿；merge --no-ff → `cbc5aaa`，feature 分支已删；新增登记 2 条非阻塞已知问题（设置页首次 rules_check_update 红错、规则检查无超时收敛，均非本任务引入）
 - 2026-10-16  task-041  rules reqwest 超时收敛 + updater endpoint 改 Releases 资产（task-039 评审 P0 真机卡死修复）
+- 2026-10-16  task-042  rules.checkUpdate 加 Offline 三态，断网时本地规则库照常工作 + UI 黄条提示

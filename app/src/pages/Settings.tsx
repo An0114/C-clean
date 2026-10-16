@@ -11,12 +11,16 @@ import { api } from "../utils/invoke";
 import { check as checkApp, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 
-interface CheckUpdateResp {
-  hasUpdate: boolean;
-  currentVersion: string;
-  remoteVersion: string;
-  currentSha256: string;
-  remoteSha256: string;
+// task-042：后端返回 CheckUpdateResult（三态：upToDate / newVersion / offline）。
+type CheckStatus = "upToDate" | "newVersion" | "offline";
+
+interface CheckUpdateResult {
+  status: CheckStatus;
+  localVersion: string;
+  localSha256: string;
+  remoteVersion: string | null;
+  remoteSha256: string | null;
+  message: string;
 }
 
 interface ApplyResult {
@@ -55,7 +59,7 @@ const monoStyle: React.CSSProperties = {
 
 export default function Settings() {
   const [phase, setPhase] = useState<Phase>("loading");
-  const [info, setInfo] = useState<CheckUpdateResp | null>(null);
+  const [info, setInfo] = useState<CheckUpdateResult | null>(null);
   const [msg, setMsg] = useState<string>("");
   const [toast, setToast] = useState<{ ok: boolean; text: string } | null>(null);
 
@@ -70,13 +74,13 @@ export default function Settings() {
     setMsg("");
     setToast(null);
     try {
-      const r = await api<CheckUpdateResp>("rules_check_update", {});
+      const r = await api<CheckUpdateResult>("rules_check_update", {});
       setInfo(r);
       setPhase("idle");
       if (withToast) {
         setToast({
-          ok: true,
-          text: r.hasUpdate ? `发现新版本 ${r.remoteVersion}` : "已是最新版本",
+          ok: r.status !== "offline",
+          text: r.message,
         });
       }
     } catch (e) {
@@ -172,31 +176,80 @@ export default function Settings() {
         </div>
       )}
 
+      {/* task-042：离线黄条 / 新版本蓝条 / 最新绿条 */}
+      {phase === "idle" && info?.status === "offline" && (
+        <div
+          style={{
+            color: "#92400e",
+            background: "#fef3c7",
+            border: "1px solid #fcd34d",
+            padding: "8px 12px",
+            borderRadius: 6,
+            fontSize: 13,
+            marginBottom: 12,
+          }}
+        >
+          离线模式：使用本地规则库 v{info.localVersion}（{info.message}）
+        </div>
+      )}
+      {phase === "idle" && info?.status === "newVersion" && (
+        <div
+          style={{
+            color: "#1e40af",
+            background: "#dbeafe",
+            border: "1px solid #93c5fd",
+            padding: "8px 12px",
+            borderRadius: 6,
+            fontSize: 13,
+            marginBottom: 12,
+          }}
+        >
+          发现新版本 v{info.remoteVersion}，点「应用更新」下载
+        </div>
+      )}
+      {phase === "idle" && info?.status === "upToDate" && (
+        <div
+          style={{
+            color: "#166534",
+            background: "#dcfce7",
+            border: "1px solid #86efac",
+            padding: "8px 12px",
+            borderRadius: 6,
+            fontSize: 13,
+            marginBottom: 12,
+          }}
+        >
+          规则库已是最新（v{info.localVersion}）
+        </div>
+      )}
+
       <div style={cardStyle}>
         <div style={rowStyle}>
           <span>当前版本</span>
-          <span style={monoStyle}>{info?.currentVersion ?? "-"}</span>
+          <span style={monoStyle}>{info?.localVersion ?? "-"}</span>
         </div>
         <div style={rowStyle}>
           <span>远端版本</span>
           <span style={monoStyle}>
-            {phase === "checking" ? "检查中…" : info?.remoteVersion ?? "-"}
+            {phase === "checking" ? "检查中…" : info?.remoteVersion ?? "（离线）"}
           </span>
         </div>
         <div style={rowStyle}>
           <span>当前 SHA-256</span>
           <span style={monoStyle}>
-            {info?.currentSha256?.slice(0, 16) ?? "-"}…
+            {info?.localSha256?.slice(0, 16) ?? "-"}…
           </span>
         </div>
         <div style={rowStyle}>
           <span>状态</span>
-          <span style={{ fontWeight: 600, color: info?.hasUpdate ? "#b45309" : "#166534" }}>
+          <span style={{ fontWeight: 600 }}>
             {info == null
               ? "-"
-              : info.hasUpdate
-                ? `有新版本 ${info.remoteVersion} 可用`
-                : "已是最新"}
+              : info.status === "newVersion"
+                ? `有新版本 v${info.remoteVersion ?? ""} 可用`
+                : info.status === "offline"
+                  ? "离线模式（本地规则库可用）"
+                  : "已是最新"}
           </span>
         </div>
 
@@ -212,7 +265,7 @@ export default function Settings() {
                 : "检查更新"}
           </button>
 
-          {info?.hasUpdate && (
+          {info?.status === "newVersion" && (
             <button
               onClick={apply}
               disabled={phase === "checking" || phase === "applying"}
