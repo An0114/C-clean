@@ -434,8 +434,7 @@ pub fn list_paged(
     let sum_sql = format!("SELECT COALESCE(SUM(size_bytes),0) FROM safe_box {where_clause}");
 
     let total: i64 = match session_id {
-        Some(s) => conn
-            .query_row(&count_sql, rusqlite::params![s], |r| r.get(0)),
+        Some(s) => conn.query_row(&count_sql, rusqlite::params![s], |r| r.get(0)),
         None => conn.query_row(&count_sql, [], |r| r.get(0)),
     }
     .map_err(|e| format!("count safe_box: {e}"))?;
