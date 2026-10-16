@@ -12,6 +12,7 @@
 !.env.example
 *.pem
 *.key
+*.key.pub
 *.pfx
 *.p12
 *.p12.bundle
