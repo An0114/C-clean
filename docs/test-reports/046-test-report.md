@@ -31,7 +31,10 @@
 无。
 
 ## 5. 测试期修复记录（bugfix 子分支）
-无。
+
+| # | 缺陷 | 修复分支 | commit hash | 提交信息 | 回归结果 |
+|---|---|---|---|---|---|
+| 1 | CI rustfmt 红灯（safe_box.rs 两处格式不达标） | bugfix/task-046-rustfmt-ci-red | 659013c | fix(rust): 修复 safe_box 两处 rustfmt 不达标 (#task-046) | fmt/clippy/test 全绿回归，CI run 38876741430 转绿 |
 
 ## 6. 遗留问题（三档分流）
 
@@ -42,14 +45,13 @@
 无。
 
 ### 第三档（已登记为已知限制）
-- **CI run 号待确认**：PR #8 draft 已开，CI 触发与绿结论待用户确认。
 - **session 下拉切换未真机验证**：当前 DB 只有一个 session（session #1792138062），下拉仅显示「全部 session」，无法触发多 session 切换。session 过滤逻辑由 safe_box_session_filter 4 条集成测试覆盖（无 session 返回全部 / 按 session 过滤 / list_sessions 分组）。
 - **跨页翻页未真机点击**：分页栏「第 1 / 2 页」渲染正确，但「下一页」按钮未实际点击翻页。翻页逻辑由 task-045 的 safe_box_pagination 5 条集成测试覆盖。
 
 ## 7. 测试结论
 
-- 结论：**通过**（L1-L4 全绿；session 下拉真机渲染正确；task-045 分页回归通过；Console 0 红错）
-- feature 分支最新 commit：`a3a149d`
-- CI：PR #8 https://github.com/An0114/C-clean/pull/8（待确认绿）
-- 是否可进入评审：**是**（待 CI 绿后最终确认）
-- 移交说明：测试报告 `docs/test-reports/046-test-report.md`；CDP 真机证据：SafeBox 页 session 下拉「全部 session」渲染，分页栏「第 1 / 2 页（共 70 条）」正确，表格 70 条记录渲染，Console 0 红错；safe_box_session_filter 4/4 单测通过。
+- 结论：**通过**（L1-L4 全绿；rustfmt CI 红灯已修复并回归；session 下拉真机渲染正确；task-045 分页回归通过；Console 0 红错）
+- feature 分支最新 commit：`0663425`
+- CI：PR #8 https://github.com/An0114/C-clean/pull/8，run 38876741430 **绿**
+- 是否可进入评审：**是**
+- 移交说明：测试报告 `docs/test-reports/046-test-report.md`；CDP 真机证据：SafeBox 页 session 下拉「全部 session」渲染，分页栏「第 1 / 2 页（共 70 条）」正确，表格 70 条记录渲染，Console 0 红错；safe_box_session_filter 4/4 单测通过；rustfmt 修复后 fmt/clippy/test 全绿回归。
