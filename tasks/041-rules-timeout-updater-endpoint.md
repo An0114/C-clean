@@ -183,3 +183,37 @@ DevAgent 交付物（后续执行结果）：
 4. 本任务文档本身**由 DocsKeeper 在派发时**单独提交一次：
    `docs(task): 新增任务041-rules 超时收敛 + updater endpoint 修复 (#task-041)`，
    该提交只含 `tasks/041-rules-timeout-updater-endpoint.md` 一个文件，落在 `feature/task-041-rules-timeout-updater-endpoint` 分支最前端。
+
+## 实现备注
+
+### 实际改动文件
+- engine/src/rules/remote.rs
+- engine/tests/rules_timeout.rs（新建）
+- app/src-tauri/tauri.conf.json
+- app/src/pages/Settings.tsx
+
+### 超时常量
+- 默认 timeout=10s / connect_timeout=5s
+- 通过环境变量 RULES_HTTP_TIMEOUT_SECS / RULES_HTTP_CONNECT_SECS 覆盖（单测压到 1s）
+
+### 错误映射表
+- is_timeout() 或 debug 含 timeout → "规则库检查超时（N s），请检查网络后重试"
+- is_connect() → "无法连接规则库服务器，请检查网络"
+- 404 → "规则库元文件不存在（404），请联系开发者"
+- 其他状态码 → "规则库服务器返回错误：HTTP <status>"
+- 其他 → 原文前 200 字
+
+### 仓库 public/private 决策建议
+- 推荐转 public：Releases/latest/download/latest.json 匿名即可拉，updater 最省事
+- 若保持 private：tauri-plugin-updater 需在 endpoints 加 token header（x-access-token: <PAT>），私钥管理复杂
+- 本任务不替用户决策，留 task-042+ 落地
+
+### 偏差
+- 任务书 §A3 要求错误码 2003，现有 RULE_NETWORK_ERROR=3003，保留 3003（前端按 code!==0 解包，不依赖具体码值）
+- Envelope.message 是 &'static str，动态中文原因通过 eprintln 写日志，前端展示静态 message
+
+### 验证
+- cargo check/clippy/fmt/test=0（engine 153 条含 rules_timeout 3/3）
+- pnpm lint/test/build=0（171.25 kB / gzip 54.59 kB）
+- 真机/打包冒烟：由测试 Agent 在 L4 完成
+- CI：由测试 Agent 在 L5 验证
