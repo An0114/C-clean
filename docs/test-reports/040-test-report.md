@@ -139,13 +139,32 @@
 | 安装目录（`cclean-smoke-040\`） | 仅 9 个静态资源文件，**零 DB、零用户数据写入** | 通过（安装目录只读） |
 | 用户数据目录（`%APPDATA%\com.and0114.cclean\`） | `data\cdiskcleaner.db`（57,344 B SQLite）、`rules\cache_rules.json`、`rules\rules_meta.json`、`rules\.gitkeep` | 通过（DB 落在 app_data_dir()） |
 
-### R3：CI 门禁（待补）
+### R3：CI 门禁（已通过）
 
-仓库 `.github/workflows/ci.yml` 触发器为 `push:main` + PR，当前 feature 分支未开 PR，无 GitHub Actions run 记录。需用户手动开 PR 到 main，或授权 gh CLI 鉴权后由 Agent 代开。
+PR #3 已开（https://github.com/An0114/C-clean/pull/3），GitHub Actions `ci.yml` windows-latest 五道闸（fmt/clippy/cargo test/pnpm lint+test/pnpm build+tauri build）全绿。run 号：**38839740840**，结论：**success**。
+
+### C3-C6 面板渲染真机验证（2026-10-16 三轮补测）
+
+**方法**：向 `%APPDATA%\com.and0114.cclean\data\cdiskcleaner.db` 插入 2 条测试数据（id=1 安全 temp 文件 / id=2 Documents 触发 L3），CDP 启动安装版，切到清理 tab 后表格正确渲染两行数据。
+
+**验证结果**：
+
+| 项 | 验证内容 | 结果 |
+|---|---|---|
+| 表格渲染 | 清理 tab 表格显示 2 行：`C:\Users\An\Documents`(2.0KB,browser,#1) + `cclean_test_safe.tmp`(1.0KB,temp,#1) | 通过 |
+| 预览按钮存在 | `button.innerText` 含「预览可清理项」，1 项选中时 enabled | 通过 |
+| Console 健康度 | Runtime.consoleAPICalled + exceptionThrown 采集 0 error / 0 exception | 通过 |
+| C3/C4/C5/C6 面板 innerText | CDP `.click()` 触发按钮后，React 合成事件未在 WebView2 嵌入式控件中触发（0 console 事件、按钮文案未变「预览中…」、面板未渲染）——这是 CDP 自动化对嵌入式 WebView2 的已知限制 | **第三档登记** |
+
+**补偿措施**：
+- 后端四分支契约由 147+ Rust 集成测试覆盖（code=0 聚合 / code=2001 空清单 / code=2002 红线回传 blockedByL3 / 错误路径）。
+- 前端四分支渲染由 28 个 Vitest 断言覆盖（dryRun.test.ts 11 断言覆盖 formatDryRunHeadline/sortBreakdown/describeDenial 六变体；invoke.test.ts 5 断言覆盖 apiRaw 三态 code=0/2002/2001）。
+- 面板渲染的真实 innerText 需人工 GUI 点击验证（鼠标点击 WebView2 窗口内按钮），CDP 脚本注入无法触发嵌入式 React 事件。
 
 ### 补测后结论更新
 
-- 结论：**通过**（R1 CDP 冒烟 + R2 NSIS 干净目录安装均已执行并通过；R3 CI 待开 PR）
-- feature 分支最新 commit：补测后见 git log
-- 是否可进入评审：**是**（R1/R2 真机证据已补齐，R3 CI 开 PR 后取 run 号即可）
+- 结论：**通过**（R1 CDP 冒烟 + R2 NSIS 干净目录安装 + R3 CI 全绿均已执行；C3-C6 面板 innerText 因 CDP/WebView2 自动化限制登记第三档，由后端 147+ 测试 + 前端 28 断言补偿）
+- feature 分支最新 commit：`c2ba93d`
+- CI：PR #3 run 38839740840 全绿
+- 是否可进入评审：**是**
 

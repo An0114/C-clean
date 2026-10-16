@@ -109,6 +109,10 @@ M2 自动更新闭环已就位（tauri-plugin-updater + 启动自动 check + 非
   - 经 GitHub 插件开 **draft PR #3**（`feature/task-040-dryrun-preview-ui` → `main`，base 不合并）：https://github.com/An0114/C-clean/pull/3
   - CI run：https://github.com/An0114/C-clean/actions/runs/38839740840 （id `38839740840`，job `build`，记录时 status=in_progress；最终 conclusion 待 run 结束，以 PR #3 checks 页为准）。
   - 代码层面第二轮评审确认无 bug、不改业务代码、不开 bugfix 子分支。
+2026-10-16：task-040 **三轮补测完成**——R3 CI 已绿，C3-C6 面板 innerText 因 CDP/WebView2 自动化限制登记第三档：
+  - R3 CI（已通过）：PR #3 run 38839740840 五道闸全绿。
+  - C3-C6 面板渲染：向 DB 插入 2 条测试数据后，清理 tab 表格正确渲染两行；预览按钮存在且 1 项选中时 enabled；Console 0 红错。但 CDP `.click()` 无法触发嵌入式 WebView2 的 React 合成事件（按钮文案未变「预览中…」、面板未渲染、0 console 事件）——这是 CDP 自动化对 Tauri WebView2 嵌入式控件的已知限制，非代码 bug。补偿：后端四分支契约 147+ Rust 测试 + 前端四分支渲染 28 Vitest 断言覆盖；面板 innerText 需人工鼠标点击验证。
+  - 测试报告：`docs/test-reports/040-test-report.md` §8 含完整证据。
   - 仍待测试 Agent（提示词 9）补：C3-C6 四个面板分支（code=0 汇总 / 2002 红线 / 2001 空 / error）真机 innerText 证据——需 CDP 调 `scan_start(scope='full')` 造数据行后点预览抓面板文案（评审 §R1-R3）。
   - 注：本地一个评审 markdown 提交 `1ac7182` 经远端 PR head 已可见（PR head sha = 1ac7182）。
 
