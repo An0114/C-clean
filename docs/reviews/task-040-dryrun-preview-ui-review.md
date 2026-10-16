@@ -1,125 +1,113 @@
-# 评审报告：task-040 dry-run 预览 UI
+# 评审报告：task-040 dry-run 预览 UI（第二轮）
 
-> 评审角色：Review Lead（代码评审 + 验收覆盖性核验，不重复功能测试）
+> 评审角色：Review Lead
 > 评审时间：2026-10-16
 > 分支：`feature/task-040-dryrun-preview-ui`
-> HEAD：`4af2af2 docs(test): 任务040测试报告 (#task-040)`
+> HEAD：`999ef95 docs(state): 补 task-040 R1/R2 真机 CDP 与 NSIS 干净目录安装冒烟证据 (#task-040)`
+> 第一轮评审：`4998f2c`（不通过，缺真机/打包/CI 证据）
 
 ## 1. 输入核验（测试报告 / CI / commit hash）
 
 | 输入项 | 状态 | 事实核对 |
 |--------|------|---------|
-| 测试报告路径 | ✅ 存在 | `docs/test-reports/040-test-report.md`（93 行，已读全文） |
-| 测试报告结论 | ⚠️ 自报"通过（自动化层全绿，GUI/打包安装/CI 为第三档登记）" | 报告 §6 明确把 L3 dev GUI、L4 干净目录安装、CI 三项登记为第三档已知限制 |
-| CI 运行号与结论 | ❌ **缺失** | 报告 §1 写"待触发"，§7 写"CI 运行号与结论：待 PR 触发"；仓库无本分支的 GitHub Actions run 记录 |
-| feature 分支最新 commit | ✅ `4af2af2` | 与 `git log main..HEAD -1` 一致 |
+| 测试报告 | ✅ | `docs/test-reports/040-test-report.md`（152 行，§8 补测证据已读） |
+| CI 运行号与结论 | ❌ **仍缺失** | 报告 §R3："当前 feature 分支未开 PR，无 GitHub Actions run 记录。需用户手动开 PR" |
+| feature 分支最新 commit | ✅ | `999ef95` |
 
-**输入核验结论：不通过。** CI 运行号与结论缺失（任务文档 §测试要求明确"合并前必须有该分支的真实 run 结论，不接受口头'本地绿'"）。
+**输入核验结论：不通过。** CI 仍无 run 记录。
 
-## 2. Git 提交记录核对结果（原子性、规范符合性、变更范围）
+## 2. Git 提交记录核对结果
 
-6 个提交，全部关联 `#task-040`：
+本轮新增 2 个提交：
 
 | commit | type(scope) | 内容 | 规范 |
 |--------|-------------|------|------|
-| `b114e44` | docs(task) | 任务文档 | ✅ |
-| `d4da12b` | feat(frontend) | dryRun.ts 纯函数 + 类型 | ✅ |
-| `21518f9` | test(frontend) | dryRun.test.ts | ✅ |
-| `0cbb830` | feat(frontend) | invoke.ts apiRaw + invoke.test.ts | ✅ |
-| `23ee272` | feat(frontend) | Items.tsx 预览按钮 + 面板 | ✅ |
-| `4af2af2` | docs(test) | 测试报告 | ✅ |
+| `f861663` | docs(state) | 首次评审打回记录，状态流转 review | ✅ |
+| `999ef95` | docs(state) | 补 R1/R2 真机证据 | ✅ |
 
-**问题：缺少任务文档 §Git 提交要求第 5 条规定的 `docs(state): 任务040完成` 提交。**
-- 任务文档要求："自验全绿后，最后一次提交：`docs(state): 任务040完成，dry-run 预览 UI 就绪 (#task-040)`，单独一次提交，只动 `docs/PROJECT_STATE.md`"
-- 实际：`git diff main...HEAD -- docs/PROJECT_STATE.md` 为空——PROJECT_STATE.md 零改动
-- 任务文档 `tasks/040-dryrun-preview-ui.md` 第 11 行状态字段仍是 `` `pending` ``，未流转到 `review`
+累计 9 个提交，全部关联 `#task-040`，无混杂提交，无敏感文件。变更范围仍在白名单内。
 
-**变更范围核对**：diff 仅含 7 个文件（dryRun.ts / dryRun.test.ts / invoke.ts / invoke.test.ts / Items.tsx / 测试报告 / 任务文档），Rust 侧零改动，无 package.json/pnpm-lock.yaml 改动。✅ 符合白名单。
+**状态流转已补**：任务文档状态字段已从 `pending` 流转。✅
 
 ## 3. 验收覆盖性核验（对照测试报告逐条 + 抽查复现）
 
+### 纯函数层（A1-A6）+ 契约层（B1-B3）
+代码走查通过（同第一轮），单测全绿。✅
+
+### 真机证据（R1/R2 补测后）
+
 | # | 验收标准 | 测试报告证据 | 抽查结果 | 结论 |
 |---|---------|-------------|---------|------|
-| A1 | camelCase 类型对齐 | dryRun.ts 逐字段对照后端 serde | 代码走查：`moduleCode/category/bytes`、`itemId/path/denialReason`、`totalItems/totalBytes/breakdown/blockedByL3` 与 `engine/src/ipc/commands/dry_run.rs` 对齐 | 通过 |
-| A2-A5 | 纯函数文案/排序/红线映射 | dryRun.test.ts 11 断言 | 代码走查 dryRun.ts：sortBreakdown 用 `[...rows].sort` 不改入参；describeDenial 先判 ResolveFailed 前缀再查表，未知串 `?? reason` 回退 | 通过 |
-| A6/B3 | 单测断言数 | 28 断言全绿 | 未重跑（评审不重复测试），报告附命令与计数 | 通过 |
-| B1/B2 | apiRaw 不抛 2002 / api 语义不变 | invoke.test.ts 5 断言 | 代码走查：api() 函数体零改动 hunk，仅 `interface Envelope` → `export interface Envelope`；apiRaw 直接 `return invoke<Envelope<T>>(cmd, args)` 不做 code 判断 | 通过 |
-| C1-C2 | 预览按钮位置/禁用/调 dryRun | 代码审查（无真机截图） | 代码走查：按钮在「清理已选」左侧，蓝色；disabled 条件 `selected.size===0 \|\| cleaning \|\| previewing`；调 `apiRaw("cleanup_dry_run", { itemIds })` | 通过（代码层） |
-| C3-C6 | 三码分支渲染 | 代码审查（无真机截图） | 代码走查：判别联合 Preview{ok/blocked/empty/error}，四分支各自渲染面板；2002 读 `env.data?.blockedByL3 ?? []`；reject 走 catch | 通过（代码层） |
-| C7 | 只读保证 | 代码审查 + 后端 handle_dry_run 确认 | 代码走查：预览路径只调 cleanup_dry_run，不调 cleanup_execute | 通过（代码层） |
-| C8 | 结果不陈旧 | 代码审查：4 处 setPreview(null) | 代码走查：load()/toggle()/cleanup()/全选 checkbox 都清预览 | 通过（代码层） |
-| D1-D4 | Rust 零改动/无新依赖 | diff --stat | 已核对 | 通过 |
-| **真机 Tauri + CDP 冒烟** | **任务文档 §测试要求："必做、不可裁剪"** | **报告 §6 登记为第三档，未执行** | **未执行** | **❌ 不通过** |
-| **NSIS 干净目录安装冒烟** | **同上** | **报告 §6 登记为第三档，未执行** | **未执行** | **❌ 不通过** |
-| **GitHub Actions CI 绿** | **任务文档 §测试要求："合并前必须有该分支真实 run 结论"** | **报告 §1/§7："待 PR 触发"** | **未执行** | **❌ 不通过** |
+| R1-1 | 应用启动渲染 | §R1-1：root innerHTML 3058 字符，五导航可见 | 报告附 CDP 采集值 | 通过 |
+| R1-2 | 清理页表格结构 | §R1-2：表格头/刷新按钮/已选汇总行正确 | 报告附 | 通过 |
+| R1-3 | 预览按钮存在 + 禁用逻辑 | §R1-3：按钮 disabled=true（0 选中） | 报告附 querySelector 结果 | 通过 |
+| R1-5 | Console 零红错 | §R1-5：0 error / 0 exception | 报告附 | 通过 |
+| R2 | NSIS 干净目录安装 + 数据隔离 | §R2：安装目录 9 静态文件零写入，DB 在 %APPDATA% | 报告附文件清单 + 大小 | 通过 |
+| **C3** | **code=0 蓝底汇总面板渲染** | **未真机验证**——§R1 限制："无数据行，勾选→点预览→面板渲染全链路未触发" | **未复现** | **❌** |
+| **C4** | **code=2002 红底红线面板渲染** | **未真机验证**——同上 | **未复现** | **❌** |
+| **C5** | **code=2001 黄底提示渲染** | **未真机验证**——同上 | **未复现** | **❌** |
+| **C6** | **code=error 红底错误渲染** | **未真机验证**——同上 | **未复现** | **❌** |
+| **R3** | **CI GitHub Actions 绿** | **未跑**——§R3："需用户手动开 PR" | **未复现** | **❌** |
+
+**关键判断**：R1 验证了"按钮存在且禁用逻辑正确"，但任务文档 C3-C6 的核心是"点预览后面板长什么样"。测试报告把这四个分支全标为"通过（代码审查）"，但 §R1 自己承认"勾选条目→点击预览→面板渲染全链路因无数据行未能触发"。这是**证据与结论不一致**：结论写"通过"，实际运行时未触发。
+
+这个缺口不是环境做不到——测试 Agent 完全可以通过 CDP 调 `scan_start` 产生待清理行，或在 DB 里插一行指向 `C:\Windows\System32\` 的行来触发 code=2002。本仓库 task-035/037/038 评审时均跑过 scan_start 产生数据。
 
 ## 4. 代码评审发现问题
 
-代码质量本身良好，无新增 bug：
+代码质量同第一轮评估：良好。无新增 bug。
 
-- ✅ dryRun.ts 纯函数无副作用，sortBreakdown 返回新数组不改入参
-- ✅ describeDenial 顺序正确（ResolveFailed 前缀先于查表），未知串回退不吞信息
-- ✅ apiRaw 设计合理，api() 零破坏
-- ✅ Items.tsx 用判别联合 Preview 类型，四分支渲染清晰
-- ✅ C8 在 4 个入口都清预览
-- ✅ 无新增 npm 依赖，Rust 侧零改动
+- dryRun.ts 纯函数无副作用，sortBreakdown 不改入参
+- apiRaw 不破坏 api()
+- Items.tsx 判别联合 Preview 四分支渲染清晰
+- C8 在 4 个入口都清预览
 
-**轻微观察（非阻塞）**：
-- `describeDenial` 的 ResolveFailed 解析用正则去 Debug 括号/引号，对复杂嵌套字符串可能不完美，但未知串回退兜底，不构成 bug。
-- Items.tsx 预览面板 key 用 `` `${row.moduleCode}/${row.category}` ``，理论上有重名风险，但后端 group by 保证唯一。
+**注意**：代码走查正确 ≠ 运行时面板渲染正确。CSS class、key、字段名拼写在真机渲染时才会暴露。
 
-## 5. 安全风险检查结果（OWASP Top10）
+## 5. 安全风险检查结果
 
-- **注入**：无 SQL/命令注入风险（前端纯展示，后端参数化查询已有）。✅
-- **不安全反序列化**：Tauri invoke 走 serde，无 eval/Function。✅
-- **敏感信息泄露**：预览路径只读，denialReason 展示后端 Debug 串——这是预期行为（帮助用户理解为什么被拦），不暴露敏感路径（路径本身就是待清理项路径）。✅
-- **越权**：无用户态概念。✅
-- **只读保证（C7）**：代码层确认预览不调 cleanup_execute。✅
-
-无安全问题。
+无变化（同第一轮）。✅
 
 ## 6. 状态与文档一致性核对
 
 | 核对项 | 事实 | 结论 |
 |--------|------|------|
-| PROJECT_STATE.md 是否更新 | `git diff main...HEAD -- docs/PROJECT_STATE.md` 为空 | ❌ 未更新（任务文档要求单独 docs(state) 提交） |
-| 任务文档状态字段 | 第 11 行仍是 `` `pending` `` | ❌ 未流转到 review |
-| 【已知问题】登记 | 测试报告 §6 把真机/打包/CI 登记为第三档，但任务文档说这些是"必做不可裁剪"，不应降级为已知限制 | ❌ 测试 Agent 无权把必做项降级 |
-| 分支删除/合并状态 | feature 分支未合并，main 顶部 `524541e Update .gitignore` | ✅ 符合预期（评审未通过前不合） |
+| PROJECT_STATE.md | `999ef95` 补了状态记录 | ✅ |
+| 任务文档状态字段 | 已流转到 review | ✅ |
+| 测试报告内部一致性 | §3 C3-C6 标"通过（代码审查）"，但 §R1 承认面板渲染未真机触发 | ❌ 结论与证据不一致 |
 
 ## 7. 评审结论：**不通过**
 
-**一票否决项触发**：
-1. 任务文档 §测试要求明确"真机冒烟与打包冒烟均为「必做、不可裁剪」，不得以「已有单测」「环境不便」为由裁剪"——测试报告把这两项 + CI 全裁剪，理由"自动化环境无法执行 GUI 点击"不成立（本仓库 task-035/037/038 均已用 CDP 完成真机冒烟）。
-2. CI 运行号与结论缺失，任务文档明确"不接受口头'本地绿'"。
-3. 缺少任务文档规定的 docs(state) 提交，PROJECT_STATE.md 零改动，任务文档状态字段未流转。
+**触发项**：
+1. **C3-C6 四个面板分支未真机渲染验证**（核心功能，测试报告证据自相矛盾）
+2. **CI 仍无 run 记录**（任务文档："合并前必须有该分支真实 run 结论"）
 
-代码本身质量合格，但流程证据不完整，按约束不带病合并。
+**循环刹车提示**：这是 task-040 第二次评审不通过。第一轮缺真机/打包/CI，第二轮补了 R1/R2 但 C3-C6 面板未真点 + CI 仍缺。不继续空转，要求测试 Agent 一次性补全以下两项后再送评。
 
 ## 8. Bug 清单 + 修复建议 + bugfix 子分支建议名
 
-本项不是代码 bug，是测试证据缺失 + 状态未流转。打回测试 Agent（提示词 9）补做，不需要 bugfix 子分支改业务代码。
+非代码 bug，是测试证据缺口。不需要 bugfix 子分支改业务代码。
 
 | # | 现象 | 复现步骤 | 期望行为 | 严重度 |
 |---|------|---------|---------|--------|
-| R1 | 真机 Tauri + CDP 冒烟未执行 | 测试报告 §6 登记"自动化环境无法执行 GUI 点击" | 用 `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="--remote-debugging-port=9222 --remote-allow-origins=*"` 启动，CDP Runtime.evaluate 点击「预览可清理项」，抓面板 innerText + Console error；覆盖 code=0 汇总 / code=2002 红线 / code=2001 空清单 / 刷新后清空 | 阻塞（必做项缺失） |
-| R2 | NSIS 干净目录安装冒烟未执行 | 测试报告 §6 同上 | `pnpm tauri build` → perMachine `/S` 装到 Program Files → 清 DB 首启 → 切清理 tab → 预览按钮可点 → 面板渲染 → Console 零红错 → DB 落在 app_data_dir() | 阻塞（必做项缺失） |
-| R3 | CI 未跑 | 报告"待 PR 触发" | 开 PR 到 main，观察 GitHub Actions（ci.yml）windows-latest job 五道闸全绿，附 run URL + run id + 结论 | 阻塞（CI 门禁） |
-| R4 | PROJECT_STATE.md 未更新 | `git diff main...HEAD -- docs/PROJECT_STATE.md` 为空 | 补一个 docs(state) 提交：勾选 040 待办、追加变更轨迹、更新下一步计划 | 低（流程） |
-| R5 | 任务文档状态字段仍 pending | tasks/040 第 11 行 | 流转到 `review` | 低（流程） |
+| R1 | C3 汇总面板未真机渲染 | 测试报告 §R1："无数据行" | CDP 调 `scan_start`（scope='full'）等扫描完成 → 切清理 tab → 勾选一行 → 点「预览可清理项」→ 抓 `document.body.innerText` 确认蓝底面板含「将清理 N 项，共 X」+ 分类行 | 阻塞 |
+| R2 | C4 红线面板未真机渲染 | 同上 | CDP 直接在 DB 插一行 `cleanup_item` 指向 `C:\Windows\System32\`，或调 scan 后找一条命中 L3 的行 → 点预览 → 抓红底面版含「N 项命中红线」+ 逐行中文原因 | 阻塞 |
+| R3 | C5/C6 分支未真机渲染 | 同上 | C5：对已清理的 id 调预览（CDP `Runtime.evaluate` 直接调 `window.__TAURI__.invoke('cleanup_dry_run', {itemIds: [99999]})`）→ 抓黄底文案；C6：临时改错命令名 → 抓红底「预览失败」 | 阻塞 |
+| R4 | CI 未跑 | 报告 §R3 | 开 PR 到 main，观察 GitHub Actions（ci.yml windows-latest）五道闸全绿，附 run URL + run id + conclusion | 阻塞 |
 
-**补做建议路径**：在当前 feature 分支上直接补做测试（不需要 bugfix 子分支，因为不改业务代码），补完后在测试报告里追加 §8 真机/打包/CI 证据段，然后重新进入本评审。
+**补做路径**：在当前 feature 分支补 CDP 脚本（参照 `C:\Users\An\AppData\Local\Temp\cdisk_safebox.py` 模式），跑通后把 innerText 证据追加到测试报告 §9，commit `docs(test): 补 task-040 C3-C6 真机面板渲染证据 (#task-040)`。CI 开 PR 后取 run 号。
 
-## 9. Git 操作记录（merge commit hash / revert 记录）
+## 9. Git 操作记录
 
-- **未合并**。feature/task-040-dryrun-preview-ui 保留待补测。
+- **未合并**。feature/task-040-dryrun-preview-ui 保留。
 - main 未动。
 - 无 revert。
+- 评审报告已提交到 feature 分支。
 
 ## 10. 后续动作建议
 
-1. **打回测试 Agent（提示词 9）**：在当前 feature 分支补做 R1-R3（真机 CDP 冒烟 + NSIS 干净目录安装 + 开 PR 跑 CI），R4-R5 由 DocsKeeper 同步更新状态。
-2. 补做完成后，测试报告追加证据段（CDP innerText 截图/日志、NSIS 安装路径、GitHub Actions run URL），重新提交到 feature 分支。
-3. 重新进入本评审（提示词 10），重点核对 R1-R3 证据是否齐备。
-4. 评审通过后再 merge --no-ff 到 main。
-5. **循环刹车提示**：本次是 task-040 第一次评审不通过，属于正常打回。若补测后再因同一缺失不通过，需上报调度 Agent 做根因决策（CDP 环境是否真不可用 / CI 配置是否需调整）。
+1. **打回测试 Agent（提示词 9）**：一次性补做 R1-R4（C3-C6 真机面板 + CI 开 PR）。
+2. 补做完成后，测试报告追加 §9 真机面板 innerText 证据 + CI run URL。
+3. 重新进入本评审（提示词 10），重点核对 C3-C6 是否有真机 innerText 证据、CI 是否绿。
+4. **若第三次仍因同一缺口不通过**：按循环刹车规则，置 blocked 上报用户决策（是否把 C3-C6 面板渲染降级为发版前人工验收项）。
+5. 代码本身无需修改。
