@@ -199,3 +199,41 @@ DevAgent 交付物（后续执行结果）：
 4. 本任务文档本身**由 DocsKeeper 在派发时**单独提交一次：
    `docs(task): 新增任务044-rules 手动回滚 (#task-044)`，
    该提交只含 `tasks/044-rules-rollback.md` 一个文件，落在 `feature/task-044-rules-rollback` 分支最前端。
+
+## 实现备注
+
+### 实际改动文件
+- engine/src/rules/rollback.rs（新建）：RollbackResult{previousVersion,restoredSha256,message} + has_backup(rules_dir) -> bool + ollback(rules_dir, conn) -> Result<RollbackResult, String>。
+- engine/src/rules/mod.rs：pub mod rollback; + re-export。
+- engine/tests/rules_rollback.rs（新建 5 条）。
+- pp/src-tauri/src/commands.rs：ules_has_backup / ules_rollback 两个 #[tauri::command]，错误信封用 INTERNAL。
+- pp/src-tauri/src/lib.rs：注册两个命令。
+- pp/src/pages/Settings.tsx：hasBak state + efreshHasBak() + 灰色「回滚到上一版」按钮 + confirm + 绿条 toast。
+
+### .bak 路径
+与 apply_update 复用同一相对路径：<rules_dir>/cache_rules.json.bak、<rules_dir>/rules_meta.json.bak；cache_bak_path()/cache_path()/meta_bak_path() 作为常量函数导出。
+
+### RollbackResult 最终定义
+`ust
+#[serde(rename_all = "camelCase")]
+pub struct RollbackResult {
+    pub previous_version: String,   // .bak 的 cache_rules.version
+    pub restored_sha256: String,    // .bak 字节 sha256 hex
+    pub message: String,            // "已回滚到 vX.Y.Z"
+}
+`
+
+### 验证
+- cargo test -p engine 全绿（含 rules_rollback 5/5）。
+- pnpm lint/test/build=0（vite 172.68 kB / gzip 54.92 kB）。
+
+### 偏差
+- 任务书写「读 .bak 的 version」，但 .bak 是 cache_rules.json（不是 rules_meta.json），version 字段在 CacheRules 模型里——直接从 .bak JSON 反序列化读 version。
+- 错误码沿用 INTERNAL（未新增 RULE_ROLLBACK_ERROR 常量）；中文原因走 eprintln。
+- meta_bak 恢复失败只 eprintln 不阻断（与 apply_update 内部 rollback 行为一致）。
+
+### 真机/打包冒烟
+由测试 Agent 在 L4 完成（applyUpdate 造 .bak → 点回滚 → 绿条）。
+
+### 遗留
+- 多版本历史 / 差量更新 / 「确认更新」弹窗 留 task-045+。
