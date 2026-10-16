@@ -75,13 +75,14 @@ fn restore_many_empty() {
 }
 
 /// 失败项夹在成功项中间：证明单个失败不阻断「后续 id」继续处理
-/// （partial_fail 的失败项在末尾，无法证明这一点），且错误文案区分 ParentMissing。
+/// （partial_fail 的失败项在末尾，无法证明这一点），且错误文案区分「目标已存在」。
 #[test]
 fn restore_many_failure_in_middle_does_not_stop_rest() {
     let (dir, conn, box_dir) = setup();
     let p1 = dir.path().join("first.bin");
-    // 父目录不存在 → restore_from_safe_box 返 ParentMissing。
-    let p2 = dir.path().join("no_such_dir").join("second.bin");
+    // p2 原路径已被占用 → restore_from_safe_box 返 TargetOccupied（task-043 后不再用 ParentMissing 制造中间失败）。
+    let p2 = dir.path().join("second.bin");
+    std::fs::write(&p2, b"existing").unwrap();
     let p3 = dir.path().join("third.bin");
     let id1 = insert_box_row(&conn, &box_dir, "m1.tmp", &p1);
     let id2 = insert_box_row(&conn, &box_dir, "m2.tmp", &p2);
@@ -96,9 +97,14 @@ fn restore_many_failure_in_middle_does_not_stop_rest() {
         "{}",
         r.errors[0]
     );
-    assert!(r.errors[0].contains("父目录"), "{}", r.errors[0]);
+    assert!(
+        r.errors[0].contains("占用") || r.errors[0].contains("occupied"),
+        "{}",
+        r.errors[0]
+    );
     // 中间失败后，第三个 id 仍被处理并成功。
     assert!(p1.exists());
     assert!(p3.exists());
-    assert!(!p2.exists());
+    // p2 原文件未被覆盖
+    assert_eq!(std::fs::read(&p2).unwrap(), b"existing");
 }

@@ -86,25 +86,24 @@ fn restore_target_occupied_returns_error() {
 }
 
 #[test]
-fn restore_parent_missing_returns_error() {
-    let (_dir, conn, box_dir) = setup();
-    // 直接塞一行 original_path 指向不存在的父目录
+fn restore_parent_missing_auto_creates_dirs() {
+    // task-043：原父目录缺失时自动 create_dir_all，不再报 ParentMissing。
+    let (dir, conn, box_dir) = setup();
     std::fs::create_dir_all(&box_dir).unwrap();
     let rel = "ghost.bin";
     std::fs::write(box_dir.join(rel), vec![0u8; 10]).unwrap();
+    let target = dir.path().join("auto/a/b/ghost.bin");
     conn.execute(
         "INSERT INTO safe_box (original_path, safe_rel_path, size_bytes, quarantined_at, expires_at, status)
-         VALUES ('C:\\nonexistent\\foo\\ghost.bin', ?1, 10, 1000, 1000+86400, 'in_box')",
-        [rel],
+         VALUES (?1, ?2, 10, 1000, 1000+86400, 'in_box')",
+        rusqlite::params![target.to_string_lossy().to_string(), rel],
     )
     .unwrap();
     let id = conn.last_insert_rowid();
 
-    let err = restore_from_safe_box(&conn, &box_dir, id).unwrap_err();
-    match err {
-        engine::execute::safe_box::RestoreError::ParentMissing(_) => {}
-        other => panic!("expected ParentMissing, got {other:?}"),
-    }
+    let r = restore_from_safe_box(&conn, &box_dir, id).unwrap();
+    assert!(target.exists());
+    assert_eq!(r.original_path, target.to_string_lossy());
 }
 
 #[test]
