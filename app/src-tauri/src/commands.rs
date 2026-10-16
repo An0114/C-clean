@@ -22,7 +22,7 @@ use engine::rules::loader::load as load_rules;
 use engine::rules::meta_store::{get_active_rules_meta, upsert_active_rules_meta};
 use engine::rules::remote::fetch_remote_meta;
 use engine::rules::{
-    apply_update, fetch_remote_rules_bytes, ApplyError, ApplyResult, CheckUpdateResp,
+    apply_update, fetch_remote_rules_bytes, ApplyError, ApplyResult, CheckUpdateResult,
     REMOTE_RULES_META_URL,
 };
 use engine::scan::ScanOrchestrator;
@@ -256,10 +256,14 @@ pub async fn safe_box_restore_many(
 }
 
 /// `rules.checkUpdate`：比对本地 rules_meta 与远端 GitHub Raw 版本。
+///
+/// task-042：远端不可达时不再返回错误信封，而是返回
+/// `Envelope::ok(CheckUpdateResult{ status: Offline, ... })`，
+/// 前端据此显示黄条「离线模式：使用本地规则库 vX.Y.Z」。
 #[tauri::command]
 pub async fn rules_check_update(
     paths: tauri::State<'_, AppPaths>,
-) -> Result<Envelope<CheckUpdateResp>, String> {
+) -> Result<Envelope<CheckUpdateResult>, String> {
     let local = match load_rules(&paths.rules_dir) {
         Ok(v) => v,
         Err(e) => {
@@ -288,20 +292,22 @@ pub async fn rules_check_update(
     let remote = match fetch_remote_meta() {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("[rules_check_update] fetch remote: {e}");
-            // 网络不通 / GitHub Raw 不可达 → RULE_NETWORK_ERROR（3003），
-            // 不再坍缩成「内部错误」。
-            return Ok(Envelope::err(RULE_NETWORK_ERROR));
+            // task-042：离线模式——不返回错误信封，前端按 status=Offline 渲染黄条。
+            eprintln!("[rules_check_update] fetch remote offline: {e}");
+            return Ok(Envelope::ok(CheckUpdateResult::offline(
+                local_version,
+                local_sha,
+                e,
+            )));
         }
     };
 
-    Ok(Envelope::ok(CheckUpdateResp {
-        has_update: local_sha != remote.checksum_sha256,
-        current_version: local_version,
-        remote_version: remote.version,
-        current_sha256: local_sha,
-        remote_sha256: remote.checksum_sha256,
-    }))
+    let result = if local_sha == remote.checksum_sha256 {
+        CheckUpdateResult::up_to_date(local_version, local_sha, &remote)
+    } else {
+        CheckUpdateResult::new_version(local_version, local_sha, &remote)
+    };
+    Ok(Envelope::ok(result))
 }
 
 /// `rules.applyUpdate`：下载远端 cache_rules.json 并替换本地，SHA-256 校验通过后 upsert DB。

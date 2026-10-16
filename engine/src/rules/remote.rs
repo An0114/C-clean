@@ -35,6 +35,81 @@ pub struct CheckUpdateResp {
     pub remote_sha256: String,
 }
 
+/// task-042：checkUpdate 三态状态。
+///
+/// - `UpToDate`：远端可达且本地已是最新；
+/// - `NewVersion`：远端可达且有新版本；
+/// - `Offline`：远端不可达（超时/404/连接失败），本地规则库照常工作。
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CheckStatus {
+    UpToDate,
+    NewVersion,
+    Offline,
+}
+
+/// task-042：checkUpdate 统一返回结构（网络失败不再返回错误信封）。
+///
+/// 网络失败时返回 `status=Offline`，前端据此显示黄条
+/// 「离线模式：使用本地规则库 vX.Y.Z」，本地 bundled cache_rules 照常工作。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckUpdateResult {
+    pub status: CheckStatus,
+    pub local_version: String,
+    pub local_sha256: String,
+    pub remote_version: Option<String>,
+    pub remote_sha256: Option<String>,
+    /// 供前端直接展示的中文文案。
+    pub message: String,
+}
+
+impl CheckUpdateResult {
+    /// 远端可达 + 本地最新。
+    pub fn up_to_date(
+        local_version: String,
+        local_sha: String,
+        remote: &RemoteRulesMeta,
+    ) -> Self {
+        Self {
+            status: CheckStatus::UpToDate,
+            local_version,
+            local_sha256: local_sha,
+            remote_version: Some(remote.version.clone()),
+            remote_sha256: Some(remote.checksum_sha256.clone()),
+            message: "规则库已是最新".to_string(),
+        }
+    }
+
+    /// 远端可达 + 有新版本。
+    pub fn new_version(
+        local_version: String,
+        local_sha: String,
+        remote: &RemoteRulesMeta,
+    ) -> Self {
+        Self {
+            status: CheckStatus::NewVersion,
+            local_version,
+            local_sha256: local_sha,
+            remote_version: Some(remote.version.clone()),
+            remote_sha256: Some(remote.checksum_sha256.clone()),
+            message: format!("发现新版本 v{}", remote.version),
+        }
+    }
+
+    /// 远端不可达，离线模式。
+    pub fn offline(local_version: String, local_sha: String, err: String) -> Self {
+        Self {
+            status: CheckStatus::Offline,
+            local_version,
+            local_sha256: local_sha,
+            remote_version: None,
+            remote_sha256: None,
+            message: err,
+        }
+    }
+}
+
 /// 读取超时常量（默认 10s，单测用 `RULES_HTTP_TIMEOUT_SECS` 覆盖为 1s 级）。
 fn timeout_secs() -> u64 {
     std::env::var("RULES_HTTP_TIMEOUT_SECS")

@@ -17,5 +17,6 @@ pub use meta_store::{get_active_rules_meta, upsert_active_rules_meta, RulesMetaR
 pub use models::{CacheRules, RuleEntry, RulesMeta};
 pub use remote::{
     apply_update, fetch_remote_meta, fetch_remote_rules_bytes, ApplyError, ApplyResult,
-    CheckUpdateResp, RemoteRulesMeta, REMOTE_RULES_META_URL, REMOTE_RULES_URL,
+    CheckStatus, CheckUpdateResp, CheckUpdateResult, RemoteRulesMeta, REMOTE_RULES_META_URL,
+    REMOTE_RULES_URL,
 };
