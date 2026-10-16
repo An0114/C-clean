@@ -156,6 +156,11 @@ M2 updater 闭环已端到端跑通：项目仓库已转 public（updater endpoi
   - **品牌图标决策：暂时不做**：沿用 Tauri 默认占位，v0.1.x 发版不阻塞；待后续有 1024×1024 源 PNG 再跑 `tauri icon`。
   - **首次 v0.1.1 发版已手动 workflow_dispatch 执行**：release workflow 已产出安装包 + latest.json（含签名），updater 端到端待用户在已装 v0.1.0 的机器上启动应用真机验证 banner 是否弹 v0.1.1。
   - 同期用户侧已做的发版准备 commit（未走任务流程）：`3fe5268 chore: 更换 updater 签名公钥`、`8f65b6b fix(release): 修正签名环境变量名，未配置 secret 时优雅跳过 latest.json`、`25aafb6 fix(release): 移除 pnpm/action-setup 的 version 字段`、`37c5c97 Update .gitignore`。
+2026-10-16：task-046 rustfmt CI 红灯修复（bugfix 子分支闭环）：
+  - 现象：PR #8（feature/task-046-safebox-session-filter）CI run 38875797117 的「Rustfmt 检查」步骤 exit 1——`engine/src/execute/safe_box.rs:434` `Some(s) => conn` 折多行压回单行；`engine/tests/safe_box_pagination.rs` 文件头 BOM + 文件尾多余空行。
+  - 修复：跑 `cargo fmt --all` 自动收敛（纯格式/空白改动，无逻辑变更）；bugfix 子分支 `bugfix/task-046-rustfmt-ci-red`，提交 `659013c`，已 `--no-ff` 合回 feature（merge `bf8a133`）。
+  - 自验：`cargo fmt --all -- --check` exit 0；clippy -D warnings 无告警；safe_box_pagination 5/5、safe_box_session_filter 4/4 测试通过。
+  - 结果：PR #8 重跑 CI run 38876741430 **conclusion=success**（08:53→08:58，五道闸全绿）。状态置 testing，待测试/评审复核。
 
 ## 已完成事项
 - [x] 项目立项与仓库初始化（commit 67990f5 / 4972f9d）
