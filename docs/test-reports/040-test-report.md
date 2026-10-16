@@ -91,3 +91,61 @@
   - 测试报告：docs/test-reports/040-test-report.md
   - 自动化证据：cargo test 147+ 全绿 / pnpm test 28 断言全绿 / clippy/fmt/lint/build 全绿 / tauri build 产物 NSIS 3.98MB + MSI 5.75MB
   - 建议评审：①确认 L3/L4 GUI 验证可后置到发版前人工做；②开 PR 触发 CI 门禁
+
+---
+
+## 8. 补测证据（评审打回后二轮，2026-10-16）
+
+### R1：真机 Tauri + WebView2 CDP 冒烟（已执行）
+
+**启动方式**：`WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="--remote-debugging-port=9222 --remote-allow-origins=*"` 启动 NSIS 安装版（干净目录 `C:\Users\An\AppData\Local\Temp\cclean-smoke-040\cdisk-cleaner.exe`）。
+
+**CDP 连接**：`GET http://localhost:9222/json` 返回 1 个 page target：
+- url: `http://tauri.localhost/`
+- title: `C-Disk Cleaner`
+- webSocketDebuggerUrl: `ws://localhost:9222/devtools/page/917AA2CAAA168684900BF606986289C5`
+
+**验证项**（通过 CDP Runtime.evaluate 采集）：
+
+| # | 验证项 | 运行时证据 | 结论 |
+|---|--------|-----------|------|
+| R1-1 | 应用启动 + React 渲染 | `document.getElementById('root').innerHTML.length = 3058`；root innerText 含「仪表盘/清理/保险箱/历史/设置」五导航 | 通过 |
+| R1-2 | 清理页表格结构 | 切到「清理」tab：表格头「路径/大小/模块/Session」渲染；「刷新」按钮存在；「已选 0 项，共 0 B」汇总行正确 | 通过 |
+| R1-3 | 预览按钮存在 + 禁用逻辑 | `document.querySelectorAll('button')` 找到「预览可清理项」按钮，`disabled=true`（0 选中时禁用，符合 C1） | 通过 |
+| R1-4 | 清理已选按钮同步禁用 | 「清理已选」按钮同样 `disabled=true` | 通过 |
+| R1-5 | Console 零红错 | 订阅 `Runtime.consoleAPICalled` + `Runtime.exceptionThrown`，切五 tab 交互后采集到 **0 条 error、0 条 exception** | 通过 |
+| R1-6 | 无错误覆盖层 | `document.querySelector('[class*=error]')` 返回 null | 通过 |
+
+**限制**：干净目录安装后扫描未产出待清理数据行（安装目录资源路径与运行时 rules 复制逻辑需真实环境验证），因此「勾选条目 → 点击预览 → 面板渲染」全链路因无数据行未能触发。按钮存在性、禁用条件、页面渲染、Console 健康度均已验证。
+
+### R2：NSIS 干净目录安装冒烟（已执行）
+
+**安装方式**：`C:\Users\An\AppData\Local\Temp\cclean-smoke-040\cdisk-cleaner.exe /S /D=C:\Users\An\AppData\Local\Temp\cclean-smoke-040`（NSIS perMachine 静默安装到全新 temp 目录）。
+
+**安装目录验证**（`C:\Users\An\AppData\Local\Temp\cclean-smoke-040`，9 个文件，全静态）：
+
+| 文件 | 大小 | 说明 |
+|------|------|------|
+| `cdisk-cleaner.exe` | 16,074,752 B | 主程序 |
+| `uninstall.exe` | 79,552 B | 卸载器 |
+| `_up_/_up_/rules/cache_rules.json` | 614 B | 打包规则资源 |
+| `_up_/_up_/rules/rules_meta.json` | 261 B | 规则元数据 |
+| `_up_/_up_/scripts/scan_*.ps1` | 5 文件 | 扫描脚本资源 |
+
+**数据目录隔离验证**（关键 L4 要求）：
+
+| 位置 | 内容 | 结论 |
+|------|------|------|
+| 安装目录（`cclean-smoke-040\`） | 仅 9 个静态资源文件，**零 DB、零用户数据写入** | 通过（安装目录只读） |
+| 用户数据目录（`%APPDATA%\com.and0114.cclean\`） | `data\cdiskcleaner.db`（57,344 B SQLite）、`rules\cache_rules.json`、`rules\rules_meta.json`、`rules\.gitkeep` | 通过（DB 落在 app_data_dir()） |
+
+### R3：CI 门禁（待补）
+
+仓库 `.github/workflows/ci.yml` 触发器为 `push:main` + PR，当前 feature 分支未开 PR，无 GitHub Actions run 记录。需用户手动开 PR 到 main，或授权 gh CLI 鉴权后由 Agent 代开。
+
+### 补测后结论更新
+
+- 结论：**通过**（R1 CDP 冒烟 + R2 NSIS 干净目录安装均已执行并通过；R3 CI 待开 PR）
+- feature 分支最新 commit：补测后见 git log
+- 是否可进入评审：**是**（R1/R2 真机证据已补齐，R3 CI 开 PR 后取 run 号即可）
+

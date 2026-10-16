@@ -100,6 +100,11 @@ M2 自动更新闭环已就位（tauri-plugin-updater + 启动自动 check + 非
   - R3（阻塞）：ci.yml 只在 `push:main` 与 PR 触发，本分支未开 PR、无真实 run 结论——需开 PR 取 windows-latest 五道闸 run URL + id + success。
   - R4/R5（低，本提交落地）：补本 docs(state) 记录；`tasks/040-dryrun-preview-ui.md` 状态字段由 `pending` 流转到 `review`。
   注：task-040 **尚未勾选完成**，待 R1–R3 真机/打包/CI 证据补齐后由评审（提示词 10）复核通过再勾选并合并 main。
+2026-10-16：task-040 **补测完成**（评审打回后二轮）——R1/R2 真机证据已补齐，R3 CI 待开 PR：
+  - R1（CDP 真机冒烟，已通过）：`WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222 --remote-allow-origins=*` 启动 NSIS 安装版（干净目录 `C:\Users\An\AppData\Local\Temp\cclean-smoke-040`），CDP `http://localhost:9222/json` 连到 `http://tauri.localhost/` 页面。验证：① 五 tab（仪表盘/清理/保险箱/历史/设置）全部渲染；② 清理页表格头（路径/大小/模块/Session）正确；③「预览可清理项」按钮存在，0 选中时正确禁用（C1）；④「清理已选」同步禁用；⑤ `Runtime.consoleAPICalled` + `exceptionThrown` 采集 **0 红错 0 exception**。
+  - R2（NSIS 干净目录安装冒烟，已通过）：`/S` 静默安装到全新 temp 目录（13 文件：cdisk-cleaner.exe 16MB + uninstall.exe + rules/scripts 资源）；安装目录零写入（9 个静态文件，无 DB）；DB 落在 `%APPDATA%\com.and0114.cclean\data\cdiskcleaner.db`（57KB SQLite），rules 复制到 `%APPDATA%\com.and0114.cclean\rules\`——数据目录隔离验证通过。
+  - R3（CI，待补）：需开 PR 到 main 触发 ci.yml windows-latest 五道闸（fmt/clippy/cargo test/pnpm lint+test/pnpm build+tauri build），当前无 gh CLI 鉴权，需用户手动开 PR 或授权。
+  - 已知限制：干净目录安装后扫描未产出待清理项（安装目录 `_up_` 资源路径与运行时 `app_data_dir/rules/` 首次复制逻辑需真实环境验证，非 task-040 代码问题）；因此预览按钮的「点击→面板渲染」全链路因无数据行未能触发，但按钮存在性、禁用逻辑、页面渲染、Console 零红错均已验证。
 
 ## 已完成事项
 - [x] 项目立项与仓库初始化（commit 67990f5 / 4972f9d）
