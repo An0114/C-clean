@@ -40,30 +40,17 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
-      # task-035：把 GitHub Secret 里的签名私钥写到 ~/.tauri/cclean.key，
-      # tauri build 会自动用它签 .msi/.exe（生成同名 .sig）。
-      - name: Setup signing key
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-        shell: pwsh
-        run: |
-          if (-not $env:TAURI_SIGNING_PRIVATE_KEY) {
-            Write-Host "::warning::TAURI_SIGNING_PRIVATE_KEY secret not set; updater 签名将跳过"
-            exit 0
-          }
-          New-Item -Path "$env:USERPROFILE\.tauri" -ItemType Directory -Force | Out-Null
-          Set-Content -Path "$env:USERPROFILE\.tauri\cclean.key" -Value $env:TAURI_SIGNING_PRIVATE_KEY -NoNewline
-          Write-Host "signing key written"
-
       - name: 安装依赖
         run: pnpm install --frozen-lockfile
 
       - name: Tauri build
         run: pnpm --filter app tauri build
         env:
-          TAURI_SIGNING_PRIVATE_KEY_PATH: ${{ env.USERPROFILE }}\.tauri\cclean.key
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
       # task-035：根据 .msi + 其 .sig 生成 latest.json（updater 读取的元信息）。
+      # 若未配置签名 secret，则跳过此步（不生成 latest.json，updater 暂不可用）。
       - name: Generate latest.json
         shell: pwsh
         run: |
@@ -71,8 +58,8 @@ jobs:
           $msi = Get-ChildItem target/release/bundle/msi/*.msi | Select-Object -First 1
           $sig = Get-ChildItem "$($msi.FullName).sig" -ErrorAction SilentlyContinue
           if (-not $sig) {
-            Write-Host "::error::未找到 .sig 文件，签名可能失败"
-            exit 1
+            Write-Host "::warning::未找到 .sig 文件（未配置 TAURI_SIGNING_PRIVATE_KEY），跳过 latest.json 生成"
+            exit 0
           }
           $sigContent = Get-Content $sig.FullName -Raw
           $notes = "v$ver 发布"
