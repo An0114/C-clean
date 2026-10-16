@@ -176,11 +176,16 @@ pub async fn safe_box_restore(
     }
 }
 
-/// `safe_box.list`：列出当前保险箱里所有未剔除条目（前端 UI 用）。
+/// `safe_box.list`：分页列出当前保险箱里未剔除条目（task-045）。
+///
+/// - `page` 从 1 起；`page_size` 后端 clamp 到 [1,200]；
+/// - 返回 `SafeBoxPage { items, total, page, pageSize, totalBytes }`。
 #[tauri::command]
 pub async fn safe_box_list(
+    page: u32,
+    page_size: u32,
     paths: tauri::State<'_, AppPaths>,
-) -> Result<Envelope<engine::execute::safe_box::SafeBoxListResp>, String> {
+) -> Result<Envelope<engine::execute::safe_box::SafeBoxPage>, String> {
     let conn = match engine::db::conn::open(&paths.data_root) {
         Ok(c) => c,
         Err(e) => {
@@ -188,10 +193,10 @@ pub async fn safe_box_list(
             return Ok(Envelope::err(INTERNAL));
         }
     };
-    match engine::execute::safe_box::list_safe_box(&conn) {
+    match engine::execute::safe_box::list_paged(&conn, page, page_size) {
         Ok(r) => Ok(Envelope::ok(r)),
         Err(e) => {
-            eprintln!("[safe_box_list] list: {e}");
+            eprintln!("[safe_box_list] list_paged: {e}");
             Ok(Envelope::err(INTERNAL))
         }
     }
