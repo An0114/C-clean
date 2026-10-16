@@ -18,9 +18,12 @@ interface SafeBoxEntry {
   quarantinedAt: number;
 }
 
-interface SafeBoxListResp {
-  entries: SafeBoxEntry[];
-  totalItems: number;
+// task-045：分页响应。
+interface SafeBoxPage {
+  items: SafeBoxEntry[];
+  total: number;
+  page: number;
+  pageSize: number;
   totalBytes: number;
 }
 
@@ -56,8 +59,10 @@ const tdStyle: React.CSSProperties = {
 export default function SafeBox() {
   const [status, setStatus] = useState<Status>("loading");
   const [entries, setEntries] = useState<SafeBoxEntry[]>([]);
-  const [totalItems, setTotalItems] = useState(0);
+  const [total, setTotal] = useState(0);
   const [totalBytes, setTotalBytes] = useState(0);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(50);
   const [msg, setMsg] = useState<string>("");
   const [restoringId, setRestoringId] = useState<number | null>(null);
   const [purgingId, setPurgingId] = useState<number | null>(null);
@@ -66,27 +71,39 @@ export default function SafeBox() {
   const [batchRestoring, setBatchRestoring] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (p: number = page, ps: number = pageSize) => {
     setStatus("loading");
     setMsg("");
     try {
-      const r = await api<SafeBoxListResp>("safe_box_list", {});
-      setEntries(r.entries);
-      setTotalItems(r.totalItems);
+      const r = await api<SafeBoxPage>("safe_box_list", { page: p, pageSize: ps });
+      setEntries(r.items);
+      setTotal(r.total);
       setTotalBytes(r.totalBytes);
+      setPage(r.page);
+      setPageSize(r.pageSize);
       setStatus("ok");
     } catch (e) {
       setEntries([]);
-      setTotalItems(0);
+      setTotal(0);
       setTotalBytes(0);
       setMsg(String(e));
       setStatus("error");
     }
-  }, []);
+  }, [page, pageSize]);
 
   useEffect(() => {
-    load();
-  }, [load]);
+    load(1, 50);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // task-045：翻页——清空 selected 避免跨页残留。
+  const gotoPage = useCallback(
+    (p: number) => {
+      setSelected(new Set());
+      void load(p, pageSize);
+    },
+    [load, pageSize]
+  );
 
   const restore = useCallback(
     async (item: SafeBoxEntry) => {
@@ -208,7 +225,7 @@ export default function SafeBox() {
           刷新
         </button>
         <span style={{ fontSize: 13, color: "#374151" }}>
-          共 {totalItems} 项 / 总大小 {formatBytes(totalBytes)}
+          共 {total} 项 / 总大小 {formatBytes(totalBytes)}
         </span>
         <button
           onClick={restoreMany}
@@ -385,6 +402,37 @@ export default function SafeBox() {
             ))}
           </tbody>
         </table>
+      )}
+
+      {/* task-045：分页栏 */}
+      {status === "ok" && (
+        <div
+          style={{
+            marginTop: 16,
+            display: "flex",
+            justifyContent: "center",
+            alignItems: "center",
+            gap: 12,
+            fontSize: 13,
+            color: "#374151",
+          }}
+        >
+          <button
+            onClick={() => gotoPage(page - 1)}
+            disabled={page <= 1 || status === "loading"}
+          >
+            上一页
+          </button>
+          <span>
+            第 {page} / {Math.max(1, Math.ceil(total / pageSize))} 页（共 {total} 条）
+          </span>
+          <button
+            onClick={() => gotoPage(page + 1)}
+            disabled={page * pageSize >= total || status === "loading"}
+          >
+            下一页
+          </button>
+        </div>
       )}
     </div>
   );
