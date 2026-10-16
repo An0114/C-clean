@@ -1,4 +1,4 @@
-﻿//! task-045 闆嗘垚娴嬭瘯锛歴afe_box.list_paged 鍒嗛〉銆?
+//! task-045 闆嗘垚娴嬭瘯锛歴afe_box.list_paged 鍒嗛〉銆?
 
 use engine::db::conn::open;
 use engine::execute::safe_box::list_paged;
@@ -78,4 +78,3 @@ fn list_paged_id_desc_order() {
     // 绗?1 椤垫渶鍚庝竴鏉?id 搴斿ぇ浜庣 2 椤电涓€鏉?id銆?
     assert!(p1.items[9].id > p2.items[0].id);
 }
-
