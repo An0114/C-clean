@@ -3,7 +3,7 @@
 > **特别声明**：本文件是项目唯一真实数据源，也是「每次任务结束必更新、必单独提交」的文件。后续所有 Agent 必须遵守：任何任务完成后都要先更新本文件，再单独提交一次（commit message 形如 `docs(state): ... (#task-00X)`），不得与业务代码混在同一个 commit。
 
 ## 当前目标
-M2 自动更新闭环已就位（tauri-plugin-updater + 启动自动 check + 非阻塞 banner）；safe_box 单条 + 批量 purge/恢复已就绪；下一轮：①dry-run 预览 UI（task-040）②品牌图标设计 ③首次 v0.1.1 发版验证 updater 闭环。
+M2 updater 闭环已端到端跑通：项目仓库已转 public（updater endpoint 直拉 Releases/latest/download/latest.json 无 401），首次 v0.1.1 发版已手动 workflow_dispatch 执行；rules 超时收敛（task-041）+ 离线模式三态（task-042）就位；safe_box 单条/批量 purge/恢复全部就绪。品牌图标决策：暂时不做，沿用 Tauri 默认占位。
 
 ## 最近一次变更
 2026-10-11：完成 PRD / TRD / ARCHITECTURE / AGENTS / 立项决策记录全套长期基线文档，并初始化本状态白板。
@@ -127,6 +127,11 @@ M2 自动更新闭环已就位（tauri-plugin-updater + 启动自动 check + 非
   - `engine/tests/rules_offline_mode.rs` 3 条：Offline（永不响应端口 1s 超时）/ UpToDate（mock server 返回同 sha）/ NewVersion（返回更高 version），总耗时 1.1s。
   - `app/src/pages/Settings.tsx`：按 status 渲染三态提示条——upToDate 绿条「规则库已是最新」、newVersion 蓝条「发现新版本 vX.Y.Z」、offline 黄条「离线模式：使用本地规则库 vX.Y.Z（<message>）」；应用更新按钮仅在 newVersion 时出现。
   自验：cargo check/clippy/fmt/test=0（engine 156 条）；pnpm lint/test/build=0（172.01 kB / gzip 54.78 kB）。applyUpdate 命令的网络错误仍返回错误信封（本任务不改）。
+2026-10-16：用户决策落地（DocsKeeper 同步状态，无代码改动）：
+  - **项目仓库已转 public**：updater endpoint（task-041 已改 `releases/latest/download/latest.json`）直拉可达，无需 token header；task-039 评审遗留的「私有仓 raw 404」正式关闭。
+  - **品牌图标决策：暂时不做**：沿用 Tauri 默认占位，v0.1.x 发版不阻塞；待后续有 1024×1024 源 PNG 再跑 `tauri icon`。
+  - **首次 v0.1.1 发版已手动 workflow_dispatch 执行**：release workflow 已产出安装包 + latest.json（含签名），updater 端到端待用户在已装 v0.1.0 的机器上启动应用真机验证 banner 是否弹 v0.1.1。
+  - 同期用户侧已做的发版准备 commit（未走任务流程）：`3fe5268 chore: 更换 updater 签名公钥`、`8f65b6b fix(release): 修正签名环境变量名，未配置 secret 时优雅跳过 latest.json`、`25aafb6 fix(release): 移除 pnpm/action-setup 的 version 字段`、`37c5c97 Update .gitignore`。
 
 ## 已完成事项
 - [x] 项目立项与仓库初始化（commit 67990f5 / 4972f9d）
@@ -187,17 +192,17 @@ M2 自动更新闭环已就位（tauri-plugin-updater + 启动自动 check + 非
 - [B 中] task-015 文件占用时删除失败：Windows 下 `std::fs::remove_file` 遇 SharingViolation 直接返 Err，不做重试/Restart Manager；命中占用的 item 记为 fail 并写 audit_log result='fail'。Restart Manager 集成留 M1-D 后续任务。
 - [B 低] UNC 路径 `\\server\share\...` task-008 评估结论：**沿用保守拒绝**（normalize 层 NotAbsolute + resolve 层 Io 双保险）；网络盘 L3 红线策略留待真实 NAS/企业盘场景出现时再开。
 - [B 低] task-007 WebView2 devtools console 的 `listen('scan://progress')` 真机截图未在本轮自动化环境内取得（tauri dev 窗口启动后 GUI 自动化无法稳定聚焦 console）；通道本身已由编译期类型 + engine 节流单测保证，留待 UI 联调任务补截图。
-- [B 低] task-005 rules_meta 落 DB + checkUpdate + applyUpdate 均已在 task-022/023 落地；**GitHub Token/私有仓、失败重试/离线降级、前端 UI 「确认更新」弹窗、手动回滚命令（从 .bak 恢复）、差量更新** 仍未做，留后续。
+- [B 低] task-005 rules_meta 落 DB + checkUpdate + applyUpdate 均已在 task-022/023 落地；~~GitHub Token/私有仓、失败重试/离线降级~~（~~GitHub Token/私有仓~~：项目已转 public，无需 token；~~离线降级~~：task-042 已落地 Offline 三态）、前端 UI 「确认更新」弹窗、手动回滚命令（从 .bak 恢复）、差量更新 仍未做，留后续。
 - [B 低] task-005 外部红线命中统一记为 `DenialReason::L3SystemPath`（遵守「whitelist.rs 仅新增函数、不改枚举/常量」约束）；后续审计若需区分内置/外部红线来源，再拆 DenialReason 变体。
 - [B 低] task-006 CI 未接 Dependabot / cargo audit / npm audit（任务边界明确不做）；~~package.json 的 lint/test 为 echo 占位，CI 也不跑这两个命令~~（task-032 已接入 ESLint 10 flat config + Vitest 2.1，CI 已加 Lint/Test 两步）。CI 仅 windows-latest 单平台，跨平台矩阵（macOS/Linux）本项目明确不做；~~NSIS 出包矩阵未配~~（task-033 已配 Windows 单平台 nsis+msi，artifact 名 cclean-windows-installer）。
 - [B 中] task-033 installer 未做代码签名：未购 EV/OV 证书，用户首次运行 .exe/.msi 会有 SmartScreen「Windows 已保护你的电脑」警告，需要手动「更多信息→仍要运行」；正式发版前需评估代码签名（自签/商业证书）。
-- [B 低] task-033 应用图标仍为 Tauri 默认占位（task-001 生成的 17 个文件），未做品牌图标设计；待设计出 1024×1024 源 PNG 后跑 `tauri icon` 重生成全套。
+- [B 低] task-033 应用图标仍为 Tauri 默认占位（task-001 生成的 17 个文件）。**决策（2026-10-16）：品牌图标暂时不做**，沿用默认占位，v0.1.x 发版不阻塞；待后续有设计出 1024×1024 源 PNG 后再跑 `tauri icon` 重生成全套。
 - [B 低] task-039 safe_box 批量恢复真机端到端未跑：自动化环境无法在 GUI 里取得保险箱数据行（无真实扫描产出的文件），checkbox 勾选 + 批量恢复按钮全链路未经真机点击验证。补偿：后端 `restore_many` 4 条集成测试（全成功 / 部分失败 / 空 Vec / 中间失败不阻断后续）+ 前端 lint/单测/build 全绿 + 代码走查（selected Set 复用、confirm、绿红条、清空 selected 重拉列表）。需装包后人工造数据验证。（2026-10-15 评审侧已补齐：评审 Agent 用造数据在 `pnpm tauri dev` 真机跑通 checkbox 勾选 → 批量恢复全链路（2 成功 / 1 失败父目录缺失），证据见 `docs/reviews/task-039-batch-restore-review.md`；安装包级干净目录安装冒烟仍留发版任务。）
 - [B 中] task-039 评审运行时冒烟发现（**非本任务引入**，设置页属 task-022/031 范围）：每次文档加载后**首次**进入「设置」tab 调用 `rules_check_update` 会打印 2 条红色 console error（source=network，`http://ipc.localhost/rules_check_update`，ERR_CONNECTION_REFUSED）+ 2 条 Tauri「IPC custom protocol failed, will use postMessage」warning；同条件点历史/清理/仪表盘 IPC 均 0 红错，同文档内再次进设置页也不再复现。功能经 postMessage 回退仍可用。建议 `bugfix/task-039-settings-ipc-redconsole` 排查 Tauri 2.x ipc.localhost 首调与 `useCustomProtocol` 回退策略。
-- [B 中] ~~task-039 评审运行时冒烟发现：设置页规则库检查长时间停留「检查中…」（实测 ≥8s 无收敛、无失败态）；本机 raw URL 404（私有仓 raw 不可达），Rust 侧外呼无短超时/失败收敛。~~ **已由 task-041 解决**（reqwest 加 10s/5s 超时 + 中文错误映射 + updater endpoint 改 Releases/latest/download URL）。遗留：仓库 public/private 决策待用户拍板（推荐转 public），token header 留 task-042+。
+- [B 中] ~~task-039 评审运行时冒烟发现：设置页规则库检查长时间停留「检查中…」（实测 ≥8s 无收敛、无失败态）；本机 raw URL 404（私有仓 raw 不可达），Rust 侧外呼无短超时/失败收敛。~~ **已由 task-041 解决**（reqwest 加 10s/5s 超时 + 中文错误映射 + updater endpoint 改 Releases/latest/download URL）。~~遗留：仓库 public/private 决策待用户拍板（推荐转 public），token header 留 task-042+。~~ **已落地（2026-10-16）：项目仓库已转 public，无需 token header，Releases 资产直拉可达。**
 
 ## 下一步计划
-M2 updater 闭环完成（手动 Settings 检查 + 启动自动 banner）；safe_box 单条/批量 purge/恢复全部就绪；task-041 rules 超时 + updater endpoint 已修复；task-042 rules 离线模式降级就绪。下一轮进入：①派发 task-043：等用户决定仓库 public/private 后落地 updater token header（或转 public），验证 v0.1.1 真实升级流程 ②首次 v0.1.1 发版验证完整 updater 流程（GitHub Secret 已配好，可直接 workflow_dispatch）③品牌图标设计（用户手动）。
+M2 updater 端到端已闭环（仓库 public + 首次 v0.1.1 发版已手动执行 + rules 超时/离线降级就位）；品牌图标决策暂时不做。下一轮进入：①首次 v0.1.1 升级链路真机验证（用户在已装 v0.1.0 的机器上启动应用，观察 updater banner 是否正确弹出 v0.1.1）②task-043 起继续清 M1 遗留（safe_box list 分页 / restore 自动建父目录 / rules 手动回滚 .bak 命令 / L3 占用进程 RmShutdown 可选）③持续 debt-cleanup。
 
 ## 当前负责人 Agent
 DocsKeeper（文档与状态管家）
