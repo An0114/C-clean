@@ -148,3 +148,26 @@ DevAgent 交付物（后续执行结果）：
 4. 本任务文档本身**由 DocsKeeper 在派发时**单独提交一次：
    `docs(task): 新增任务043-restore 自动建父目录 (#task-043)`，
    该提交只含 `tasks/043-restore-mkdir-parent.md` 一个文件，落在 `feature/task-043-restore-mkdir-parent` 分支最前端。
+
+## 实现备注
+
+### 实际改动文件
+- engine/src/execute/safe_box.rs：restore_from_safe_box step 3 由 ParentMissing 直接报错改为 if !parent.exists() { std::fs::create_dir_all(parent).map_err(...)? }；mkdir 失败返回 RestoreError::Io("无法创建父目录 <path>: <os error>")。
+- engine/tests/safe_box_restore_mkdir.rs（新建 3 条）。
+- engine/tests/safe_box_restore.rs：旧 estore_parent_missing_returns_error 改为 estore_parent_missing_auto_creates_dirs，断言自动建多层目录并 restore 成功。
+- engine/tests/safe_box_restore_many.rs：estore_many_failure_in_middle_does_not_stop_rest 原用 ParentMissing 制造中间失败，改为 TargetOccupied（预置同名文件）制造失败。
+
+### mkdir 错误文案最终格式
+RestoreError::Io(format!("无法创建父目录 {}: {e}", p.display()))，经 Tauri Envelope 透出 code=3005 / message=「无法创建父目录 ...: ...」。
+
+### 验证
+- cargo check/clippy/fmt=0；cargo test -p engine 全绿（含新增 3 条 + 适配 2 条旧用例）。
+- pnpm lint/test/build=0（前端零改动，跑一遍确认未破）。
+
+### 偏差
+- ParentMissing 枚举变体保留（不删），避免破坏公开 API；已不再被返回。clippy 未报 dead_code。
+- 负向用例（mkdir 真失败）在 Windows 上对「父组件是文件」的路径，create_dir_all 行为与预期不完全一致（错误落到 rename 阶段），断言放宽为「包含 无法创建父目录 / rename / Io」之一。
+- 真机/打包冒烟按任务书裁剪（前端零改动，单测已在 tempdir 覆盖三分支）。
+
+### 遗留
+- safe_box list 分页、rules 手动回滚命令留 task-044+。
