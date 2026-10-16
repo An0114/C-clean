@@ -132,6 +132,12 @@ M2 updater 闭环已端到端跑通：项目仓库已转 public（updater endpoi
   - `engine/tests/safe_box_restore_mkdir.rs` 3 条新建：缺目录自动建多层 / 已存在目录 sibling 文件不被覆盖 / 父路径不可用（父组件是文件）返回错误。
   - 旧用例适配：`safe_box_restore.rs` 的 `restore_parent_missing_returns_error` 改为 `restore_parent_missing_auto_creates_dirs`（正向断言）；`safe_box_restore_many.rs` 的中间失败注入从 ParentMissing 改为 TargetOccupied（预置同名文件）。
   自验：cargo check/clippy/fmt/test=0（engine 159 条）；pnpm lint/test/build=0（前端零改动）。真机/打包冒烟按任务书裁剪。
+2026-10-16：task-044 完成——rules_rollback 单版回滚（后端命令 + 前端灰色按钮 + confirm）：
+  - `engine/src/rules/rollback.rs`（新建）：`RollbackResult{previousVersion,restoredSha256,message}` + `has_backup(rules_dir) -> bool` + `rollback(rules_dir, conn)`；.bak 路径 `<rules_dir>/cache_rules.json.bak` 与 apply_update 复用。
+  - `engine/tests/rules_rollback.rs` 5 条：has_backup 真/假、无 .bak Err、回滚成功（v1→v0）、损坏 .bak Err。
+  - `app/src-tauri/src/commands.rs`：`rules_has_backup() -> Envelope<bool>` + `rules_rollback() -> Envelope<RollbackResult>`，错误用 INTERNAL 信封。
+  - `app/src/pages/Settings.tsx`：启动时调 has_backup，true 时显示灰色「回滚到上一版」按钮；confirm 后 invoke rollback → 绿条「已回滚到 vX.Y.Z」。
+  自验：cargo check/clippy/fmt/test=0（engine 164 条）；pnpm lint/test/build=0（172.68 kB / gzip 54.92 kB）。真机/打包冒烟由测试 Agent 在 L4 完成。
 2026-10-16：用户决策落地（DocsKeeper 同步状态，无代码改动）：
   - **项目仓库已转 public**：updater endpoint（task-041 已改 `releases/latest/download/latest.json`）直拉可达，无需 token header；task-039 评审遗留的「私有仓 raw 404」正式关闭。
   - **品牌图标决策：暂时不做**：沿用 Tauri 默认占位，v0.1.x 发版不阻塞；待后续有 1024×1024 源 PNG 再跑 `tauri icon`。
@@ -197,7 +203,7 @@ M2 updater 闭环已端到端跑通：项目仓库已转 public（updater endpoi
 - [B 中] task-015 文件占用时删除失败：Windows 下 `std::fs::remove_file` 遇 SharingViolation 直接返 Err，不做重试/Restart Manager；命中占用的 item 记为 fail 并写 audit_log result='fail'。Restart Manager 集成留 M1-D 后续任务。
 - [B 低] UNC 路径 `\\server\share\...` task-008 评估结论：**沿用保守拒绝**（normalize 层 NotAbsolute + resolve 层 Io 双保险）；网络盘 L3 红线策略留待真实 NAS/企业盘场景出现时再开。
 - [B 低] task-007 WebView2 devtools console 的 `listen('scan://progress')` 真机截图未在本轮自动化环境内取得（tauri dev 窗口启动后 GUI 自动化无法稳定聚焦 console）；通道本身已由编译期类型 + engine 节流单测保证，留待 UI 联调任务补截图。
-- [B 低] task-005 rules_meta 落 DB + checkUpdate + applyUpdate 均已在 task-022/023 落地；~~GitHub Token/私有仓、失败重试/离线降级~~（~~GitHub Token/私有仓~~：项目已转 public，无需 token；~~离线降级~~：task-042 已落地 Offline 三态）、前端 UI 「确认更新」弹窗、手动回滚命令（从 .bak 恢复）、差量更新 仍未做，留后续。
+- [B 低] task-005 rules_meta 落 DB + checkUpdate + applyUpdate 均已在 task-022/023 落地；~~GitHub Token/私有仓、失败重试/离线降级、手动回滚命令（从 .bak 恢复）~~（~~GitHub Token/私有仓~~：项目已转 public，无需 token；~~离线降级~~：task-042 已落地 Offline 三态；~~手动回滚~~：task-044 已落地 rules_rollback + 前端按钮）、前端 UI 「确认更新」弹窗、差量更新 仍未做，留后续。
 - [B 低] task-005 外部红线命中统一记为 `DenialReason::L3SystemPath`（遵守「whitelist.rs 仅新增函数、不改枚举/常量」约束）；后续审计若需区分内置/外部红线来源，再拆 DenialReason 变体。
 - [B 低] task-006 CI 未接 Dependabot / cargo audit / npm audit（任务边界明确不做）；~~package.json 的 lint/test 为 echo 占位，CI 也不跑这两个命令~~（task-032 已接入 ESLint 10 flat config + Vitest 2.1，CI 已加 Lint/Test 两步）。CI 仅 windows-latest 单平台，跨平台矩阵（macOS/Linux）本项目明确不做；~~NSIS 出包矩阵未配~~（task-033 已配 Windows 单平台 nsis+msi，artifact 名 cclean-windows-installer）。
 - [B 中] task-033 installer 未做代码签名：未购 EV/OV 证书，用户首次运行 .exe/.msi 会有 SmartScreen「Windows 已保护你的电脑」警告，需要手动「更多信息→仍要运行」；正式发版前需评估代码签名（自签/商业证书）。
@@ -207,7 +213,7 @@ M2 updater 闭环已端到端跑通：项目仓库已转 public（updater endpoi
 - [B 中] ~~task-039 评审运行时冒烟发现：设置页规则库检查长时间停留「检查中…」（实测 ≥8s 无收敛、无失败态）；本机 raw URL 404（私有仓 raw 不可达），Rust 侧外呼无短超时/失败收敛。~~ **已由 task-041 解决**（reqwest 加 10s/5s 超时 + 中文错误映射 + updater endpoint 改 Releases/latest/download URL）。~~遗留：仓库 public/private 决策待用户拍板（推荐转 public），token header 留 task-042+。~~ **已落地（2026-10-16）：项目仓库已转 public，无需 token header，Releases 资产直拉可达。**
 
 ## 下一步计划
-M2 updater 端到端已闭环（仓库 public + 首次 v0.1.1 发版已手动执行 + rules 超时/离线降级就位）；品牌图标决策暂时不做；task-043 safe_box restore 自动建父目录已闭环。下一轮进入：①派发 task-044：rules 手动回滚命令（从 .bak 恢复）——applyUpdate 已留 .bak，补回滚命令 + Settings 按钮 ②首次 v0.1.1 升级链路真机验证（用户在已装 v0.1.0 的机器上启动应用，观察 updater banner 是否正确弹出 v0.1.1）③继续清 M1 遗留（safe_box list 分页 / L3 占用进程 RmShutdown 可选）。
+M2 updater 端到端已闭环（仓库 public + 首次 v0.1.1 发版已手动执行 + rules 超时/离线降级/手动回滚就位）；品牌图标决策暂时不做；task-043 safe_box restore 自动建父目录已闭环；task-044 rules_rollback 已闭环。下一轮进入：①派发 task-045：safe_box list 分页（LIMIT/OFFSET + 前端分页控件）——task-018 已知问题闭环 ②首次 v0.1.1 升级链路真机验证（用户在已装 v0.1.0 的机器上启动应用，观察 updater banner 是否正确弹出 v0.1.1）③继续清 M1 遗留（L3 占用进程 RmShutdown 可选）。
 
 ## 当前负责人 Agent
 DocsKeeper（文档与状态管家）
@@ -453,6 +459,13 @@ DocsKeeper（文档与状态管家）
 | 2e14188 | #task-043 | test(execute): 补 restore 自动建父目录单测（缺目录/已存在目录/不可用父路径） |
 | ca936c1 | #task-043 | test(execute): 适配 task-043——旧 ParentMissing 用例改为正向自动建目录断言 |
 | （本次） | #task-043 | docs(state): 任务043完成，safe_box restore 自动建父目录就绪 |
+| 70452d0 | #task-044 | docs(task): 新增任务044-rules 手动回滚 |
+| 3980490 | #task-044 | feat(rules): 新增 rollback + has_backup——从 .bak 恢复 cache_rules.json |
+| 3cc1797 | #task-044 | feat(tauri): 新增 rules_rollback / rules_has_backup 命令并注册 |
+| 262d7e9 | #task-044 | test(rules): 补 rollback 集成测试（有 bak/无 bak/损坏 bak/has_backup） |
+| 8013dee | #task-044 | feat(frontend): Settings 规则库卡片加「回滚到上一版」按钮 |
+| ff142be | #task-044 | style: cargo fmt |
+| （本次） | #task-044 | docs(state): 任务044完成，rules 手动回滚命令就绪 |
 
 ---
 变更轨迹：
@@ -540,3 +553,4 @@ DocsKeeper（文档与状态管家）
 - 2026-10-16  task-041  rules reqwest 超时收敛 + updater endpoint 改 Releases 资产（task-039 评审 P0 真机卡死修复）
 - 2026-10-16  task-042  rules.checkUpdate 加 Offline 三态，断网时本地规则库照常工作 + UI 黄条提示
 - 2026-10-16  task-043  safe_box.restore_item 自动 mkdir -p 父目录（task-017 已知问题闭环）
+- 2026-10-16  task-044  rules_rollback 单版回滚（后端命令 + 前端灰色按钮 + confirm）

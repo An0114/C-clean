@@ -43,6 +43,8 @@ pub fn run() {
             commands::safe_box_restore_many,
             commands::rules_check_update,
             commands::rules_apply_update,
+            commands::rules_has_backup,
+            commands::rules_rollback,
             commands::audit_log_list,
             commands::audit_log_stats,
             commands::cleanup_list_pending

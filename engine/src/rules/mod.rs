@@ -10,6 +10,7 @@ pub mod loader;
 pub mod meta_store;
 pub mod models;
 pub mod remote;
+pub mod rollback;
 
 pub use env_expand::{expand, ExpandError};
 pub use loader::{external_deny_list, load, LoadError, LoadedRules};
@@ -20,3 +21,4 @@ pub use remote::{
     CheckStatus, CheckUpdateResp, CheckUpdateResult, RemoteRulesMeta, REMOTE_RULES_META_URL,
     REMOTE_RULES_URL,
 };
+pub use rollback::{has_backup, rollback, RollbackResult};
