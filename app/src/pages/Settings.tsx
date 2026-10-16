@@ -136,6 +136,16 @@ export default function Settings() {
   }, [check, refreshHasBak]);
 
   const apply = useCallback(async () => {
+    // task-047：点「应用更新」前先 window.confirm，避免手滑直接覆盖本地 rules。
+    const localVer = info?.localVersion ?? "?";
+    const remoteVer = info?.remoteVersion ?? "?";
+    const ok = window.confirm(
+      `即将应用规则库 v${remoteVer}（当前本地 v${localVer}）。\n` +
+        `应用后旧版将备份为 cache_rules.json.bak，可随时通过「回滚到上一版」恢复。\n` +
+        `是否继续？`
+    );
+    if (!ok) return;
+
     setPhase("applying");
     setToast(null);
     try {
@@ -147,7 +157,7 @@ export default function Settings() {
       setToast({ ok: false, text: `应用更新失败：${String(e)}` });
       setPhase("idle");
     }
-  }, [check]);
+  }, [check, info]);
 
   // task-035：检查应用自更新（tauri updater）
   const checkApplication = useCallback(async () => {
