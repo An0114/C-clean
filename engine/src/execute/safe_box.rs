@@ -395,48 +395,109 @@ pub fn list_safe_box(conn: &Connection) -> Result<SafeBoxListResp, String> {
 /// - `page_size` clamp 到 [1, 200]（防前端传 99999）；
 /// - ORDER BY id DESC（最新在前，稳定排序）；
 /// - 同时跑 `SELECT COUNT(*)` 拿 total，SUM(size_bytes) 拿全表字节汇总。
-pub fn list_paged(conn: &Connection, page: u32, page_size: u32) -> Result<SafeBoxPage, String> {
+///
+/// task-046：`session_id: Option<i64>` 按 `source_task_id` 过滤（真实 schema
+/// 里 safe_box 没有 session_id 列，只有 source_task_id 外键；一个 cleanup_task
+/// 对应一次清理 session，所以前端的「session」= source_task_id）。
+pub fn list_paged(
+    conn: &Connection,
+    page: u32,
+    page_size: u32,
+    session_id: Option<i64>,
+) -> Result<SafeBoxPage, String> {
     let page = (page.max(1)) as i64;
     let page_size = (page_size.clamp(1, 200)) as i64;
     let offset = (page - 1) * page_size;
 
-    let total: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM safe_box WHERE status='in_box'",
-            [],
-            |r| r.get(0),
-        )
-        .map_err(|e| format!("count safe_box: {e}"))?;
-
-    let total_bytes: i64 = conn
-        .query_row(
-            "SELECT COALESCE(SUM(size_bytes),0) FROM safe_box WHERE status='in_box'",
-            [],
-            |r| r.get(0),
-        )
-        .map_err(|e| format!("sum safe_box: {e}"))?;
-
-    let mut stmt = conn
-        .prepare(
+    // 动态 WHERE：status='in_box' 固定，session_id 可选。
+    // 真实 schema：safe_box 没有 session_id 列，只有 source_task_id；
+    // 一个 cleanup_task 对应一次清理 session，因此前端的「session」= source_task_id。
+    let (where_clause, items_sql) = match session_id {
+        Some(_) => (
+            "WHERE status='in_box' AND source_task_id = ?1",
             "SELECT id, original_path, size_bytes, quarantined_at
-             FROM safe_box WHERE status='in_box'
+             FROM safe_box
+             WHERE status='in_box' AND source_task_id = ?1
+             ORDER BY id DESC
+             LIMIT ?2 OFFSET ?3",
+        ),
+        None => (
+            "WHERE status='in_box'",
+            "SELECT id, original_path, size_bytes, quarantined_at
+             FROM safe_box
+             WHERE status='in_box'
              ORDER BY id DESC
              LIMIT ?1 OFFSET ?2",
-        )
+        ),
+    };
+    let count_sql = format!("SELECT COUNT(*) FROM safe_box {where_clause}");
+    let sum_sql = format!("SELECT COALESCE(SUM(size_bytes),0) FROM safe_box {where_clause}");
+
+    let total: i64 = match session_id {
+        Some(s) => conn
+            .query_row(&count_sql, rusqlite::params![s], |r| r.get(0)),
+        None => conn.query_row(&count_sql, [], |r| r.get(0)),
+    }
+    .map_err(|e| format!("count safe_box: {e}"))?;
+
+    let total_bytes: i64 = match session_id {
+        Some(s) => conn.query_row(&sum_sql, rusqlite::params![s], |r| r.get(0)),
+        None => conn.query_row(&sum_sql, [], |r| r.get(0)),
+    }
+    .map_err(|e| format!("sum safe_box: {e}"))?;
+
+    let mut stmt = conn
+        .prepare(items_sql)
         .map_err(|e| format!("prepare list_paged: {e}"))?;
 
-    let items: Vec<SafeBoxEntry> = stmt
-        .query_map([page_size, offset], |r| {
-            Ok(SafeBoxEntry {
-                id: r.get(0)?,
-                original_path: r.get(1)?,
-                size_bytes: r.get::<_, i64>(2).map(|v| v as u64)?,
-                quarantined_at: r.get(3)?,
-            })
-        })
-        .map_err(|e| format!("query_map list_paged: {e}"))?
-        .collect::<std::result::Result<_, _>>()
-        .map_err(|e| format!("collect list_paged: {e}"))?;
+    let items: Vec<SafeBoxEntry> = match session_id {
+        Some(s) => {
+            let mut v = Vec::new();
+            let rows = stmt
+                .query_map(rusqlite::params![s, page_size, offset], |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, i64>(2)?,
+                        r.get::<_, i64>(3)?,
+                    ))
+                })
+                .map_err(|e| format!("query_map list_paged: {e}"))?;
+            for row in rows {
+                let (id, p, sz, ts) = row.map_err(|e| format!("row: {e}"))?;
+                v.push(SafeBoxEntry {
+                    id,
+                    original_path: p,
+                    size_bytes: sz as u64,
+                    quarantined_at: ts,
+                });
+            }
+            v
+        }
+        None => {
+            let mut v = Vec::new();
+            let rows = stmt
+                .query_map(rusqlite::params![page_size, offset], |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, i64>(2)?,
+                        r.get::<_, i64>(3)?,
+                    ))
+                })
+                .map_err(|e| format!("query_map list_paged: {e}"))?;
+            for row in rows {
+                let (id, p, sz, ts) = row.map_err(|e| format!("row: {e}"))?;
+                v.push(SafeBoxEntry {
+                    id,
+                    original_path: p,
+                    size_bytes: sz as u64,
+                    quarantined_at: ts,
+                });
+            }
+            v
+        }
+    };
 
     Ok(SafeBoxPage {
         items,
@@ -445,6 +506,46 @@ pub fn list_paged(conn: &Connection, page: u32, page_size: u32) -> Result<SafeBo
         page_size,
         total_bytes: total_bytes.max(0) as u64,
     })
+}
+
+/// task-046：按 source_task_id 分组，列出有哪些「session」进过保险箱。
+///
+/// - `session_id` 实际是 safe_box.source_task_id（cleanup_task.id）；
+/// - `item_count` = 该 task 下 in_box 条数；
+/// - `created_ts` = 该 task 下最早一条的 quarantined_at；
+/// - 按 session_id DESC（最新 task 在前）。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionSummary {
+    pub session_id: i64,
+    pub item_count: i64,
+    pub created_ts: i64,
+}
+
+pub fn list_sessions(conn: &Connection) -> Result<Vec<SessionSummary>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT source_task_id, COUNT(*), MIN(quarantined_at)
+             FROM safe_box
+             WHERE status='in_box' AND source_task_id IS NOT NULL
+             GROUP BY source_task_id
+             ORDER BY source_task_id DESC",
+        )
+        .map_err(|e| format!("prepare list_sessions: {e}"))?;
+
+    let rows: Vec<SessionSummary> = stmt
+        .query_map([], |r| {
+            Ok(SessionSummary {
+                session_id: r.get(0)?,
+                item_count: r.get(1)?,
+                created_ts: r.get(2)?,
+            })
+        })
+        .map_err(|e| format!("query_map list_sessions: {e}"))?
+        .collect::<std::result::Result<_, _>>()
+        .map_err(|e| format!("collect list_sessions: {e}"))?;
+
+    Ok(rows)
 }
 
 // ===================== task-037: purge =====================
