@@ -27,6 +27,13 @@ interface SafeBoxPage {
   totalBytes: number;
 }
 
+// task-046：session 分组摘要（按 source_task_id）。
+interface SessionSummary {
+  sessionId: number;
+  itemCount: number;
+  createdTs: number;
+}
+
 interface PurgeManyResult {
   deleted: number;
   failed: number;
@@ -63,6 +70,9 @@ export default function SafeBox() {
   const [totalBytes, setTotalBytes] = useState(0);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
+  // task-046：null = 全部 session；number = 按 source_task_id 过滤。
+  const [sessionFilter, setSessionFilter] = useState<number | null>(null);
+  const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [msg, setMsg] = useState<string>("");
   const [restoringId, setRestoringId] = useState<number | null>(null);
   const [purgingId, setPurgingId] = useState<number | null>(null);
@@ -71,30 +81,57 @@ export default function SafeBox() {
   const [batchRestoring, setBatchRestoring] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
 
-  const load = useCallback(async (p: number = page, ps: number = pageSize) => {
-    setStatus("loading");
-    setMsg("");
-    try {
-      const r = await api<SafeBoxPage>("safe_box_list", { page: p, pageSize: ps });
-      setEntries(r.items);
-      setTotal(r.total);
-      setTotalBytes(r.totalBytes);
-      setPage(r.page);
-      setPageSize(r.pageSize);
-      setStatus("ok");
-    } catch (e) {
-      setEntries([]);
-      setTotal(0);
-      setTotalBytes(0);
-      setMsg(String(e));
-      setStatus("error");
-    }
-  }, [page, pageSize]);
+  const load = useCallback(
+    async (p: number = page, ps: number = pageSize, sf: number | null = sessionFilter) => {
+      setStatus("loading");
+      setMsg("");
+      try {
+        const r = await api<SafeBoxPage>("safe_box_list", {
+          page: p,
+          pageSize: ps,
+          sessionId: sf,
+        });
+        setEntries(r.items);
+        setTotal(r.total);
+        setTotalBytes(r.totalBytes);
+        setPage(r.page);
+        setPageSize(r.pageSize);
+        setStatus("ok");
+      } catch (e) {
+        setEntries([]);
+        setTotal(0);
+        setTotalBytes(0);
+        setMsg(String(e));
+        setStatus("error");
+      }
+    },
+    [page, pageSize, sessionFilter]
+  );
 
   useEffect(() => {
-    load(1, 50);
+    // 首次加载：拉一次 sessions 填下拉 + 默认拉全部。
+    void (async () => {
+      try {
+        const ss = await api<SessionSummary[]>("safe_box_list_sessions", {});
+        setSessions(ss);
+      } catch {
+        // 下拉拉失败不阻塞主列表。
+      }
+      void load(1, 50, null);
+    })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // task-046：切 session 下拉——重置 page=1、清空 selected、重拉 list。
+  const onChangeSession = useCallback(
+    (raw: string) => {
+      const next = raw === "" ? null : Number(raw);
+      setSessionFilter(next);
+      setSelected(new Set());
+      void load(1, pageSize, next);
+    },
+    [load, pageSize]
+  );
 
   // task-045：翻页——清空 selected 避免跨页残留。
   const gotoPage = useCallback(
@@ -417,6 +454,19 @@ export default function SafeBox() {
             color: "#374151",
           }}
         >
+          {/* task-046：session 过滤下拉 */}
+          <select
+            value={sessionFilter === null ? "" : String(sessionFilter)}
+            onChange={(e) => onChangeSession(e.target.value)}
+            style={{ padding: "4px 8px", fontSize: 12 }}
+          >
+            <option value="">全部 session</option>
+            {sessions.map((s) => (
+              <option key={s.sessionId} value={String(s.sessionId)}>
+                session #{s.sessionId} ({s.itemCount} 条)
+              </option>
+            ))}
+          </select>
           <button
             onClick={() => gotoPage(page - 1)}
             disabled={page <= 1 || status === "loading"}
