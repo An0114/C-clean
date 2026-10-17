@@ -43,11 +43,38 @@ jobs:
       - name: 安装依赖
         run: pnpm install --frozen-lockfile
 
+# ========== 新增：调试1 - 检查环境变量是否注入成功 ==========
+      - name: Debug - 检查签名环境变量
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if ($env:TAURI_SIGNING_PRIVATE_KEY) {
+            Write-Host "✅ TAURI_SIGNING_PRIVATE_KEY 已注入，长度 $($env:TAURI_SIGNING_PRIVATE_KEY.Length) 字符"
+          } else {
+            Write-Host "❌ TAURI_SIGNING_PRIVATE_KEY 为空！GitHub Secret 没配对"
+          }
+          if ($env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD) {
+            Write-Host "✅ TAURI_SIGNING_PRIVATE_KEY_PASSWORD 已注入"
+          } else {
+            Write-Host "⚠️  TAURI_SIGNING_PRIVATE_KEY_PASSWORD 为空（如果你生成私钥时设了密码，这就是问题）"
+          }
+
       - name: Tauri build
         run: pnpm --filter app tauri build
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+# ========== 新增：调试2 - 列出所有 bundle 产物，看看到底生成了什么 ==========
+      - name: Debug - 列出 bundle 目录所有文件
+        shell: pwsh
+        run: |
+          Write-Host "=== bundle 目录下所有文件 ==="
+          Get-ChildItem target/release/bundle -Recurse -File | ForEach-Object {
+            Write-Host $_.FullName.Replace("$PWD\", "")
+          }
 
       # task-035：根据 .msi + 其 .sig 生成 latest.json（updater 读取的元信息）。
       # 若未配置签名 secret，则跳过此步（不生成 latest.json，updater 暂不可用）。
