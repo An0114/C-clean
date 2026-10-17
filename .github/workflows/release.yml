@@ -43,23 +43,18 @@ jobs:
       - name: 安装依赖
         run: pnpm install --frozen-lockfile
 
-# ========== 新增：调试1 - 检查环境变量是否注入成功 ==========
-      - name: Debug - 检查签名环境变量
+      # ===== 新增：把手动输入的版本号写进 tauri.conf.json =====
+      - name: 注入版本号到 tauri.conf.json
         shell: pwsh
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
-          if ($env:TAURI_SIGNING_PRIVATE_KEY) {
-            Write-Host "✅ TAURI_SIGNING_PRIVATE_KEY 已注入，长度 $($env:TAURI_SIGNING_PRIVATE_KEY.Length) 字符"
-          } else {
-            Write-Host "❌ TAURI_SIGNING_PRIVATE_KEY 为空！GitHub Secret 没配对"
-          }
-          if ($env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD) {
-            Write-Host "✅ TAURI_SIGNING_PRIVATE_KEY_PASSWORD 已注入"
-          } else {
-            Write-Host "⚠️  TAURI_SIGNING_PRIVATE_KEY_PASSWORD 为空（如果你生成私钥时设了密码，这就是问题）"
-          }
+          $ver = "${{ github.event.inputs.version || github.ref_name }}".TrimStart('v')
+          # 你的 tauri.conf.json 路径（pnpm --filter app 说明在 app/ 目录下）
+          $confPath = "app/src-tauri/tauri.conf.json"
+          $conf = Get-Content $confPath -Raw | ConvertFrom-Json
+          Write-Host "原版本: $($conf.version)  →  新版本: $ver"
+          $conf.version = $ver
+          $json = $conf | ConvertTo-Json -Depth 20
+          [System.IO.File]::WriteAllText((Resolve-Path $confPath), $json)
 
       - name: Tauri build
         run: pnpm --filter app tauri build
@@ -82,12 +77,27 @@ jobs:
         shell: pwsh
         run: |
           $ver = "${{ github.event.inputs.version || github.ref_name }}".TrimStart('v')
-          $msi = Get-ChildItem target/release/bundle/msi/*.msi | Select-Object -First 1
-          $sig = Get-ChildItem "$($msi.FullName).sig" -ErrorAction SilentlyContinue
+
+          # 同时找 msi 和 nsis 下的 .sig，哪个有用用哪个
+          $sig = Get-ChildItem target/release/bundle -Recurse -Filter "*.sig" | Select-Object -First 1
           if (-not $sig) {
-            Write-Host "::warning::未找到 .sig 文件（未配置 TAURI_SIGNING_PRIVATE_KEY），跳过 latest.json 生成"
-            exit 0
+            Write-Host "::error::整个 bundle 目录下没有任何 .sig 文件，签名没执行。请看上面 Debug 步骤的输出。"
+            exit 1
           }
+
+          # 找到对应的安装包（.sig 文件名 = 安装包文件名 + .sig）
+          $installerPath = $sig.FullName -replace '\.sig$', ''
+          $installer = Get-Item $installerPath
+          Write-Host "找到签名文件: $($sig.Name)"
+          Write-Host "对应安装包: $($installer.Name)"
+          
+          # $msi = Get-ChildItem target/release/bundle/msi/*.msi | Select-Object -First 1
+          # $sig = Get-ChildItem "$($msi.FullName).sig" -ErrorAction SilentlyContinue
+          # if (-not $sig) {
+          #   Write-Host "::warning::未找到 .sig 文件（未配置 TAURI_SIGNING_PRIVATE_KEY），跳过 latest.json 生成"
+          #   exit 0
+          # }
+          
           $sigContent = Get-Content $sig.FullName -Raw
           $notes = "v$ver 发布"
           $pubDate = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
