@@ -57,7 +57,17 @@ jobs:
           [System.IO.File]::WriteAllText((Resolve-Path $confPath), $json)
 
       - name: Tauri build
-        run: pnpm --filter app tauri build
+        shell: pwsh
+        run: |
+          Write-Host "=== 构建前确认私钥环境变量 ==="
+          if ($env:TAURI_SIGNING_PRIVATE_KEY) {
+            Write-Host "✅ TAURI_SIGNING_PRIVATE_KEY 存在，长度 $($env:TAURI_SIGNING_PRIVATE_KEY.Length)"
+          } else {
+            Write-Host "❌ TAURI_SIGNING_PRIVATE_KEY 为空！"
+            exit 1
+          }
+          pnpm --filter app tauri build --verbose
+        # run: pnpm --filter app tauri build
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
