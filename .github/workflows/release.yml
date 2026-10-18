@@ -1,9 +1,12 @@
 # task-034：GitHub Release 发版 workflow。
 # task-035：加 updater 签名 + latest.json 生成。
+# fix(release): 改用 tauri-action 官方 action，修复版本号不生效 + 不生成 .sig 两个 bug。
+#
 # 两种触发方式：
 #   1. workflow_dispatch 手动触发（输入 version，如 0.1.0）
 #   2. push tag v* 自动发版（如 git tag v0.1.0 && git push --tags）
-# 产出：把 tauri build 出的 .msi + .exe 上传到 GitHub Release，并生成 signed latest.json。
+#
+# 产出：把 tauri build 出的 .msi + .exe + latest.json 上传到 GitHub Release。
 # 注意：workspace 模式下 bundle 输出在仓库根 target/release/bundle/，不是 app/src-tauri/target。
 name: Release
 
@@ -43,95 +46,33 @@ jobs:
       - name: 安装依赖
         run: pnpm install --frozen-lockfile
 
-      # ===== 新增：把手动输入的版本号写进 tauri.conf.json =====
+      # ===== 注入版本号到 tauri.conf.json =====
+      # workflow_dispatch 手动输入 或 git tag 触发，取其中一个。
+      # 用正则替换顶层 "version" 字段，不重新序列化整个 JSON，保持原文件格式。
       - name: 注入版本号到 tauri.conf.json
         shell: pwsh
         run: |
           $ver = "${{ github.event.inputs.version || github.ref_name }}".TrimStart('v')
-          # 你的 tauri.conf.json 路径（pnpm --filter app 说明在 app/ 目录下）
           $confPath = "app/src-tauri/tauri.conf.json"
-          $conf = Get-Content $confPath -Raw | ConvertFrom-Json
-          Write-Host "原版本: $($conf.version)  →  新版本: $ver"
-          $conf.version = $ver
-          $json = $conf | ConvertTo-Json -Depth 20
-          [System.IO.File]::WriteAllText((Resolve-Path $confPath), $json)
+          $content = Get-Content $confPath -Raw
+          $oldVer = [regex]::Match($content, '"version":\s*"([^"]+)"').Groups[1].Value
+          Write-Host "原版本: $oldVer  →  新版本: $ver"
+          $newContent = $content -replace '"version":\s*"[^"]*"', "`"version`": `"$ver`""
+          [System.IO.File]::WriteAllText((Resolve-Path $confPath), $newContent)
 
-      - name: Tauri build
-        shell: pwsh
-        run: |
-          Write-Host "=== 构建前确认私钥环境变量 ==="
-          if ($env:TAURI_SIGNING_PRIVATE_KEY) {
-            Write-Host "✅ TAURI_SIGNING_PRIVATE_KEY 存在，长度 $($env:TAURI_SIGNING_PRIVATE_KEY.Length)"
-          } else {
-            Write-Host "❌ TAURI_SIGNING_PRIVATE_KEY 为空！"
-            exit 1
-          }
-          pnpm --filter app tauri build --verbose
-        # run: pnpm --filter app tauri build
+      # ===== 官方 tauri-action：构建 + 签名 + latest.json 生成 + Release 上传 =====
+      # 官方 action 自动检测 TAURI_SIGNING_PRIVATE_KEY 环境变量并签名打包，
+      # 自动生成 updater 用的 latest.json，自动上传所有 bundle 产物到 Release。
+      # projectPath 指向 app 目录（pnpm monorepo 下的前端 + Tauri 壳目录）。
+      - name: Build and Release
+        uses: tauri-apps/tauri-action@v0
         env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-
-# ========== 新增：调试2 - 列出所有 bundle 产物，看看到底生成了什么 ==========
-      - name: Debug - 列出 bundle 目录所有文件
-        shell: pwsh
-        run: |
-          Write-Host "=== bundle 目录下所有文件 ==="
-          Get-ChildItem target/release/bundle -Recurse -File | ForEach-Object {
-            Write-Host $_.FullName.Replace("$PWD\", "")
-          }
-
-      # task-035：根据 .msi + 其 .sig 生成 latest.json（updater 读取的元信息）。
-      # 若未配置签名 secret，则跳过此步（不生成 latest.json，updater 暂不可用）。
-      - name: Generate latest.json
-        shell: pwsh
-        run: |
-          $ver = "${{ github.event.inputs.version || github.ref_name }}".TrimStart('v')
-
-          # 同时找 msi 和 nsis 下的 .sig，哪个有用用哪个
-          $sig = Get-ChildItem target/release/bundle -Recurse -Filter "*.sig" | Select-Object -First 1
-          if (-not $sig) {
-            Write-Host "::error::整个 bundle 目录下没有任何 .sig 文件，签名没执行。请看上面 Debug 步骤的输出。"
-            exit 1
-          }
-
-          # 找到对应的安装包（.sig 文件名 = 安装包文件名 + .sig）
-          $installerPath = $sig.FullName -replace '\.sig$', ''
-          $installer = Get-Item $installerPath
-          Write-Host "找到签名文件: $($sig.Name)"
-          Write-Host "对应安装包: $($installer.Name)"
-          
-          # $msi = Get-ChildItem target/release/bundle/msi/*.msi | Select-Object -First 1
-          # $sig = Get-ChildItem "$($msi.FullName).sig" -ErrorAction SilentlyContinue
-          # if (-not $sig) {
-          #   Write-Host "::warning::未找到 .sig 文件（未配置 TAURI_SIGNING_PRIVATE_KEY），跳过 latest.json 生成"
-          #   exit 0
-          # }
-          
-          $sigContent = Get-Content $sig.FullName -Raw
-          $notes = "v$ver 发布"
-          $pubDate = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
-          $json = @{
-            version = $ver
-            notes = $notes
-            pub_date = $pubDate
-            platforms = @{
-              "windows-x86_64" = @{
-                signature = $sigContent.Trim()
-                url = "https://github.com/An0114/C-clean/releases/download/v$ver/$($msi.Name)"
-              }
-            }
-          } | ConvertTo-Json -Depth 5
-          $json | Out-File -FilePath latest.json -Encoding utf8
-          Get-Content latest.json
-
-      - name: 创建 Release 并上传 installer + latest.json
-        uses: softprops/action-gh-release@v2
         with:
-          name: v${{ github.event.inputs.version || github.ref_name }}
-          tag_name: v${{ github.event.inputs.version || github.ref_name }}
-          files: |
-            target/release/bundle/nsis/*.exe
-            target/release/bundle/msi/*.msi
-            latest.json
-          generate_release_notes: true
+          projectPath: app
+          tagName: v__VERSION__
+          releaseName: v__VERSION__
+          generateReleaseNotes: true
+          uploadUpdaterJson: true
