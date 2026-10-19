@@ -137,10 +137,13 @@ jobs:
           Write-Host "`n=== latest.json 生成成功 ==="
           Get-Content latest.json
 
-      # ===== 上传 latest.json 到同一个 Release =====
+      # ===== 补传 .sig 签名文件 + latest.json 到 Release =====
+      # tauri-action 只上传了 .msi/.exe 安装包，.sig 文件没传，这里补全。
       # softprops/action-gh-release 会自动找到 tag 对应的 Release，追加文件上去。
-      - name: Upload latest.json to Release
+      - name: Upload .sig files and latest.json to Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ github.event.inputs.version || github.ref_name }}
-          files: latest.json
+          files: |
+            target/release/bundle/**/*.sig
+            latest.json
