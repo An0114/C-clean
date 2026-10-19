@@ -79,25 +79,41 @@ jobs:
 
       # ===== 手写生成 latest.json（updater 索引文件）=====
       # 官方 tauri-action 的 latest.json 生成逻辑有 bug，这里手写：
-      # 直接找 NSIS 目录下的 .sig 文件，生成符合 Tauri updater 规范的 latest.json。
+      # 递归扫描整个 bundle 目录找 .sig 文件，优先用 NSIS 包的签名。
       - name: Generate latest.json
         shell: pwsh
         run: |
           $ver = "${{ github.event.inputs.version || github.ref_name }}".TrimStart('v')
 
-          # 直接找 NSIS 目录下的 .sig 文件（不拼接文件名，避免格式问题）
-          $sig = Get-ChildItem target/release/bundle/nsis/*.sig | Select-Object -First 1
+          Write-Host "=== 扫描 bundle 目录结构 ==="
+          Get-ChildItem target/release/bundle -Recurse -File | ForEach-Object {
+            Write-Host $_.FullName.Replace("$PWD\", "")
+          }
+
+          # 递归找所有 .sig 文件，优先选 NSIS 目录下的（updater 标准用 NSIS）
+          $allSigs = Get-ChildItem target/release/bundle -Recurse -Filter "*.sig"
+          Write-Host "`n找到 $($allSigs.Count) 个 .sig 文件"
+
+          $sig = $allSigs | Where-Object { $_.FullName -match '\\nsis\\' } | Select-Object -First 1
           if (-not $sig) {
-            Write-Host "::error::未找到 NSIS 目录下的 .sig 签名文件"
-            Get-ChildItem target/release/bundle/nsis -Recurse | ForEach-Object { Write-Host $_.FullName }
+            Write-Host "NSIS 目录下没找到 .sig，用第一个找到的"
+            $sig = $allSigs | Select-Object -First 1
+          }
+
+          if (-not $sig) {
+            Write-Host "::error::整个 bundle 目录下都没找到 .sig 签名文件"
             exit 1
           }
 
           # 从 .sig 文件名反推对应的安装包文件名（去掉 .sig 后缀）
           $installerPath = $sig.FullName -replace '\.sig$', ''
+          if (-not (Test-Path $installerPath)) {
+            Write-Host "::error::找不到签名对应的安装包: $installerPath"
+            exit 1
+          }
           $installer = Get-Item $installerPath
 
-          Write-Host "找到签名文件: $($sig.Name)"
+          Write-Host "`n找到签名文件: $($sig.FullName)"
           Write-Host "对应安装包: $($installer.Name)"
 
           $sigContent = Get-Content $sig.FullName -Raw
@@ -118,7 +134,7 @@ jobs:
           } | ConvertTo-Json -Depth 5
 
           $json | Out-File -FilePath latest.json -Encoding utf8
-          Write-Host "=== latest.json 生成成功 ==="
+          Write-Host "`n=== latest.json 生成成功 ==="
           Get-Content latest.json
 
       # ===== 上传 latest.json 到同一个 Release =====
