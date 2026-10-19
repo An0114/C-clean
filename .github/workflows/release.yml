@@ -76,3 +76,7 @@ jobs:
           releaseName: v__VERSION__
           generateReleaseNotes: true
           uploadUpdaterJson: true
+          # updater 优先用 NSIS (.exe) 包生成 latest.json，
+          # 默认 false 会优先找 MSI，匹配不上签名就跳过生成。
+          # Tauri v2 updater 标准使用 NSIS 包，必须设为 true。
+          updaterJsonPreferNsis: true
