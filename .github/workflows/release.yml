@@ -1,12 +1,12 @@
 # task-034：GitHub Release 发版 workflow。
 # task-035：加 updater 签名 + latest.json 生成。
-# fix(release): 改用 tauri-action 官方 action，修复版本号不生效 + 不生成 .sig 两个 bug。
+# fix(release): 改回手写 build，用写私钥到文件的方式确保签名成功执行。
 #
 # 两种触发方式：
 #   1. workflow_dispatch 手动触发（输入 version，如 0.1.0）
 #   2. push tag v* 自动发版（如 git tag v0.1.0 && git push --tags）
 #
-# 产出：把 tauri build 出的 .msi + .exe + latest.json 上传到 GitHub Release。
+# 产出：把 tauri build 出的 .msi + .exe + .sig + latest.json 上传到 GitHub Release。
 # 注意：workspace 模式下 bundle 输出在仓库根 target/release/bundle/，不是 app/src-tauri/target。
 name: Release
 
@@ -60,49 +60,59 @@ jobs:
           $newContent = $content -replace '"version":\s*"[^"]*"', "`"version`": `"$ver`""
           [System.IO.File]::WriteAllText((Resolve-Path $confPath), $newContent)
 
-      # ===== 官方 tauri-action：构建 + 签名 + Release 上传 =====
-      # 官方 action 负责构建、签名、上传 .msi/.exe/.sig 到 Release。
-      # uploadUpdaterJson 关掉（官方 action 的 latest.json 生成有 bug，匹配不上 Tauri v2 的文件名格式），
-      # latest.json 由下面的手写步骤生成。
-      - name: Build and Release
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        with:
-          projectPath: app
-          tagName: v__VERSION__
-          releaseName: v__VERSION__
-          generateReleaseNotes: true
-          uploadUpdaterJson: false
+      # ===== 写入签名私钥到文件 =====
+      # 直接传环境变量（私钥内容）格式容易出问题，改写成文件再用路径引用。
+      # 这是验证过的能成功签名的方式。
+      - name: Setup signing key
+        shell: pwsh
+        run: |
+          $keyDir = "$env:USERPROFILE\.tauri"
+          New-Item -ItemType Directory -Force -Path $keyDir | Out-Null
+          $keyPath = "$keyDir\cclean.key"
+          "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}" | Out-File -FilePath $keyPath -Encoding utf8 -NoNewline
+          Write-Host "私钥已写入: $keyPath"
+          Write-Host "文件大小: $((Get-Item $keyPath).Length) bytes"
 
-      # ===== 手写生成 latest.json（updater 索引文件）=====
-      # 官方 tauri-action 的 latest.json 生成逻辑有 bug，这里手写：
+      # ===== Tauri build =====
+      # TAURI_SIGNING_PRIVATE_KEY 指向私钥文件路径（文档说它既可以是内容也可以是路径）。
+      - name: Tauri build
+        shell: pwsh
+        run: |
+          Write-Host "=== 开始构建 ==="
+          $env:TAURI_SIGNING_PRIVATE_KEY = "$env:USERPROFILE\.tauri\cclean.key"
+          pnpm --filter app tauri build --verbose
+        env:
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+      # ===== 扫描 bundle 目录，确认产物 =====
+      - name: Debug - 列出 bundle 目录所有文件
+        shell: pwsh
+        run: |
+          Write-Host "=== bundle 目录下所有文件 ==="
+          Get-ChildItem target/release/bundle -Recurse -File | ForEach-Object {
+            Write-Host $_.FullName.Replace("$PWD\", "")
+          }
+
+      # ===== 生成 latest.json（updater 索引文件）=====
       # 递归扫描整个 bundle 目录找 .sig 文件，优先用 NSIS 包的签名。
       - name: Generate latest.json
         shell: pwsh
         run: |
           $ver = "${{ github.event.inputs.version || github.ref_name }}".TrimStart('v')
 
-          Write-Host "=== 扫描 bundle 目录结构 ==="
-          Get-ChildItem target/release/bundle -Recurse -File | ForEach-Object {
-            Write-Host $_.FullName.Replace("$PWD\", "")
-          }
-
           # 递归找所有 .sig 文件，优先选 NSIS 目录下的（updater 标准用 NSIS）
           $allSigs = Get-ChildItem target/release/bundle -Recurse -Filter "*.sig"
-          Write-Host "`n找到 $($allSigs.Count) 个 .sig 文件"
+          Write-Host "找到 $($allSigs.Count) 个 .sig 文件"
+
+          if ($allSigs.Count -eq 0) {
+            Write-Host "::error::整个 bundle 目录下都没找到 .sig 签名文件，签名可能没执行"
+            exit 1
+          }
 
           $sig = $allSigs | Where-Object { $_.FullName -match '\\nsis\\' } | Select-Object -First 1
           if (-not $sig) {
             Write-Host "NSIS 目录下没找到 .sig，用第一个找到的"
             $sig = $allSigs | Select-Object -First 1
-          }
-
-          if (-not $sig) {
-            Write-Host "::error::整个 bundle 目录下都没找到 .sig 签名文件"
-            exit 1
           }
 
           # 从 .sig 文件名反推对应的安装包文件名（去掉 .sig 后缀）
@@ -113,7 +123,7 @@ jobs:
           }
           $installer = Get-Item $installerPath
 
-          Write-Host "`n找到签名文件: $($sig.FullName)"
+          Write-Host "找到签名文件: $($sig.Name)"
           Write-Host "对应安装包: $($installer.Name)"
 
           $sigContent = Get-Content $sig.FullName -Raw
@@ -137,13 +147,17 @@ jobs:
           Write-Host "`n=== latest.json 生成成功 ==="
           Get-Content latest.json
 
-      # ===== 补传 .sig 签名文件 + latest.json 到 Release =====
-      # tauri-action 只上传了 .msi/.exe 安装包，.sig 文件没传，这里补全。
-      # softprops/action-gh-release 会自动找到 tag 对应的 Release，追加文件上去。
-      - name: Upload .sig files and latest.json to Release
+      # ===== 创建 Release 并上传所有产物 =====
+      # .msi / .exe / .sig / latest.json 全部上传，确保不漏。
+      - name: Create Release and upload all artifacts
         uses: softprops/action-gh-release@v2
         with:
+          name: v${{ github.event.inputs.version || github.ref_name }}
           tag_name: v${{ github.event.inputs.version || github.ref_name }}
+          generate_release_notes: true
           files: |
-            target/release/bundle/**/*.sig
+            target/release/bundle/nsis/*.exe
+            target/release/bundle/nsis/*.sig
+            target/release/bundle/msi/*.msi
+            target/release/bundle/msi/*.sig
             latest.json
