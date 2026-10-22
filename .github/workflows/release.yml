@@ -74,14 +74,15 @@ jobs:
           Write-Host "文件大小: $((Get-Item $keyPath).Length) bytes"
 
       # ===== Tauri build =====
-      # 用 TAURI_SIGNING_PRIVATE_KEY_PATH 指向私钥文件路径（之前验证过可行的方式）。
+      # TAURI_SIGNING_PRIVATE_KEY 既可以是私钥内容，也可以是文件路径。
+      # 这里传文件路径，避免直接传内容的格式问题。
       - name: Tauri build
         shell: pwsh
         run: |
           Write-Host "=== 开始构建 ==="
           Write-Host "私钥路径: $env:USERPROFILE\.tauri\cclean.key"
           Write-Host "文件存在: $(Test-Path "$env:USERPROFILE\.tauri\cclean.key")"
-          $env:TAURI_SIGNING_PRIVATE_KEY_PATH = "$env:USERPROFILE\.tauri\cclean.key"
+          $env:TAURI_SIGNING_PRIVATE_KEY = "$env:USERPROFILE\.tauri\cclean.key"
           pnpm --filter app tauri build --verbose
         env:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
