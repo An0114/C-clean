@@ -61,17 +61,21 @@ jobs:
           [System.IO.File]::WriteAllText((Resolve-Path $confPath), $newContent)
 
       # ===== 写入签名私钥到文件 =====
-      # 直接传环境变量（私钥内容）格式容易出问题，改写成文件再用路径引用。
-      # 这是验证过的能成功签名的方式。
+      # 直接传环境变量格式容易出问题，改写成文件再用路径引用。
+      # 注意：PEM私钥需要LF换行符，Windows默认CRLF会导致解析失败。
       - name: Setup signing key
         shell: pwsh
         run: |
           $keyDir = "$env:USERPROFILE\.tauri"
           New-Item -ItemType Directory -Force -Path $keyDir | Out-Null
           $keyPath = "$keyDir\cclean.key"
-          "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}" | Out-File -FilePath $keyPath -Encoding utf8 -NoNewline
+          # 读取secret内容，把CRLF替换成LF，确保PEM格式正确
+          $keyContent = "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}"
+          $keyContent = $keyContent -replace "`r`n", "`n"
+          [System.IO.File]::WriteAllText($keyPath, $keyContent)
           Write-Host "私钥已写入: $keyPath"
           Write-Host "文件大小: $((Get-Item $keyPath).Length) bytes"
+          Write-Host "前50字符: $($keyContent.Substring(0, [Math]::Min(50, $keyContent.Length)))"
 
       # ===== Tauri build =====
       # TAURI_SIGNING_PRIVATE_KEY 既可以是私钥内容，也可以是文件路径。
