@@ -31,6 +31,11 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
+      # bugfix/task-035-release-signing：发版脚本的纯逻辑单测（node:test，无额外依赖）。
+      # 覆盖版本号解析/注入、.sig 产物校验、latest.json 生成，守住两个发版 bug 不回归。
+      - name: 发版脚本单测
+        run: node --test scripts/release-lib.test.mjs
+
       - name: Rustfmt 检查
         run: cargo fmt --all -- --check
 
@@ -54,8 +59,26 @@ jobs:
 
       # task-033：Tauri bundle 出 installer（nsis .exe + msi .msi）
       # windows-latest 默认预装 WebView2 Runtime，无需额外安装。
+      #
+      # bugfix/task-035-release-signing：tauri.conf.json 打开 bundle.createUpdaterArtifacts 后，
+      # tauri build 会强制要求私钥（缺失直接报 "A public key has been found, but no private key"）。
+      # CI 用一次性临时密钥签名，既让构建通过，又顺带守住「.sig 必须产出」这条回归。
+      - name: 生成 CI 临时签名密钥
+        shell: pwsh
+        run: |
+          $keyPath = Join-Path $env:RUNNER_TEMP "ci-signing.key"
+          pnpm --filter app exec tauri signer generate -w $keyPath -p "" --ci --force
+          if (-not (Test-Path $keyPath)) { Write-Host "::error::临时签名密钥没生成"; exit 1 }
+          "TAURI_SIGNING_PRIVATE_KEY=$keyPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "临时签名密钥已生成: $keyPath"
+
       - name: Tauri build
         run: pnpm --filter app tauri build
+
+      # 产物硬校验：安装包版本号与 tauri.conf.json 一致，且必须有成对 .sig
+      - name: 校验打包产物（版本号 + .sig）
+        run: node scripts/release-lib.mjs verify-artifacts --bundle target/release/bundle
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
@@ -63,7 +86,9 @@ jobs:
           name: cclean-windows-installer
           path: |
             target/release/bundle/nsis/*.exe
+            target/release/bundle/nsis/*.sig
             target/release/bundle/msi/*.msi
+            target/release/bundle/msi/*.sig
           if-no-files-found: error
 
       # 规则库自洽守卫：合并前挡住「手改 cache_rules.json 忘了更新 rules_meta.json」。

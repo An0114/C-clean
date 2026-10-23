@@ -24,6 +24,7 @@
   "bundle": {
     "active": true,
     "targets": ["nsis", "msi"],
+    "createUpdaterArtifacts": true,
     "resources": [
       "../../rules/cache_rules.json",
       "../../rules/rules_meta.json",
