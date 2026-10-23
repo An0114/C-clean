@@ -102,6 +102,36 @@ export function verifyArtifacts(version, files) {
   return { installers: matchedInstallers, artifact };
 }
 
+/**
+ * 规范化签名私钥，并在写盘前就校验格式（回归 2026-10-23 run 39940302050）。
+ *
+ * Tauri 是把「整个私钥文件内容」当成一整段 base64 去解的，不会替你 strip 空白。
+ * 所以文件里多一个字节都解不开：以前 release.yml 主动补了一个 "\n"，GitHub Secrets
+ * 里粘贴原文也常带尾部换行，bundler 直接报
+ *   failed to decode base64 secret key: Invalid symbol 10, offset 348
+ * 而且它是在构建跑完 8 分钟、打完 msi 之后才报的。这里统一剔掉所有空白字符，
+ * 并把「空 / 截断 / 非 base64 / 不是 minisign 私钥」全部提前到写盘时失败。
+ */
+export function normalizeSigningKey(raw) {
+  if (typeof raw !== "string" || raw.trim() === "") {
+    throw new Error("签名私钥为空：secret TAURI_SIGNING_PRIVATE_KEY 没配置或没传进来");
+  }
+  const compact = raw.replace(/\s+/g, "");
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(compact)) {
+    throw new Error(
+      "签名私钥含 base64 之外的字符，请确认 secret 内容就是 tauri signer generate 产出的 .key 文件原文"
+    );
+  }
+  if (compact.length % 4 !== 0) {
+    throw new Error(`签名私钥 base64 长度不是 4 的倍数（${compact.length} 字符），内容可能被截断`);
+  }
+  const decoded = Buffer.from(compact, "base64");
+  if (!decoded.toString("utf8").startsWith("untrusted comment:")) {
+    throw new Error("签名私钥解码后不是 minisign/rsign 私钥（缺少 untrusted comment 头）");
+  }
+  return { key: compact, decodedBytes: decoded.length };
+}
+
 /** 生成 updater 索引文件 latest.json（内容就是 Tauri 约定的 platforms 结构） */
 export function buildLatestJson({ version, installerName, signature, repo, pubDate, notes }) {
   const json = {
@@ -168,6 +198,22 @@ function main(argv) {
       const { installers, artifact } = verifyArtifacts(version, listFilesRecursive(bundleDir));
       console.log(`安装包 ${installers.length} 个，版本号均为 ${version}`);
       console.log(`签名配对：${artifact.installer} + ${artifact.sig}`);
+      return;
+    }
+    case "write-key": {
+      // 把 secret 里的私钥规范化后写盘：不加换行、不加 BOM、不加任何多余字节。
+      const envName = readFlag(argv, "from-env") ?? "TAURI_SIGNING_PRIVATE_KEY";
+      const outPath = readFlag(argv, "out");
+      if (!outPath) throw new Error("write-key 需要 --out <私钥文件路径>");
+      const { key, decodedBytes } = normalizeSigningKey(process.env[envName]);
+      fs.writeFileSync(outPath, key, { encoding: "utf8" });
+      const written = fs.statSync(outPath).size;
+      if (written !== key.length) {
+        throw new Error(`私钥写盘后字节数不对：${written} != ${key.length}（可能被追加了换行或 BOM）`);
+      }
+      console.log(
+        `私钥已写入 ${outPath}：${written} 字符 / 解码后 ${decodedBytes} 字节，无尾部换行、无 BOM`
+      );
       return;
     }
     case "generate-latest": {

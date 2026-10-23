@@ -8,6 +8,7 @@
 #   ② 配了私钥却不生成 .sig —— 根因是 tauri.conf.json 缺 bundle.createUpdaterArtifacts
 #      （Tauri 2 该字段默认 false，为 false 时 bundler 压根不会去读私钥，所以前面怎么
 #      改私钥传递方式都没反应）。补上该开关，并加「安装包必须有成对 .sig」的硬校验。
+#   ③ 私钥文件多写一个换行 → base64 解码失败 —— 见 "Setup signing key" 步骤注释。
 #
 # 两种触发方式：
 #   1. workflow_dispatch 手动触发（输入 version，如 0.2.0）
@@ -81,25 +82,23 @@ jobs:
           Select-String -Path app/src-tauri/tauri.conf.json -Pattern '"version"' | ForEach-Object { Write-Host $_.Line.Trim() }
 
       # ===== 写入签名私钥到文件 =====
-      # Tauri 2 的 TAURI_SIGNING_PRIVATE_KEY 支持「私钥内容」或「私钥文件路径」两种形态，
-      # 统一走文件路径（bundler 会先按路径读，读不到再按内容解析）。
-      # 注意：minisign 私钥需要 LF 换行，Windows 默认 CRLF 会解析失败。
+      # Tauri 把「整个文件内容」当成一整段 base64 解，多一个字节都解不开：
+      # run 39940302050 就是因为这里给私钥补了 "\n"，bundler 报
+      #   failed to decode base64 secret key: Invalid symbol 10, offset 348
+      # 而且是在 msi 都打完、第 8 分钟才报。现在交给 release-lib.mjs write-key：
+      # 剔除所有空白（CR/LF/空格）→ 校验 base64 与 minisign 头 → 原样写盘不加换行。
       - name: Setup signing key
         shell: pwsh
         env:
           SECRET_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: |
-          if ([string]::IsNullOrWhiteSpace($env:SECRET_KEY)) {
-            Write-Host "::error::secret TAURI_SIGNING_PRIVATE_KEY 为空，签名不可能成功"
-            exit 1
-          }
           $keyDir = Join-Path $env:USERPROFILE ".tauri"
           New-Item -ItemType Directory -Force -Path $keyDir | Out-Null
           $keyPath = Join-Path $keyDir "cclean.key"
-          $keyContent = ($env:SECRET_KEY -replace "`r`n", "`n").Trim() + "`n"
-          [System.IO.File]::WriteAllText($keyPath, $keyContent)
+          node scripts/release-lib.mjs write-key --from-env SECRET_KEY --out $keyPath
+          if ($LASTEXITCODE -ne 0) { exit 1 }
           "TAURI_SIGNING_PRIVATE_KEY=$keyPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          Write-Host "私钥已写入 $keyPath（$((Get-Item $keyPath).Length) bytes）"
+          Write-Host "私钥路径: $keyPath"
 
       # ===== Tauri build =====
       # bundle.createUpdaterArtifacts=true 时 bundler 才会读私钥并产出 .sig。
