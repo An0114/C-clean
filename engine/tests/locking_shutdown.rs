@@ -213,6 +213,16 @@ fn execute_retry_after_shutdown_deletes_locked_file() {
     assert_eq!(second.deleted_count, 1, "retry should delete: {second:?}");
     assert!(!target.exists(), "file should be gone");
 
+    // 真实 JSON shape（实现备注要贴实际输出，不贴设计稿）。
+    let resp = engine::execute::locking::RetryLockedResp {
+        shutdown: outcome,
+        summary: second,
+    };
+    println!(
+        "retry_locked_resp_json: {}",
+        serde_json::to_string(&resp).expect("serialize")
+    );
+
     let _ = holder.kill();
     let _ = holder.wait();
 }
