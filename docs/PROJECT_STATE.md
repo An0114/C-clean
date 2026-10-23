@@ -3,7 +3,9 @@
 > **特别声明**：本文件是项目唯一真实数据源，也是「每次任务结束必更新、必单独提交」的文件。后续所有 Agent 必须遵守：任何任务完成后都要先更新本文件，再单独提交一次（commit message 形如 `docs(state): ... (#task-00X)`），不得与业务代码混在同一个 commit。
 
 ## 当前目标
-M2 updater 闭环已端到端跑通：项目仓库已转 public（updater endpoint 直拉 Releases/latest/download/latest.json 无 401），首次 v0.1.1 发版已手动 workflow_dispatch 执行；rules 超时收敛（task-041）+ 离线模式三态（task-042）就位；safe_box 单条/批量 purge/恢复全部就绪。品牌图标决策：暂时不做，沿用 Tauri 默认占位。
+**M2 updater 正式关闭（2026-10-23）**：task-048 真机升级验证通过——已装 v0.1.0 的机器启动应用，顶部 banner 正确弹出「发现新版本 v0.1.1」+ 设置页应用更新卡片同步显示「发现新版本 0.1.1 / 新版本 0.1.1」，updater 从 check → 展示 → 引导下载安装全链路真机闭环。叠加 bugfix/task-035-release-signing 的签名/版本号修复（真实发版 run `39942401586` 产出 `.sig` + `latest.json`，pubkey keyid 一致），M2 里程碑收官。
+
+下一阶段焦点：清 M1 遗留——① 占用进程 RmShutdown（task-049，清理失败从「只报告」升级为「可处置」）；② safe_box 时间范围筛选 / 多选 session / audit_log 联表（task-050+）。品牌图标决策：暂时不做，沿用 Tauri 默认占位。
 
 ## 最近一次变更
 2026-10-11：完成 PRD / TRD / ARCHITECTURE / AGENTS / 立项决策记录全套长期基线文档，并初始化本状态白板。
@@ -180,6 +182,11 @@ M2 updater 闭环已端到端跑通：项目仓库已转 public（updater endpoi
   - **端到端验收（真实发版，非本地模拟）**：Release run `39942401586`（sha `17f5bcb`，dispatch version `0.1.5`）14 步全绿；PR CI run `39942341485` 20 道门禁全绿（含发版脚本单测、Tauri build、校验打包产物）。Release v0.1.5 资产：`C-DiskCleaner_0.1.5_x64-setup.exe` + `.exe.sig`(444B)、`..._x64_en-US.msi` + `.msi.sig`(444B)、`latest.json`(718B)——**两个 bug 的现象均消失**（此前 5 个 Release 全部零 `.sig`，v0.1.1/v0.1.2 资产名还是 `_0.1.0_`）。
   - **签名配对已证实**：v0.1.5 的 `.exe.sig` 内层 keyid = `52ACA0C8DAA19EB3`，与 `plugins.updater.pubkey` 的 keyid **完全一致**（此前记的 `B39EA1DAC8A0AC52` 是字节序反读）。`latest.json` 的 `version=0.1.5`、`url` 指向 v0.1.5 的 nsis 包、`signature` 与 `.sig` 资产前 40 字符一致。
   - 遗留（本次未改，待定）：`softprops/action-gh-release` 未指定 `target_commitish`，GitHub 默认把 tag 打到默认分支，导致 `v0.1.5` tag 指向 main `bfe9414` 而非构建提交 `17f5bcb`（资产下载不受影响，属溯源问题；一行 `target_commitish: ${{ github.sha }}` 可修，但需再发一版验证，按最小改动原则本次不动）。
+2026-10-23：task-048 完成（用户真机验证通过）——v0.1.1 升级验证收尾，**M2 正式关闭**：
+  - 验证方式：用户本机已装 v0.1.0，直接启动应用观察 updater 行为（非 CDP 模拟，真实安装态 + 真实 GitHub Release 源）。
+  - 结果（截图证据）：① 顶部蓝底 banner「发现新版本 v0.1.1 / v0.1.1 发布」正确弹出，含「立即更新」「稍后」双按钮；② 设置页「应用更新」卡片同步显示「更新状态：发现新版本 0.1.1」「新版本：0.1.1」，与 banner 一致；③ 同页规则库卡片仍为「规则库已是最新（v1.0.0）」，说明应用更新通道与规则库更新通道互不串台。
+  - 结论：task-036 启动自动 check + 非阻塞 banner、task-035 plugins.updater 配置 + `latest.json` 直拉、bugfix/task-035 签名修复三者链路在真机安装态下一致成立；M2 无遗留阻塞项。
+  - 后续（非阻塞）：banner「立即更新」点击后的下载安装进度反馈、差量更新留 M3+；`target_commitish` 溯源修正留发版类任务。
 
 ## 已完成事项
 - [x] 项目立项与仓库初始化（commit 67990f5 / 4972f9d）
@@ -230,9 +237,12 @@ M2 updater 闭环已端到端跑通：项目仓库已转 public（updater endpoi
 - [x] 037：safe_box purge 单条永久删除——后端 purge_item + Tauri 命令 + 前端红色按钮 + confirm
 - [x] 038：safe_box 批量 purge——后端 purge_many + Tauri 命令 + 前端 checkbox 列 + 批量删除按钮
 - [x] 039：safe_box 批量恢复——后端 restore_many + Tauri 命令 + 前端绿色批量恢复按钮（复用 task-038 checkbox）
+- [x] 048：v0.1.1 真机升级验证收尾——已装 v0.1.0 的机器启动应用，updater banner 正确弹出「发现新版本 v0.1.1」（用户真机验证通过，2026-10-23），**M2 正式关闭**
+
+> 注：040~047 的完成明细未回填本清单（历史遗漏），以「最近一次变更」段与 `tasks/040-*.md`~`tasks/047-*.md` 为准。
 
 ## 已知问题
-- [B 中] task-021 仅做「报告」（who_is_locking 结果写 audit_log + 返回前端），**未实现 RmShutdown/RmRestart（请求关闭占用进程）**，前端 UI toast 也未接；notepad 端到端真机验证 CI 用例 `#[ignore]`。请求关闭与前端展示留 task-022+。
+- [B 中] task-021 仅做「报告」（who_is_locking 结果写 audit_log + 返回前端），**未实现 RmShutdown/RmRestart（请求关闭占用进程）**，前端 UI toast 也未接（`Items.tsx` 的 `cleanup_execute` 返回值被直接丢弃，`ExecResult.lockingProcesses` 根本没渲染）；notepad 端到端真机验证 CI 用例 `#[ignore]`。**已派发 task-049**（`tasks/049-rm-shutdown-locking-processes.md`）：RmShutdown + 前端占用进程提示 + 一键「关闭占用并重试」；RmRestart（自动重启被关进程）本批不做，留 task-050+。
 - [B 低] ~~task-018 list 边界：无分页（保险箱总量 ≤5GB，条目数有限）、无 session 过滤（先返回全部）、无单条 purge 命令、未接前端 React UI~~（~~无分页~~：task-045 已落地 list_paged LIMIT/OFFSET + 前端分页栏；~~无 session 过滤~~：task-046 已落地 session_id 可选参数 + list_sessions + 前端下拉）。真多了再加 时间范围筛选 / 多选 session / audit_log 联表 留 task-047+。
 - [B 低] ~~task-017 restore 边界：不自动建原父目录（ParentMissing 直接报错让用户手动处理）、不支持批量恢复、未加 `restored_at` 审计列（DELETE 行 + audit_log action='restore' 已留痕）。批量恢复与父目录自动 mkdir 留后续。~~ **已由 task-043 解决**（restore_from_safe_box 在父目录缺失时自动 `std::fs::create_dir_all`，mkdir 失败返回「无法创建父目录 <path>: <os error>」；ParentMissing 枚举变体保留但不再返回）。遗留：未加 `restored_at` 审计列。
 - [B 中] task-016 保险箱原子性：`fs::rename` 成功但 `INSERT INTO safe_box` 失败时，文件已在 box 目录但 DB 无行——当前简单报错，不做回滚；跨盘 rename 走 copy+remove 也非原子。补偿：下次 enforce_quota 扫到磁盘上有孤儿文件时会 NotFound 直接标 purged（不会重复占用 quota）。
@@ -251,7 +261,12 @@ M2 updater 闭环已端到端跑通：项目仓库已转 public（updater endpoi
 - [B 高] ~~发版 workflow 两个 bug：① 安装包版本号永远 0.1.0，不随 workflow_dispatch 输入变化；② 配了签名私钥却不生成 .sig（多轮改私钥传递方式均无效）。~~ **已由 bugfix/task-035-release-signing 修复（2026-10-23，状态 testing，待 CI 全绿 + 测试/评审复核）**：根因分别是「版本注入无校验、失败静默」与「`tauri.conf.json` 缺 `bundle.createUpdaterArtifacts`（Tauri 2 默认 false，为 false 时 bundler 不读私钥）」；修法与证据见「最近一次变更」。遗留：真机端到端升级验证（装旧版 → 检查更新 → 下载安装 → 重启到新版）需发版后人工跑。~~GitHub Secret `TAURI_SIGNING_PRIVATE_KEY` / `_PASSWORD` 必须与 `plugins.updater.pubkey` 配对（本地 `~/.tauri/cclean.key.pub` 与仓内 pubkey 不是同一对，CI 侧 secret 需用户自查）~~ **已证实配对（2026-10-23）**：v0.1.5 的 `.exe.sig` keyid `52ACA0C8DAA19EB3` 与 `plugins.updater.pubkey` 一致，真实发版 run `39942401586` 全绿、产物含 `.sig` + `latest.json`。
 
 ## 下一步计划
-M2 updater 端到端已闭环（仓库 public + 首次 v0.1.1 发版已手动执行 + rules 超时/离线降级/手动回滚就位）；品牌图标决策暂时不做；task-043 safe_box restore 自动建父目录已闭环；task-044 rules_rollback 已闭环；task-045 safe_box list 分页已闭环；task-046 safe_box session 过滤已闭环；task-047 rules.applyUpdate 前端确认弹窗已闭环。下一轮进入：①派发 task-048：v0.1.1 真机升级验证收尾——用户在已装 v0.1.0 的机器上启动应用，观察 updater banner 是否正确弹出 v0.1.1，验证后正式关闭 M2 ②继续清 M1 遗留（L3 占用进程 RmShutdown 可选）③safe_box 时间范围筛选 / 多选 session / audit_log 联表 留 task-049+。
+M2 updater 已正式关闭（task-048 真机验证通过）；task-043~047 全部闭环。下一轮优先级：
+
+1. **① 派发 task-049：占用进程 RmShutdown**——`who_is_locking` 从只读查询升级为可请求关闭（`RmShutdown` + 危险进程白名单护栏），前端把 `lockingProcesses` 渲染出来并提供「关闭占用进程并重试」，把「清理失败只能看原因」补成「可处置」。任务书：`tasks/049-rm-shutdown-locking-processes.md`。
+2. ② safe_box 增强：时间范围筛选 / 多选 session / audit_log 联表（task-050+）。
+3. ③ 发版类小修：`release.yml` 补 `target_commitish: ${{ github.sha }}`（tag 溯源，需再发一版验证）。
+4. ④ 更新体验：banner「立即更新」的下载进度反馈 / 差量更新（M3+，非阻塞）。
 
 ## 当前负责人 Agent
 DocsKeeper（文档与状态管家）
@@ -519,6 +534,8 @@ DocsKeeper（文档与状态管家）
 | 41afc60 | #task-047 | docs(task): 新增任务047-applyUpdate 确认弹窗 |
 | 36c9f76 | #task-047 | feat(frontend): Settings 点「应用更新」前 window.confirm 嵌入版本号 |
 | （本次） | #task-047 | docs(state): 任务047完成，rules applyUpdate 前端确认弹窗就绪 |
+| （本次） | #task-048 | docs(state): 任务048真机验证通过，v0.1.1 updater banner 正确弹出，M2 关闭 |
+| （本次） | #task-049 | docs(task): 新增任务049-RmShutdown 占用进程处置 |
 
 ---
 变更轨迹：
@@ -610,3 +627,5 @@ DocsKeeper（文档与状态管家）
 - 2026-10-16  task-045  safe_box_list 分页（LIMIT/OFFSET + total + 前端分页栏）
 - 2026-10-16  task-046  safe_box list session 过滤（可选 session_id 参数 + list_sessions + 前端下拉）
 - 2026-10-16  task-047  rules.applyUpdate 前端 window.confirm 弹窗（嵌入版本号 + 回滚提示）
+- 2026-10-23  task-048  v0.1.1 真机升级验证通过（banner 弹出 v0.1.1 + 设置页应用更新卡片一致），M2 正式关闭
+- 2026-10-23  task-049  派发占用进程 RmShutdown（who_is_locking 升级为可请求关闭 + 前端占用提示/一键重试）
