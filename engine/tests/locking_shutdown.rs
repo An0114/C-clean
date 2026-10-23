@@ -139,3 +139,80 @@ fn shutdown_locked_file_closes_holder() {
     let _ = child.kill();
     let _ = child.wait();
 }
+
+/// task-049 端到端：占用 → 首次删除失败并报出占用进程 → 请求关闭 → 重试删除成功。
+///
+/// 这条用例走的是 `cleanup_retry_locked` 命令内部的**同一段编排**
+/// （`execute_items` + `SafeBoxDeleter`），因此它的通过可以替代 GUI 点击，
+/// 作为「关闭后重试真的能删掉文件」的后端证据。
+#[test]
+#[cfg(windows)]
+#[ignore = "真机冒烟：需要真实外部进程占用，RmShutdown 最坏等 30s，CI 跳过"]
+fn execute_retry_after_shutdown_deletes_locked_file() {
+    use engine::db::conn::open;
+    use engine::execute::executor::execute_items;
+    use engine::execute::safe_box::SafeBoxDeleter;
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let conn = open(tmp.path()).expect("open db");
+    let box_dir = tmp.path().join("safe_box");
+    std::fs::create_dir_all(&box_dir).expect("mkdir safe_box");
+
+    let target = tmp.path().join("locked_e2e_049.txt");
+    std::fs::write(&target, b"payload").expect("write");
+    let path = target.to_string_lossy().to_string();
+
+    conn.execute(
+        "INSERT INTO scan_session (started_at, status, scope) VALUES (1000, 'completed', 'full')",
+        [],
+    )
+    .expect("insert session");
+    let sid = conn.last_insert_rowid();
+    conn.execute(
+        "INSERT INTO cleanup_item
+         (session_id, module_code, category, path, size_bytes, risk_level, description)
+         VALUES (?1, 'A', 'smoke049', ?2, 7, 'L1', 'task-049 e2e')",
+        rusqlite::params![sid, path],
+    )
+    .expect("insert item");
+    let item_id = conn.last_insert_rowid();
+
+    // 外部进程独占持有句柄。
+    let script = format!(
+        "$f=[System.IO.File]::Open('{}','Open','ReadWrite','None'); Start-Sleep -Seconds 90; $f.Close()",
+        path.replace('\\', "\\\\")
+    );
+    let mut holder = std::process::Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .spawn()
+        .expect("spawn holder");
+    std::thread::sleep(std::time::Duration::from_secs(4));
+
+    // 第一次删除：必然失败，且要报出占用进程。
+    let first = execute_items(&[item_id], &conn, &[], |_id| {
+        Box::new(SafeBoxDeleter::new(&box_dir, &conn, None))
+    });
+    println!("first: {first:?}");
+    assert_eq!(first.deleted_count, 0);
+    assert!(
+        !first.results[0].locking_processes.is_empty(),
+        "expected locking processes in first attempt: {first:?}"
+    );
+
+    // 请求关闭占用进程。
+    let outcome = shutdown_locking_processes(&path).expect("shutdown ok");
+    println!("shutdown: {outcome:?}");
+    assert!(!outcome.closed.is_empty(), "closed={outcome:?}");
+
+    // 重试删除（RmShutdown 返回后句柄可能还没释放，给一点收尾时间）。
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    let second = execute_items(&[item_id], &conn, &[], |_id| {
+        Box::new(SafeBoxDeleter::new(&box_dir, &conn, None))
+    });
+    println!("second: {second:?}");
+    assert_eq!(second.deleted_count, 1, "retry should delete: {second:?}");
+    assert!(!target.exists(), "file should be gone");
+
+    let _ = holder.kill();
+    let _ = holder.wait();
+}
