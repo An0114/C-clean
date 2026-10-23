@@ -13,9 +13,17 @@ import {
   findUpdaterArtifact,
   verifyArtifacts,
   buildLatestJson,
+  normalizeSigningKey,
 } from "./release-lib.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+// 构造一个格式合法但内容是假的 minisign 私钥（真实密钥绝不会出现在测试里）。
+// 结构与 tauri signer generate 产出的 .key 一致：base64 单行，解码后以
+// "untrusted comment: rsign encrypted secret key" 开头。
+const FAKE_KEY = Buffer.from(
+  "untrusted comment: rsign encrypted secret key\nRWRTY0Iy9AinLHtestpseudokeymaterialonly==\n"
+).toString("base64");
 
 test("normalizeVersion：手动输入的版本号优先，去掉 v 前缀", () => {
   assert.equal(normalizeVersion("0.2.0", "main"), "0.2.0");
@@ -173,6 +181,42 @@ test("buildLatestJson：URL 指向本次版本对应的安装包，签名为原�
   assert.equal(parsed.platforms["windows-x86_64"].signature, "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZQ==");
 });
 
+// ===== 签名私钥规范化（回归 run 39940302050：私钥尾部多一个换行）=====
+test("normalizeSigningKey：剔除尾部换行（run 39940302050 的直接成因）", () => {
+  // 现场证据：私钥 348 字符 + 我们补的 "\n" = 349 字节，
+  // bundler 报 "Invalid symbol 10, offset 348"。规范化后必须回到 348。
+  const { key, decodedBytes } = normalizeSigningKey(`${FAKE_KEY}\n`);
+  assert.equal(key, FAKE_KEY);
+  assert.equal(key.length, FAKE_KEY.length);
+  assert.equal(/\s/.test(key), false);
+  assert.ok(decodedBytes > 0);
+});
+
+test("normalizeSigningKey：CRLF / 行内空白 / 首尾空格全部剔除", () => {
+  const messy = `  ${FAKE_KEY.slice(0, 40)}\r\n${FAKE_KEY.slice(40, 80)} ${FAKE_KEY.slice(80)}\r\n\r\n  `;
+  assert.equal(normalizeSigningKey(messy).key, FAKE_KEY);
+  assert.equal(normalizeSigningKey(`\r\n${FAKE_KEY}\r\n`).key, FAKE_KEY);
+});
+
+test("normalizeSigningKey：规范化结果能被 base64 还原成 minisign 私钥", () => {
+  const { key } = normalizeSigningKey(`${FAKE_KEY}\n`);
+  const decoded = Buffer.from(key, "base64").toString("utf8");
+  assert.ok(decoded.startsWith("untrusted comment:"));
+});
+
+test("normalizeSigningKey：空值 / 截断 / 非 base64 / 格式不对都直接报错", () => {
+  assert.throws(() => normalizeSigningKey(""), /签名私钥为空/);
+  assert.throws(() => normalizeSigningKey("   \n  "), /签名私钥为空/);
+  assert.throws(() => normalizeSigningKey(undefined), /签名私钥为空/);
+  // 截断：长度不是 4 的倍数
+  assert.throws(() => normalizeSigningKey(FAKE_KEY.slice(0, -1)), /不是 4 的倍数/);
+  // 非 base64 字符
+  assert.throws(() => normalizeSigningKey("not-a-key!!!!"), /base64 之外的字符/);
+  // 能解码但不是 minisign 私钥
+  const notAKey = Buffer.from("hello world, this is not a key").toString("base64");
+  assert.throws(() => normalizeSigningKey(notAKey), /untrusted comment/);
+});
+
 // ===== 契约测试：守住这次两个 bug 的修复不被回退 =====
 test("契约：tauri.conf.json 必须开启 createUpdaterArtifacts（否则 .sig 不会生成）", () => {
   const conf = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, "app/src-tauri/tauri.conf.json"), "utf8"));
@@ -191,4 +235,12 @@ test("契约：release.yml 必须注入私钥、校验产物版本号并上传 .
   assert.match(yml, /TAURI_SIGNING_PRIVATE_KEY/);
   assert.match(yml, /release-lib\.mjs verify-artifacts/);
   assert.match(yml, /nsis\/\*\.sig/);
+});
+
+test("契约：release.yml 写私钥必须走 write-key，不许再手工拼换行", () => {
+  const yml = fs.readFileSync(path.join(REPO_ROOT, ".github/workflows/release.yml"), "utf8");
+  assert.match(yml, /release-lib\.mjs write-key --from-env SECRET_KEY/);
+  // 回归防线：任何「私钥内容 + 换行」的写法都会让 base64 解码失败
+  assert.doesNotMatch(yml, /\+ "`n"/);
+  assert.doesNotMatch(yml, /TAURI_SIGNING_PRIVATE_KEY_PASSWORD[^\n]*\n[^\n]*Trim\(\) \+/);
 });
