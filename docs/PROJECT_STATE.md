@@ -5,7 +5,7 @@
 ## 当前目标
 **M2 updater 正式关闭（2026-10-23）**：task-048 真机升级验证通过——已装 v0.1.0 的机器启动应用，顶部 banner 正确弹出「发现新版本 v0.1.1」+ 设置页应用更新卡片同步显示「发现新版本 0.1.1 / 新版本 0.1.1」，updater 从 check → 展示 → 引导下载安装全链路真机闭环。叠加 bugfix/task-035-release-signing 的签名/版本号修复（真实发版 run `39942401586` 产出 `.sig` + `latest.json`，pubkey keyid 一致），M2 里程碑收官。
 
-下一阶段焦点：清 M1 遗留——① 占用进程 RmShutdown（task-049，清理失败从「只报告」升级为「可处置」）；② safe_box 时间范围筛选 / 多选 session / audit_log 联表（task-050+）。品牌图标决策：暂时不做，沿用 Tauri 默认占位。
+下一阶段焦点：**task-049 已完成（feature 分支待评审）**——占用进程从「只报告」升级为「可处置」（RmShutdown + 危险进程护栏 + 前端一键关闭并重试）。下一项：safe_box 时间范围筛选 / 多选 session / audit_log 联表（task-050+）。品牌图标决策：暂时不做，沿用 Tauri 默认占位。
 
 ## 最近一次变更
 2026-10-11：完成 PRD / TRD / ARCHITECTURE / AGENTS / 立项决策记录全套长期基线文档，并初始化本状态白板。
@@ -188,6 +188,16 @@
   - 结论：task-036 启动自动 check + 非阻塞 banner、task-035 plugins.updater 配置 + `latest.json` 直拉、bugfix/task-035 签名修复三者链路在真机安装态下一致成立；M2 无遗留阻塞项。
   - 后续（非阻塞）：banner「立即更新」点击后的下载安装进度反馈、差量更新留 M3+；`target_commitish` 溯源修正留发版类任务。
 
+2026-10-23：task-049 完成（feature/task-049-rm-shutdown-locking，状态 testing）——占用进程从「只报告」升级为「可处置」：
+  - 后端 `engine/src/execute/locking.rs`：抽出 `RmSession`（`RmEndSession` 放进 `Drop`，任何路径都不泄漏会话）；新增 `shutdown_locking_processes`（单资源会话 + `RmGetList` 护栏过滤 + `RmShutdown(RmForceShutdown)`，无占用/全拒时**不调** `RmShutdown`）；新增 `is_protected_process` 纯函数（服务 / `pid<=4` / 自身 / 12 条保护名单，含 RM 应用友好名兜底）。
+  - **顺带修掉一个既有 bug**：`who_is_locking` 的 probe 用 `Error::code()` 与 `234` 比较，实际拿到 HRESULT `0x800700EA`，导致「真有进程占用时直接返回 Err」——task-020/021 的占用检测在真机上从未生效，`ExecResult.lockingProcesses` 一直是空的。
+  - 命令层：新增 `cleanup_retry_locked`（`RmShutdown` 阻塞 FFI 走 `spawn_blocking`，closed/refused 按 pid 去重，删除复用 `execute_items` 同一段编排，白名单二次校验照常）。
+  - 前端 `Items.tsx`：`cleanup_execute` 返回值不再丢弃，失败明细展示「路径 — 原因 — 占用进程 `app.exe (PID x)`」；有占用时出现「关闭占用进程并重试」，`window.confirm` 列出进程清单 + 「未保存的数据可能丢失」；结果条展示「已关闭 N 个 / 受保护未关闭清单 / 仍失败 Y 项」；cleaning/retrying/previewing 三态互斥。
+  - 门禁：fmt 0 / clippy 0 / `cargo test -p engine` 183 passed + 5 ignored（合计 188，基线 173，+15）/ pnpm lint 0 / pnpm test 28 / pnpm build 176.39 kB（gzip 56.25 kB）。`pnpm tauri build` 出包成功（NSIS 4.01 MiB / MSI 5.80 MiB）。
+  - **真机证据（后端全链路）**：`engine/tests/locking_shutdown.rs::execute_retry_after_shutdown_deletes_locked_file`（`--ignored` 手动跑）PASS——首次删除 `deleted=false` + `lockingProcesses=[PID]` → `closed=[PID]` → 重试 `deleted=true, bytesFreed=7`，文件消失。
+  - **未取得**：GUI 点击截图与安装态冒烟。原因：Tauri 显式传 `additionalBrowserArgs` 使 WebView2 忽略 `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS`（CDP 9222 开不出来，改 `tauri.conf.json` 属禁止范围）；且当前会话无活动桌面合成（`PrintWindow`/`BitBlt` 客户区全黑）；安装器执行被环境拦截（exit 126）。已登记为遗留项，交测试 Agent 在真机安装态补齐。
+  - 详见 `tasks/049-rm-shutdown-locking-processes.md` 的「实现备注」。
+
 ## 已完成事项
 - [x] 项目立项与仓库初始化（commit 67990f5 / 4972f9d）
 - [x] 固化立项阶段 8 项关键决策：Tauri 无 Plan B / Cargo.lock 入库 / 保险箱 5GB FIFO / 规则库 GitHub Raw+SHA-256 / 不买 EV 签名 / 仅 Windows / 按业务模块 A~F 切分 / PROJECT_STATE 由 M0 当天首写（commit c0bdf05）
@@ -237,12 +247,14 @@
 - [x] 037：safe_box purge 单条永久删除——后端 purge_item + Tauri 命令 + 前端红色按钮 + confirm
 - [x] 038：safe_box 批量 purge——后端 purge_many + Tauri 命令 + 前端 checkbox 列 + 批量删除按钮
 - [x] 039：safe_box 批量恢复——后端 restore_many + Tauri 命令 + 前端绿色批量恢复按钮（复用 task-038 checkbox）
+- [x] 049：占用进程 RmShutdown——后端 `shutdown_locking_processes` + 危险进程护栏 + `cleanup_retry_locked` 命令 + Items 失败明细与「关闭占用进程并重试」（feature 分支待评审）
 - [x] 048：v0.1.1 真机升级验证收尾——已装 v0.1.0 的机器启动应用，updater banner 正确弹出「发现新版本 v0.1.1」（用户真机验证通过，2026-10-23），**M2 正式关闭**
 
 > 注：040~047 的完成明细未回填本清单（历史遗漏），以「最近一次变更」段与 `tasks/040-*.md`~`tasks/047-*.md` 为准。
 
 ## 已知问题
-- [B 中] task-021 仅做「报告」（who_is_locking 结果写 audit_log + 返回前端），**未实现 RmShutdown/RmRestart（请求关闭占用进程）**，前端 UI toast 也未接（`Items.tsx` 的 `cleanup_execute` 返回值被直接丢弃，`ExecResult.lockingProcesses` 根本没渲染）；notepad 端到端真机验证 CI 用例 `#[ignore]`。**已派发 task-049**（`tasks/049-rm-shutdown-locking-processes.md`）：RmShutdown + 前端占用进程提示 + 一键「关闭占用并重试」；RmRestart（自动重启被关进程）本批不做，留 task-050+。
+- [B 中] ~~task-021 仅做「报告」（who_is_locking 结果写 audit_log + 返回前端），未实现 RmShutdown，前端 `cleanup_execute` 返回值被直接丢弃、`ExecResult.lockingProcesses` 没渲染~~ **已由 task-049 解决**（`shutdown_locking_processes` + 护栏 + `cleanup_retry_locked` + Items 失败明细/一键重试）。**并顺带修掉 task-020 的 probe 判断 bug**（`Error::code()` 是 HRESULT，与 `234` 比较恒不等 → 真有占用时直接 Err，占用列表一直是空的）。
+- [B 中] task-049 遗留：① `RmRestart`（关闭后自动重启进程）未做，用户需自行重开；② `RmShutdown` 阻塞最坏 ~30s（目标不响应关闭请求时等 RM 超时），期间前端只有「关闭并重试中…」无进度；③ RM 会话是「按资源」而非「按进程」，同一文件同时被保护进程与普通进程占用时无法只关普通进程（`closed` 不会记保护进程，但 `explorer.exe` 会随会话被请求关闭，Windows 会自动重启）；④ GUI 真机截图与 NSIS 安装态冒烟未取得（环境无活动桌面 + 安装器被拦截），需测试 Agent 补。
 - [B 低] ~~task-018 list 边界：无分页（保险箱总量 ≤5GB，条目数有限）、无 session 过滤（先返回全部）、无单条 purge 命令、未接前端 React UI~~（~~无分页~~：task-045 已落地 list_paged LIMIT/OFFSET + 前端分页栏；~~无 session 过滤~~：task-046 已落地 session_id 可选参数 + list_sessions + 前端下拉）。真多了再加 时间范围筛选 / 多选 session / audit_log 联表 留 task-047+。
 - [B 低] ~~task-017 restore 边界：不自动建原父目录（ParentMissing 直接报错让用户手动处理）、不支持批量恢复、未加 `restored_at` 审计列（DELETE 行 + audit_log action='restore' 已留痕）。批量恢复与父目录自动 mkdir 留后续。~~ **已由 task-043 解决**（restore_from_safe_box 在父目录缺失时自动 `std::fs::create_dir_all`，mkdir 失败返回「无法创建父目录 <path>: <os error>」；ParentMissing 枚举变体保留但不再返回）。遗留：未加 `restored_at` 审计列。
 - [B 中] task-016 保险箱原子性：`fs::rename` 成功但 `INSERT INTO safe_box` 失败时，文件已在 box 目录但 DB 无行——当前简单报错，不做回滚；跨盘 rename 走 copy+remove 也非原子。补偿：下次 enforce_quota 扫到磁盘上有孤儿文件时会 NotFound 直接标 purged（不会重复占用 quota）。
@@ -261,12 +273,13 @@
 - [B 高] ~~发版 workflow 两个 bug：① 安装包版本号永远 0.1.0，不随 workflow_dispatch 输入变化；② 配了签名私钥却不生成 .sig（多轮改私钥传递方式均无效）。~~ **已由 bugfix/task-035-release-signing 修复（2026-10-23，状态 testing，待 CI 全绿 + 测试/评审复核）**：根因分别是「版本注入无校验、失败静默」与「`tauri.conf.json` 缺 `bundle.createUpdaterArtifacts`（Tauri 2 默认 false，为 false 时 bundler 不读私钥）」；修法与证据见「最近一次变更」。遗留：真机端到端升级验证（装旧版 → 检查更新 → 下载安装 → 重启到新版）需发版后人工跑。~~GitHub Secret `TAURI_SIGNING_PRIVATE_KEY` / `_PASSWORD` 必须与 `plugins.updater.pubkey` 配对（本地 `~/.tauri/cclean.key.pub` 与仓内 pubkey 不是同一对，CI 侧 secret 需用户自查）~~ **已证实配对（2026-10-23）**：v0.1.5 的 `.exe.sig` keyid `52ACA0C8DAA19EB3` 与 `plugins.updater.pubkey` 一致，真实发版 run `39942401586` 全绿、产物含 `.sig` + `latest.json`。
 
 ## 下一步计划
-M2 updater 已正式关闭（task-048 真机验证通过）；task-043~047 全部闭环。下一轮优先级：
+M2 updater 已关闭（task-048）；task-049 已完成并移交评审。下一轮优先级：
 
-1. **① 派发 task-049：占用进程 RmShutdown**——`who_is_locking` 从只读查询升级为可请求关闭（`RmShutdown` + 危险进程白名单护栏），前端把 `lockingProcesses` 渲染出来并提供「关闭占用进程并重试」，把「清理失败只能看原因」补成「可处置」。任务书：`tasks/049-rm-shutdown-locking-processes.md`。
-2. ② safe_box 增强：时间范围筛选 / 多选 session / audit_log 联表（task-050+）。
-3. ③ 发版类小修：`release.yml` 补 `target_commitish: ${{ github.sha }}`（tag 溯源，需再发一版验证）。
-4. ④ 更新体验：banner「立即更新」的下载进度反馈 / 差量更新（M3+，非阻塞）。
+1. **① 评审 task-049**（`feature/task-049-rm-shutdown-locking`）：重点复核护栏有效性、`RmShutdown` 会话粒度限制、以及 `who_is_locking` probe bug 的修复是否引入回归。
+2. **② 派发 task-050：safe_box 增强**——时间范围筛选 / 多选 session / audit_log 联表（`list_paged` 已支持 session_id 与分页，本轮加时间区间与联表视图）。
+3. ③ 测试侧补齐：task-049 的 GUI 截图（红条明细 / confirm 文案 / 绿条结果）与 NSIS 安装态冒烟；`RmRestart` 是否要做由产品侧拍板（当前用户需自行重开被关进程）。
+4. ④ 发版类小修：`release.yml` 补 `target_commitish: ${{ github.sha }}`（tag 溯源，需再发一版验证）。
+5. ⑤ 更新体验：banner「立即更新」的下载进度反馈 / 差量更新（M3+，非阻塞）。
 
 ## 当前负责人 Agent
 DocsKeeper（文档与状态管家）
@@ -536,6 +549,14 @@ DocsKeeper（文档与状态管家）
 | （本次） | #task-047 | docs(state): 任务047完成，rules applyUpdate 前端确认弹窗就绪 |
 | （本次） | #task-048 | docs(state): 任务048真机验证通过，v0.1.1 updater banner 正确弹出，M2 关闭 |
 | （本次） | #task-049 | docs(task): 新增任务049-RmShutdown 占用进程处置 |
+| 20d1b04 | #task-049 | feat(engine): 新增 shutdown_locking_processes 与危险进程护栏（含 who_is_locking probe bug 修复） |
+| 081d0ea | #task-049 | test(engine): 补 RmShutdown 护栏与无占用用例 |
+| f3a6828 | #task-049 | feat(tauri): 新增 cleanup_retry_locked 命令 |
+| 69b6b33 | #task-049 | feat(frontend): 清理失败展示占用进程并支持关闭后重试 |
+| 7cfe53e | #task-049 | test(engine): 补关闭后重试删除的端到端用例 |
+| 3b5cddd | #task-049 | test(engine): 输出 RetryLockedResp 真实 JSON 便于契约核对 |
+| 1b467ba | #task-049 | docs(task): 补任务049实现备注 |
+| （本次） | #task-049 | docs(state): 任务049完成，占用进程 RmShutdown 就绪 |
 
 ---
 变更轨迹：
@@ -629,3 +650,4 @@ DocsKeeper（文档与状态管家）
 - 2026-10-16  task-047  rules.applyUpdate 前端 window.confirm 弹窗（嵌入版本号 + 回滚提示）
 - 2026-10-23  task-048  v0.1.1 真机升级验证通过（banner 弹出 v0.1.1 + 设置页应用更新卡片一致），M2 正式关闭
 - 2026-10-23  task-049  派发占用进程 RmShutdown（who_is_locking 升级为可请求关闭 + 前端占用提示/一键重试）
+- 2026-10-23  task-049  RmShutdown 落地：shutdown_locking_processes + 危险进程护栏 + cleanup_retry_locked + Items 失败明细/一键关闭重试；顺带修复 who_is_locking probe 判断（HRESULT vs Win32 码）导致占用列表恒空的 bug；后端全链路真机 PASS，GUI/安装态冒烟因环境限制留测试 Agent
