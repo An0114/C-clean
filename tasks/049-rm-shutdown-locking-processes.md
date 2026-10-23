@@ -239,3 +239,123 @@ DevAgent 交付物（执行结果）：
 4. **本任务文档本身**由 DocsKeeper 在派发时单独提交：
    `docs(task): 新增任务049-RmShutdown 占用进程处置 (#task-049)`，只含 `tasks/049-rm-shutdown-locking-processes.md`；
 5. **不合并 main**：feature 分支推完即止，等评审（提示词 10）复核通过后由评审侧合并。
+
+## 实现备注
+
+> 执行：DevEngineRust + DevFrontendReact（一轮对话交付），分支 `feature/task-049-rm-shutdown-locking`，2026-10-23。
+
+### 1. 实际改动文件（与白名单逐一对账）
+
+| 文件 | 白名单允许 | 实际改动 | 结论 |
+|---|---|---|---|
+| `engine/src/execute/locking.rs` | 新增 `ShutdownOutcome` / `RefusedProcess` / `shutdown_locking_processes` / `is_protected_process`；抽共用 RM 会话 | 全部落地，另新增 `RetryLockedResp`（见偏差 2）、`matches_protected_name`、`RmSession`（RAII），并修复 probe 判断 bug（见偏差 4） | 范围内 |
+| `engine/src/execute/mod.rs` | 仅在需要 `pub use` 时改一行 | **未改**（`execute::locking::*` 直接可达） | 范围内 |
+| `engine/tests/locking_shutdown.rs` | 新建 | 新建，5 条用例（3 条 CI 可跑 + 2 条 `#[ignore]` 真机） | 范围内 |
+| `app/src-tauri/src/commands.rs` | 新增 `cleanup_retry_locked` | 新增命令；`RetryLockedResp` 改由 engine 提供（见偏差 2） | 范围内 |
+| `app/src-tauri/src/lib.rs` | 注册 1 条命令 | `commands::cleanup_retry_locked,` | 范围内 |
+| `app/src/pages/Items.tsx` | 接 summary / 明细 / 重试 / confirm / 结果展示 | 全部落地 | 范围内 |
+| `docs/PROJECT_STATE.md` | 任务收尾单独提交 | 已按 §6 更新，单独 commit | 范围内 |
+| `tasks/049-*.md` | 未列白名单，但「输出要求 2」明确要求追加本段 | 仅追加本「实现备注」段 | 按输出要求 |
+
+禁止清单（`executor.rs` / `whitelist.rs` / `safe_box.rs` / `delete.rs` / 各页面 / `tauri.conf.json` / `capabilities/default.json` / 两个 `Cargo.toml` / workflows / rules / scripts）**一个都没动**。
+
+### 2. 最终 JSON shape（真机实测输出，非设计稿）
+
+`cleanup_retry_locked` 成功信封 `data` 实测（`serde_json::to_string(&RetryLockedResp)`）：
+
+```json
+{"shutdown":{"closed":[{"pid":40420,"appName":"Windows PowerShell","serviceName":null}],"refused":[]},
+ "summary":{"results":[{"itemId":1,"path":"C:\\Users\\...\\locked_e2e_049.txt","deleted":true,"bytesFreed":7,"error":null,"lockingProcesses":[]}],"deletedCount":1,"failedCount":0,"bytesFreedTotal":7}}
+```
+
+- `closed` 元素 = `LockingProcess { pid, appName, serviceName }`（与 task-020 字段完全一致，未改）；
+- `refused` 元素 = `RefusedProcess { pid, appName, reason }`；
+- `summary` = 既有 `ExecuteSummary`，字段与 `cleanup_execute` 完全相同；
+- 全部 `#[serde(rename_all = "camelCase")]`。
+
+### 3. 护栏名单最终版本与拒绝原因文案
+
+| 触发条件 | `reason` 稳定文案 |
+|---|---|
+| `pid == 当前进程 PID` | `self` |
+| `pid <= 4` | `system process` |
+| `service_name` 非空（trim 后） | `windows service` |
+| `app_name` 为空 / 纯空白 | `system process` |
+| `app_name` 命中保护名单 | `protected process` |
+
+保护名单（12 条，小写比较，见 `PROTECTED_APP_NAMES`）：
+`explorer.exe`、`svchost.exe`、`lsass.exe`、`csrss.exe`、`wininit.exe`、`services.exe`、`winlogon.exe`、`smss.exe`、`dwm.exe`、`registry`、`msmpeng.exe`、`cdisk-cleaner.exe`。
+
+匹配方式（偏差 5）：全名相等 → 去 `.exe` 相等 → 去 `.exe` 后以名单基名结尾。原因：RM 的 `strAppName` 是**应用友好名**，实测 `powershell.exe` 报 `Windows PowerShell`，`explorer.exe` 大概率报 `Windows Explorer`，只做全名相等会漏保护。
+
+### 4. 六个门禁（逐条退出码）
+
+| 命令 | 退出码 | 结果 |
+|---|---|---|
+| `cargo fmt --all -- --check` | 0 | 无差异 |
+| `cargo clippy --workspace --all-targets -- -D warnings` | 0 | 无告警（新增 `unsafe` 块均带 SAFETY 注释） |
+| `cargo test -p engine` | 0 | **183 passed / 5 ignored / 0 failed**（合计 188，基线 173，+15） |
+| `pnpm --filter app lint` | 0 | 0 error 0 warning |
+| `pnpm --filter app test` | 0 | 28 passed（5 文件，未变） |
+| `pnpm --filter app build` | 0 | **176.39 kB / gzip 56.25 kB**（基线 173.98 / 55.41，+2.41 kB / +0.84 kB） |
+
+新增 15 条 = 护栏单测 10 条（`execute::locking::tests::*`，含文档要求 8 条 + RM 友好名正反例 2 条）+ 集成测试 5 条（无占用幂等 / 坏路径不 panic / 绝不关闭自身 / 非 Windows 空结构 / 关闭后重试删除端到端）。
+
+### 5. 真机冒烟（本机 Windows，2026-10-23）
+
+**已取得（后端真机，等价于命令内部编排）：**
+
+- `execute_retry_after_shutdown_deletes_locked_file`（`--ignored` 手动跑）**PASS**，37.6s：
+  - 首次 `execute_items` → `deleted=false`、`error="FILE_IN_USE: ..."`、`lockingProcesses=[{pid:40420, appName:"Windows PowerShell"}]`；
+  - `shutdown_locking_processes` → `closed=[同进程]`、`refused=[]`；
+  - 重试 `execute_items` → `deleted=true`、`bytesFreed=7`，文件确认消失。
+- `shutdown_locked_file_closes_holder`（`--ignored`）**PASS**：`RmShutdown` 后轮询 `who_is_locking` 归零。
+- `shutdown_never_closes_self`（CI 可跑）**PASS**：本进程持句柄时 `closed` 不含自身、`refused.reason="self"`。
+
+**未取得（GUI 点击与截图），两条原因均为环境限制，非代码问题：**
+
+1. **CDP 开不出来**：Tauri 创建 WebView2 时显式传 `additionalBrowserArgs`，此时 WebView2 会忽略 `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` 环境变量，`--remote-debugging-port=9222` 不生效；唯一可行改法是往 `tauri.conf.json` 加 `additionalBrowserArgs`，而该文件在本任务**禁止修改**清单内（试过 `TAURI_CONFIG` 环境覆盖，同样不生效）。
+2. **窗口截图全黑**：`PrintWindow(PW_RENDERFULLCONTENT)` 与屏幕 `BitBlt` 都只拿到标题栏、客户区全黑，说明当前会话没有活动桌面合成（WebView2 内容未上屏）。已用 ctypes 自写 PNG 编码复核，非工具问题。
+
+因此 C8-C12 的「红条明细 / confirm 文案 / 绿条结果」三张 CDP 截图**本环境无法产出**。补偿：命令内部同一段编排的真机端到端用例（上文）+ `Items.tsx` 代码走查（失败明细、confirm 文案、拒绝提示、三态互斥逐项核对）+ lint/test/build 全绿。**建议测试 Agent（提示词 9）在真机安装态补齐这三张截图。**
+
+### 6. 打包安装冒烟
+
+- `pnpm tauri build`（本地，`--config '{"bundle":{"createUpdaterArtifacts":false}}'` 跳过 updater 签名产物）产物见 §9；
+- **未做**「NSIS `/S` 装到干净目录 → 真机点击」：与上条同因（无活动桌面，装完也点不了、截不了图）。按约束 8 的三环境对照，打包态关键结论以**代码走查**给出：
+  - `AppPaths.data_root = app_data_dir()` = `%APPDATA%\com.and0114.cclean`，安装目录只读不影响 DB / 日志 / 保险箱；
+  - `rules/` 首次启动从 `resource_dir()` 复制到 `data_root\rules`（`bundle.resources` 已含 2 个 json + 5 个 ps1，本次未改打包清单）；
+  - `RmShutdown` 是普通用户态 API（rstrtmgr.dll），perMachine 安装下以用户身份运行即可关闭**该用户**的进程，不需要提权；
+  - 本任务未新增任何运行时资源文件，未改 `bundle.resources`。
+
+### 7. 与本文档不符的偏差（文档写的 / 实际做的 / 为什么）
+
+| # | 文档写的 | 实际做的 | 为什么 |
+|---|---|---|---|
+| 1 | 护栏 8 条单测放 `engine/tests/locking_shutdown.rs` | 10 条放 `locking.rs` 的 `#[cfg(test)] mod tests` | `is_protected_process` 按 A3 定为 `pub(crate)`，跨 crate 的集成测试看不见它；改 `pub` 会无谓扩大 API |
+| 2 | `RetryLockedResp` 定义在 `commands.rs` | 定义在 `engine/src/execute/locking.rs` | app crate 的 `Cargo.toml` **没有 serde 依赖**，而 `Cargo.toml` 在禁止修改清单；`Envelope<T>` 要求 `T: Serialize`，只能落在 engine |
+| 3 | notepad 打开 `%TEMP%` 文件即可造占用 | 改用「独占句柄」的外部进程造占用 | Win11 新版记事本是打包应用，打开文件后**不长期持有句柄**（实测 `RmGetList` 返回 0），notepad 场景根本造不出占用 |
+| 4 | 本任务只新增关闭能力，不改既有查询 | **修了** `who_is_locking` 的 probe 判断 | 既有实现用 `Error::code()` 与 `234` 比较，实际拿到的是 HRESULT `0x800700EA`，**只要真有进程占用就返回 Err**——task-020/021 的占用检测在真机上从未生效。不修则本任务必然失败，且该文件在白名单内 |
+| 5 | 名单匹配「忽略大小写」 | 追加「去 `.exe` 相等 / 以基名结尾」 | RM 返回应用友好名（`Windows PowerShell`），只做全名相等会漏保护 `explorer.exe` |
+| 6 | 命令层逻辑顺序未提线程与去重 | `RmShutdown` 走 `spawn_blocking`；`closed/refused` 按 pid 去重 | 实测 `RmShutdown` 最坏阻塞 ~30s，留在 async runtime 会拖慢其他 IPC；同一进程占用多文件会让「已关闭 N 个」虚高 |
+
+### 8. 遗留问题
+
+1. **`RmRestart` 未做**（文档明确划出范围）：被关闭的进程不会自动重启，用户需自行重开；
+2. **`RmShutdown` 阻塞最坏 ~30s**：目标不响应关闭请求时要等 RM 超时才强制结束，前端「关闭并重试中…」期间无进度反馈（按钮已禁用，不会重复点击）；
+3. **RM 会话粒度限制**：同一文件同时被保护进程与普通进程占用时，`RmShutdown` 无法只关普通进程。本实现保证「不把保护进程记进 `closed`」，服务/系统进程 RM 本身也关不掉，但 `explorer.exe` 这类会随会话一起被请求关闭（Windows 会自动重启）。彻底解决需按进程逐个发 `WM_CLOSE`，留后续任务；
+4. **GUI 真机冒烟与 NSIS 安装冒烟未取得视觉证据**（原因见 §5 / §6），需测试 Agent 补；
+5. `audit_log` 未记录「关闭了哪些进程」（文档明确不扩列），排查时只能看前端结果条。
+
+### 9. 构建产物与安装态结论
+
+`pnpm tauri build --config '{"bundle":{"createUpdaterArtifacts":false}}'` **成功**：
+
+| 产物 | 路径 | 体积 |
+|---|---|---|
+| NSIS | `target/release/bundle/nsis/C-DiskCleaner_0.1.0_x64-setup.exe` | 4.01 MiB |
+| MSI | `target/release/bundle/msi/C-DiskCleaner_0.1.0_x64_en-US.msi` | 5.80 MiB |
+
+**安装动作被运行环境拦截**：`setup.exe /S /D=<clean dir>` 返回 `Permission denied`（bash exit 126），关闭沙箱重试、换到 `/tmp` 与 `target/release` 下均同样被拒（同一环境下 `target/debug/cdisk-cleaner.exe` 可以正常启动，故不是产物损坏，是执行策略拦截安装器）。因此「装到干净目录 → 启动 → 点击」这一段**未完成**，留给 CI 的 `tauri build` 闸门与测试 Agent 真机补做。
+
+已确认的部分：打包链路本身可用（前端 build + Rust release 编译 + NSIS/MSI 出包全过），`bundle.resources` 未变，`AppPaths` 的路径策略未动。
