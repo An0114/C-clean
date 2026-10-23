@@ -36,6 +36,7 @@ pub fn run() {
             commands::scan_start,
             commands::cleanup_dry_run,
             commands::cleanup_execute,
+            commands::cleanup_retry_locked,
             commands::safe_box_restore,
             commands::safe_box_list,
             commands::safe_box_list_sessions,

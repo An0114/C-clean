@@ -156,6 +156,88 @@ pub async fn cleanup_execute(
     Ok(Envelope::ok(summary))
 }
 
+/// `cleanup.retryLocked`：请求关闭占用进程 → 自动重试删除（task-049）。
+///
+/// 安全边界：
+/// - 只处理 `item_ids` 里的条目，逐个按 id 反查 `cleanup_item.path`，查不到就跳过；
+/// - 关闭动作走 `shutdown_locking_processes`，内置护栏（服务/系统/自身/保护名单）
+///   命中即拒绝，绝不关闭；
+/// - 删除仍复用 `execute_items`，**白名单二次校验照常生效**（L3 红线拦得住）；
+/// - 单条 shutdown 失败只打日志，不中断整批。
+#[tauri::command]
+pub async fn cleanup_retry_locked(
+    item_ids: Vec<i64>,
+    paths: tauri::State<'_, AppPaths>,
+) -> Result<Envelope<engine::execute::locking::RetryLockedResp>, String> {
+    if item_ids.is_empty() {
+        return Ok(Envelope::err(engine::ipc::error_codes::DRYRUN_EMPTY));
+    }
+    let external_deny = match load_external_deny(&paths.rules_dir) {
+        Ok(v) => v,
+        Err(_) => return Ok(Envelope::err(INTERNAL)),
+    };
+    let conn = engine::db::conn::open(&paths.data_root).map_err(|e| e.to_string())?;
+
+    // 1. 只收集本次 item_ids 对应的路径（查不到跳过，不中断）。
+    let mut targets: Vec<String> = Vec::with_capacity(item_ids.len());
+    for id in &item_ids {
+        match conn.query_row("SELECT path FROM cleanup_item WHERE id = ?1", [id], |r| {
+            r.get::<_, String>(0)
+        }) {
+            Ok(p) => targets.push(p),
+            Err(_) => eprintln!("[cleanup_retry_locked] id={id} not found, skipped"),
+        }
+    }
+
+    // 2. RmShutdown 是阻塞 FFI（最坏等目标进程响应，实测可达 ~30s），
+    //    丢进 blocking 线程池，避免占住 async runtime 拖慢其他 IPC。
+    let shutdown = tauri::async_runtime::spawn_blocking(move || {
+        let mut acc = engine::execute::locking::ShutdownOutcome::default();
+        // 同一进程可能占用多个文件，按 pid 去重，避免前端计数虚高。
+        let mut seen: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        for p in targets {
+            match engine::execute::locking::shutdown_locking_processes(&p) {
+                Ok(outcome) => {
+                    for lp in outcome.closed {
+                        if seen.insert(lp.pid) {
+                            acc.closed.push(lp);
+                        }
+                    }
+                    for r in outcome.refused {
+                        if seen.insert(r.pid) {
+                            acc.refused.push(r);
+                        }
+                    }
+                }
+                // 单条失败不中断整批（与 task-038 purge_many 风格一致）。
+                Err(e) => eprintln!("[cleanup_retry_locked] shutdown failed for {p}: {e}"),
+            }
+        }
+        acc
+    })
+    .await
+    .map_err(|e| format!("shutdown task failed: {e}"))?;
+
+    // 3. 复用 cleanup_execute 的同一段删除编排（禁止第二套删除逻辑）。
+    let summary = engine::execute::executor::execute_items(
+        &item_ids,
+        &conn,
+        &external_deny,
+        |_item_id| -> Box<dyn engine::execute::delete::Deleter + '_> {
+            Box::new(engine::execute::safe_box::SafeBoxDeleter::new(
+                &paths.box_dir,
+                &conn,
+                None,
+            ))
+        },
+    );
+
+    Ok(Envelope::ok(engine::execute::locking::RetryLockedResp {
+        shutdown,
+        summary,
+    }))
+}
+
 /// `safe_box.restore`：按 safe_box id 把文件从保险箱 rename 回原路径。
 #[tauri::command]
 pub async fn safe_box_restore(
