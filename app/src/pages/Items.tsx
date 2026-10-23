@@ -10,6 +10,13 @@
 //
 // 与任务书偏差：cleanup_item 表无 status/scanned_at 列；
 // PendingItem 仅 id/path/sizeBytes/moduleCode/sessionId，无时间列展示。
+//
+// task-049：清理失败从「只报告」升级为「可处置」。
+// - cleanup_execute 的返回值不再丢弃，失败项展示 路径 + 原因 + 占用进程；
+// - 有占用进程时出现「关闭占用进程并重试」，window.confirm 二次确认后调
+//   cleanup_retry_locked（后端 RmShutdown + 护栏过滤 + 复用 execute_items 重删）；
+// - 字段全部 camelCase（后端 #[serde(rename_all = "camelCase")]），历史已多次踩
+//   snake_case 坑，这里显式对齐。
 
 import { useCallback, useEffect, useState } from "react";
 import { formatBytes } from "../utils/formatBytes";
@@ -29,6 +36,85 @@ interface PendingItem {
   sizeBytes: number;
   moduleCode: string;
   sessionId: number;
+}
+
+/** task-049：engine::execute::locking::LockingProcess 的 JSON shape。 */
+interface LockingProcess {
+  pid: number;
+  appName: string;
+  serviceName: string | null;
+}
+
+/** task-049：engine::execute::locking::RefusedProcess（护栏拒绝，带原因）。 */
+interface RefusedProcess {
+  pid: number;
+  appName: string;
+  /** "windows service" / "system process" / "self" / "protected process" */
+  reason: string;
+}
+
+/** task-049：engine::execute::executor::ExecResult。 */
+interface ExecResult {
+  itemId: number;
+  path: string;
+  deleted: boolean;
+  bytesFreed: number;
+  error: string | null;
+  lockingProcesses: LockingProcess[];
+}
+
+/** task-049：engine::execute::executor::ExecuteSummary。 */
+interface ExecuteSummary {
+  results: ExecResult[];
+  deletedCount: number;
+  failedCount: number;
+  bytesFreedTotal: number;
+}
+
+/** task-049：cleanup_retry_locked 响应体。 */
+interface RetryLockedResp {
+  shutdown: { closed: LockingProcess[]; refused: RefusedProcess[] };
+  summary: ExecuteSummary;
+}
+
+/** 清理/重试结果条状态（tone 决定绿/红，failures 决定明细与重试按钮）。 */
+interface ResultState {
+  tone: "ok" | "fail";
+  headline: string;
+  failures: ExecResult[];
+  /** 被护栏拒绝的进程（仅重试路径会有）。 */
+  refused: RefusedProcess[];
+}
+
+/** `chrome.exe (PID 1234)` —— 与后端 audit_log 的拼法保持一致。 */
+const formatProc = (p: { appName: string; pid: number }) => `${p.appName} (PID ${p.pid})`;
+
+/** 把后端稳定错误前缀翻成人话，其余原样展示（不吞信息）。 */
+function describeExecError(err: string | null): string {
+  if (!err) return "未知原因";
+  const inUse = "FILE_IN_USE:";
+  const denied = "PERMISSION_DENIED:";
+  if (err.startsWith(inUse)) {
+    const detail = err.slice(inUse.length).trim();
+    return detail ? `文件被占用（${detail}）` : "文件被占用";
+  }
+  if (err.startsWith(denied)) {
+    const detail = err.slice(denied.length).trim();
+    return detail ? `权限不足（${detail}）` : "权限不足，可能需要管理员权限";
+  }
+  return err;
+}
+
+/** 去重（同一进程可能占用多个文件），保留首次出现顺序。 */
+function dedupeProcs(procs: LockingProcess[]): LockingProcess[] {
+  const seen = new Set<number>();
+  const out: LockingProcess[] = [];
+  for (const p of procs) {
+    if (seen.has(p.pid)) continue;
+    seen.add(p.pid);
+    out.push(p);
+  }
+  return out;
 }
 
 type Status = "loading" | "ok" | "error";
@@ -72,7 +158,9 @@ export default function Items() {
   const [msg, setMsg] = useState<string>("");
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [cleaning, setCleaning] = useState(false);
-  const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
+  // task-049：重试态（关闭占用进程 + 重删）。与 cleaning/previewing 互斥。
+  const [retrying, setRetrying] = useState(false);
+  const [result, setResult] = useState<ResultState | null>(null);
   // task-040 预览态。
   const [previewing, setPreviewing] = useState(false);
   const [preview, setPreview] = useState<Preview | null>(null);
@@ -112,28 +200,90 @@ export default function Items() {
     .filter((r) => selected.has(r.id))
     .reduce((sum, r) => sum + r.sizeBytes, 0);
 
+  // task-049：三态互斥（清理 / 重试 / 预览 任一为真时，其余操作按钮禁用）。
+  const busy = cleaning || retrying || previewing;
+
   const cleanup = useCallback(async () => {
-    if (selected.size === 0 || cleaning) return;
+    if (selected.size === 0 || busy) return;
     setCleaning(true);
     setResult(null);
     // C8：清理成功后清单会变，预览必然过期。
     setPreview(null);
     try {
       const ids = Array.from(selected);
-      await api("cleanup_execute", { itemIds: ids });
-      setResult({ ok: true, text: `已清理 ${ids.length} 项` });
+      // task-049 C8：接住返回值，失败项要展示原因与占用进程（此前直接丢弃）。
+      const summary = await api<ExecuteSummary>("cleanup_execute", { itemIds: ids });
+      const failures = summary.results.filter((r) => !r.deleted);
+      setResult({
+        tone: failures.length === 0 ? "ok" : "fail",
+        headline:
+          failures.length === 0
+            ? `已清理 ${summary.deletedCount} 项，释放 ${formatBytes(summary.bytesFreedTotal)}`
+            : `清理完成：成功 ${summary.deletedCount} 项 / 失败 ${summary.failedCount} 项`,
+        failures,
+        refused: [],
+      });
       setSelected(new Set());
       await load();
     } catch (e) {
-      setResult({ ok: false, text: String(e) });
+      setResult({
+        tone: "fail",
+        headline: `清理失败：${String(e)}`,
+        failures: [],
+        refused: [],
+      });
     } finally {
       setCleaning(false);
     }
-  }, [selected, cleaning, load]);
+  }, [selected, busy, load]);
+
+  // task-049 C10/C11：确认 → 关闭占用进程 → 自动重试删除。
+  const retryLocked = useCallback(async () => {
+    if (!result || retrying) return;
+    const locked = result.failures.filter((f) => f.lockingProcesses.length > 0);
+    if (locked.length === 0) return;
+
+    const procs = dedupeProcs(locked.flatMap((f) => f.lockingProcesses));
+    const list = procs.map(formatProc).join("\n");
+    const confirmed = window.confirm(
+      `即将请求关闭以下进程：\n${list}\n\n未保存的数据可能丢失，关闭后会自动重试删除。是否继续？`,
+    );
+    // 取消：直接返回，不调命令，按钮保持可点。
+    if (!confirmed) return;
+
+    setRetrying(true);
+    try {
+      const resp = await api<RetryLockedResp>("cleanup_retry_locked", {
+        itemIds: locked.map((f) => f.itemId),
+      });
+      const failures = resp.summary.results.filter((r) => !r.deleted);
+      const closedCount = resp.shutdown.closed.length;
+      setResult({
+        tone: failures.length === 0 ? "ok" : "fail",
+        headline:
+          failures.length === 0
+            ? `已关闭 ${closedCount} 个进程，重试成功 ${resp.summary.deletedCount} 项`
+            : `已关闭 ${closedCount} 个进程，仍失败 ${failures.length} 项`,
+        failures,
+        refused: resp.shutdown.refused,
+      });
+      // 无论成败都重拉清单、清空选中与预览。
+      setSelected(new Set());
+      setPreview(null);
+      await load();
+    } catch (e) {
+      // 失败时保留原失败明细，用户还能再点一次重试。
+      setResult((prev) =>
+        prev ? { ...prev, tone: "fail", headline: `关闭并重试失败：${String(e)}` } : prev,
+      );
+    } finally {
+      setRetrying(false);
+    }
+  }, [result, retrying, load]);
 
   // task-040 C2：只读预览。走 apiRaw 以拿回 2002 信封里的 blockedByL3。
   const previewSelection = useCallback(async () => {
-    if (selected.size === 0 || cleaning || previewing) return;
+    if (selected.size === 0 || busy) return;
     setPreviewing(true);
     setPreview(null);
     try {
@@ -159,12 +309,12 @@ export default function Items() {
     } finally {
       setPreviewing(false);
     }
-  }, [selected, cleaning, previewing]);
+  }, [selected, busy]);
 
   return (
     <div>
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
-        <button onClick={load} disabled={cleaning}>
+        <button onClick={load} disabled={busy}>
           刷新
         </button>
         <span style={{ fontSize: 13, color: "#374151" }}>
@@ -172,35 +322,35 @@ export default function Items() {
         </span>
         <button
           onClick={previewSelection}
-          disabled={selected.size === 0 || cleaning || previewing}
+          disabled={selected.size === 0 || busy}
           style={{
             padding: "6px 14px",
             borderRadius: 6,
             border: "1px solid #2563eb",
-            background: selected.size === 0 || cleaning || previewing ? "#bfdbfe" : "#2563eb",
+            background: selected.size === 0 || busy ? "#bfdbfe" : "#2563eb",
             color: "#fff",
-            cursor:
-              selected.size === 0 || cleaning || previewing ? "not-allowed" : "pointer",
+            cursor: selected.size === 0 || busy ? "not-allowed" : "pointer",
           }}
         >
           {previewing ? "预览中…" : "预览可清理项"}
         </button>
         <button
           onClick={cleanup}
-          disabled={selected.size === 0 || cleaning}
+          disabled={selected.size === 0 || busy}
           style={{
             padding: "6px 14px",
             borderRadius: 6,
             border: "1px solid #dc2626",
-            background: selected.size === 0 || cleaning ? "#fecaca" : "#dc2626",
+            background: selected.size === 0 || busy ? "#fecaca" : "#dc2626",
             color: "#fff",
-            cursor: selected.size === 0 || cleaning ? "not-allowed" : "pointer",
+            cursor: selected.size === 0 || busy ? "not-allowed" : "pointer",
           }}
         >
           {cleaning ? "清理中…" : "清理已选"}
         </button>
       </div>
 
+      {/* task-049：结果条 = 汇总 + 失败明细（原因 + 占用进程）+ 关闭并重试。 */}
       {result && (
         <div
           style={{
@@ -208,12 +358,70 @@ export default function Items() {
             padding: 10,
             borderRadius: 6,
             fontSize: 13,
-            background: result.ok ? "#dcfce7" : "#fee2e2",
-            color: result.ok ? "#166534" : "#b91c1c",
-            border: `1px solid ${result.ok ? "#86efac" : "#fca5a5"}`,
+            background: result.tone === "ok" ? "#dcfce7" : "#fee2e2",
+            color: result.tone === "ok" ? "#166534" : "#b91c1c",
+            border: `1px solid ${result.tone === "ok" ? "#86efac" : "#fca5a5"}`,
           }}
         >
-          {result.text}
+          <div style={{ fontWeight: 600 }}>{result.headline}</div>
+
+          {result.failures.length > 0 && (
+            <div style={{ marginTop: 8 }}>
+              {result.failures.map((f) => (
+                <div key={f.itemId} style={{ marginBottom: 4, lineHeight: 1.5 }}>
+                  <span style={{ fontFamily: "monospace", fontSize: 12 }}>
+                    {f.path || `#${f.itemId}`}
+                  </span>
+                  {" — "}
+                  {describeExecError(f.error)}
+                  {f.lockingProcesses.length > 0 && (
+                    <>
+                      {" — 占用："}
+                      <span style={{ fontFamily: "monospace", fontSize: 12 }}>
+                        {f.lockingProcesses.map(formatProc).join(", ")}
+                      </span>
+                    </>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* 受保护进程必须让用户看见，不能静默跳过。 */}
+          {result.refused.length > 0 && (
+            <div
+              style={{
+                marginTop: 8,
+                padding: "6px 8px",
+                borderRadius: 4,
+                background: "#fef9c3",
+                color: "#854d0e",
+                border: "1px solid #fde047",
+              }}
+            >
+              以下进程受保护未关闭：
+              {result.refused.map((r) => `${r.appName}（${r.reason}）`).join("、")}
+            </div>
+          )}
+
+          {/* 只有存在占用进程时才给重试入口；没有占用就别让用户空点。 */}
+          {result.failures.some((f) => f.lockingProcesses.length > 0) && (
+            <button
+              onClick={retryLocked}
+              disabled={retrying}
+              style={{
+                marginTop: 10,
+                padding: "6px 14px",
+                borderRadius: 6,
+                border: "1px solid #b45309",
+                background: retrying ? "#fde68a" : "#d97706",
+                color: "#fff",
+                cursor: retrying ? "not-allowed" : "pointer",
+              }}
+            >
+              {retrying ? "关闭并重试中…" : "关闭占用进程并重试"}
+            </button>
+          )}
         </div>
       )}
 
