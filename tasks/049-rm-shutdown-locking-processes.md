@@ -359,3 +359,16 @@ DevAgent 交付物（执行结果）：
 **安装动作被运行环境拦截**：`setup.exe /S /D=<clean dir>` 返回 `Permission denied`（bash exit 126），关闭沙箱重试、换到 `/tmp` 与 `target/release` 下均同样被拒（同一环境下 `target/debug/cdisk-cleaner.exe` 可以正常启动，故不是产物损坏，是执行策略拦截安装器）。因此「装到干净目录 → 启动 → 点击」这一段**未完成**，留给 CI 的 `tauri build` 闸门与测试 Agent 真机补做。
 
 已确认的部分：打包链路本身可用（前端 build + Rust release 编译 + NSIS/MSI 出包全过），`bundle.resources` 未变，`AppPaths` 的路径策略未动。
+
+### 10. CI
+
+| 项 | 值 |
+|---|---|
+| PR | https://github.com/An0114/C-clean/pull/11 |
+| run URL | https://github.com/An0114/C-clean/actions/runs/39966008485 |
+| run id | 39966008485 |
+| job | `build`（job id 120455934422，windows-latest） |
+| 触发 | `pull_request`（head `2063303`） |
+| conclusion | **success** |
+
+闸门覆盖：发版脚本单测 → Rustfmt → Clippy `-D warnings` → `cargo test` → 前端 install/lint/test/build → Tauri build（CI 临时签名密钥）→ 打包产物版本号 + `.sig` 校验 → 上传 installer artifact → 规则库 SHA-256 / JSON 合法性。
