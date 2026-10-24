@@ -10,7 +10,7 @@
 |---|---|---|---|
 | dev（本地启动） | `cargo build`（debug，`target/debug/cdisk-cleaner.exe`）+ `vite` 5173；WebView2 运行时 155.0.4283.62 | 是（进程与 dev server 均正常启动） | **不通过（环境阻塞）**：WebView2 渲染进程无法创建，页面不渲染、CDP 无端口、窗口无 DOM 可访问 |
 | 打包安装（干净目录） | `pnpm tauri build` → NSIS `C-DiskCleaner_0.1.0_x64-setup.exe` 4.01 MiB / MSI 6.94 MiB；`/S /D=C:\Users\An\AppData\Local\Temp\cclean-smoke-049-nsis` | 是（安装成功 exit 0） | **部分通过**：安装、payload、数据目录隔离、安装目录零写入均通过；GUI 点击路径同上被环境阻塞 |
-| CI | workflow `ci`；run **39967340368**（feature 0541235）/ **40045174671**（bugfix 8b84cf4）/ **40045926460**（bugfix f667c70）/ **40047649773**（merge be60f55）/ **40047903556**（HEAD b1d6118） | 是 | 绿 |
+| CI | workflow `ci`；run **39967340368**（0541235）/ **40045174671**（8b84cf4）/ **40045926460**（f667c70）/ **40047649773**（merge be60f55）/ **40047903556**（b1d6118）/ **40048375380**（e23cdce） | 是 | 绿 |
 
 > 环境限制说明（本轮实测，非引用开发轮说法）：本会话**没有活动桌面合成**，`Graphics.CopyFromScreen` 返回「句柄无效」；应用进程启动后**子进程数为 0**、系统内无属于本应用的 `msedgewebview2.exe`；`%LOCALAPPDATA%\com.and0114.cclean\EBWebView\Crashpad\reports` 在每次启动后新增 `.dmp`（08:12 / 08:16 / 08:20 / 08:21 / 08:56 各一份）。UIA 枚举该窗口只得到一个无内容 `Pane`。另：wry 0.57 无条件设置 `additionalBrowserArgs`（`wry-0.57.0/src/webview2/mod.rs:300`），因此 `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` 被 WebView2 忽略；改用 `tauri dev --config` 注入 `--remote-debugging-port=9222` 后二进制内已含该参数，但渲染进程本身起不来，端口仍未监听。
 
@@ -22,7 +22,7 @@
 | L2 集成/契约 | `cleanup_retry_locked` 全链路 + 前后端契约 | `cargo test -p engine --test locking_shutdown -- --ignored`（真机占用）；逐字段核对（见下） | **通过**：真实占用 → 首次删除失败并回填 `lockingProcesses` → `RmShutdown` 关闭 → 重试删除成功；契约 4 项全部对齐 | 真机输出：`first: deleted=false, error=FILE_IN_USE, locking_processes=[{pid:32220, app_name:"Windows PowerShell"}]` → `shutdown: closed=[同进程], refused=[]` → `second: deleted=true, bytesFreed=7`；`retry_locked_resp_json: {"shutdown":{"closed":[{"pid":32220,"appName":"Windows PowerShell","serviceName":null}],"refused":[]},"summary":{...}}` |
 | L3 端到端/UI（dev） | 清理页：失败明细 / 占用进程 / 重试按钮 / confirm / 重试结果 / 三态互斥 | `vite`(5173) + `target/debug/cdisk-cleaner.exe`；CDP 9222 与 UIA 双路尝试 | **阻塞（第三档）**：应用进程启动正常（`[paths] data_root=...\com.and0114.cclean`），但 WebView2 渲染进程崩溃 → 页面不渲染、无 DOM、无 Console 可采集 | 启动日志 `/tmp/tauri-dev*.log`；`[paths]` 行；Crashpad `.dmp`；UIA 仅 1 个空 `Pane`。**未取得任何截图/Console 证据，不伪造** |
 | L4 真机/打包安装 | NSIS 安装到干净目录 + 打包态数据目录隔离 + 安装目录零写入 | `pnpm tauri build`；`setup.exe /S /D=<干净目录>`；启动安装版；安装目录 9 文件 SHA-256 前后比对 | **部分通过**：安装 exit 0；payload = exe + uninstall.exe + `_up_\_up_\{rules,scripts}`（2 json + 5 ps1）；安装版启动后 `data_root=%APPDATA%\com.and0114.cclean`、`box_dir=%APPDATA%\...\safe_box`；安装目录 **9/9 文件哈希完全一致（零写入）** | 安装目录 `C:\Users\An\AppData\Local\Temp\cclean-smoke-049-nsis`；哈希比对结果 `NO_DIFF`；安装版 `[paths]` 日志。GUI 点击路径被环境阻塞（同 L3） |
-| L5 CI 门禁 | 本分支 5 次运行 | GitHub Actions API 实查 | **绿**：0541235 / 8b84cf4 / f667c70 / be60f55 / b1d6118 全部 `conclusion=success` | run 39967340368、40045174671、40045926460、40047649773、40047903556 |
+| L5 CI 门禁 | 本分支 6 次运行 | GitHub Actions API 实查 | **绿**：0541235 / 8b84cf4 / f667c70 / be60f55 / b1d6118 / e23cdce 全部 `conclusion=success` | run 39967340368、40045174671、40045926460、40047649773、40047903556、40048375380 |
 
 ### L2 契约核对表（逐字段）
 
@@ -110,11 +110,11 @@
 ## 7. 测试结论
 
 - 结论：**通过（附第三档环境限制）**——代码/契约/单元与集成/打包安装/CI 全绿；**GUI 真机点击与 Console 采集因环境无法执行，已在 §6 单列，未伪造任何证据**。
-- feature 分支最新 commit：`b1d6118`（代码态 = `be60f55`，其后两次为纯 docs 提交：测试报告 + 状态更新）
-- CI 运行号与结论：`ci` run **40047903556**（HEAD b1d6118）`conclusion=success`，20 个步骤全绿；另 40047649773（be60f55）/ 40045926460（f667c70）/ 40045174671（8b84cf4）/ 39967340368（0541235）均 success
+- feature 分支最新 commit：`e23cdce`（代码态 = `be60f55`，其后为纯 docs 提交：测试报告 → 状态更新 → CI 结论补齐；无代码差异）
+- CI 运行号与结论：`ci` run **40048375380**（e23cdce）`conclusion=success`；另 40047903556（b1d6118）/ 40047649773（be60f55）/ 40045926460（f667c70）/ 40045174671（8b84cf4）/ 39967340368（0541235）均 success。**后续仅记录本报告的 docs 提交不再回写 CI 结论，避免自我引用循环；如需最新状态以 PR checks 页为准。**
 - 是否可进入评审：**是**（评审需知悉 §6 第三档 1、2 两项；第 2 项属预存在缺陷，是否随本任务一并处理由评审/调度裁决）
 - 移交说明：
-  - 分支：`feature/task-049-rm-shutdown-locking` @ `b1d6118`；bugfix 子分支 `bugfix/task-049-retry-btn-mutex` 已合并并删除（本地 + 远端）
+  - 分支：`feature/task-049-rm-shutdown-locking` @ `e23cdce`；bugfix 子分支 `bugfix/task-049-retry-btn-mutex` 已合并并删除（本地 + 远端）
   - 测试报告：`docs/test-reports/049-test-report.md`
   - 关键证据：真机 `--ignored` 三例（`execute_retry_after_shutdown_deletes_locked_file` / `shutdown_locked_file_closes_holder` / `shutdown_only_touches_registered_path`）全 PASS；`app/src/pages/Items.test.tsx` 6 条组件用例；NSIS 干净目录安装 + 安装目录零写入
   - 待补：GUI 真机冒烟（需活动桌面机器）

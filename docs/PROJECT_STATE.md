@@ -208,7 +208,7 @@
   - **L4 打包安装**：`pnpm tauri build` 出包（NSIS 4.01 MiB / MSI 6.94 MiB）；`/S /D=%TEMP%\cclean-smoke-049-nsis` 安装 exit 0；安装版启动后 `data_root=%APPDATA%\com.and0114.cclean`，安装目录 9 个文件 SHA-256 前后**零变化**。
   - **未取得（第三档，已登记）**：GUI 真机点击与 DevTools Console —— 本会话无活动桌面合成，WebView2 渲染进程创建即崩溃（Crashpad 持续产出 `.dmp`、应用进程 0 子进程、CDP 9222 不监听、`CopyFromScreen` 句柄无效）。补偿：C8–C12 用 jsdom 组件用例 + 后端真实占用进程端到端 + 代码走查，**未伪造截图/日志**。
   - **新登记预存在问题（非本任务引入）**：打包态 `bundle.resources` 落在 `$INSTDIR\_up_\_up_\rules`，而 `AppPaths` 只查 `resource_dir()/rules` → 安装版 `scripts_dir=.\scripts`，全新用户首次启动取不到规则会导致 `cleanup_execute`/`cleanup_retry_locked` 返回 INTERNAL（本机因 `%APPDATA%\...\rules` 已存在而未暴露）。引入于 `16b30e2`，修复需改 `tauri.conf.json` 或 `paths.rs`（均在 task-049 禁止清单内），建议另开任务。
-  - **CI**：`ci` run 39967340368（0541235）/ 40045174671（8b84cf4）/ 40045926460（f667c70）/ 40047649773（be60f55）/ 40047903556（HEAD b1d6118）全部 `conclusion=success`（末次 20 步全绿，含 Rust 测试 / 前端 lint+test+build / Tauri build / 产物与规则库校验）。
+  - **CI**：`ci` run 39967340368（0541235）/ 40045174671（8b84cf4）/ 40045926460（f667c70）/ 40047649773（be60f55）/ 40047903556（b1d6118）/ 40048375380（e23cdce）全部 `conclusion=success`（末次 20 步全绿，含 Rust 测试 / 前端 lint+test+build / Tauri build / 产物与规则库校验）。
   - 详见 `docs/test-reports/049-test-report.md`。
 
 ## 已完成事项
