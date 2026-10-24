@@ -8,7 +8,7 @@
 
 ## 状态字段
 
-bugfix_pending
+testing（修复完成并已合回 feature，待测试 Agent 全量回归 + 评审重评）
 
 ## 任务目标
 
@@ -122,3 +122,143 @@ bugfix_pending
 2. 任务文件末尾追加 `## 实现备注`：实际改动文件对账、`image_file_name` 的失败分支处理、mixed 方案选择与理由、新增 windows feature（如有）、六门禁退出码、连跑 5 次输出、CI run id、与任务书不符之处；
 3. **合回 `feature/task-049-rm-shutdown-locking`（`--no-ff`），不合并 main**；
 4. 合回后回到提示词 9 重测 → 提示词 10 重评。
+
+---
+
+## 实现备注
+
+> 执行：Bug 修复 Agent（提示词 11）｜日期：2026-10-24｜分支：`bugfix/task-049-guard-image-name`（基于 `feature/task-049-rm-shutdown-locking` @ `37375fb`）
+
+### 1. 实际改动文件对账（3 个文件，全部在白名单内）
+
+| 文件 | 改动 | 对应验收 |
+|---|---|---|
+| `engine/src/execute/locking.rs` | `+369/-…`：新增 `image_file_name` / `decide` / `apply_mixed_fail_closed`；`is_protected_process` 改为 PID→映像名入口；`shutdown_locking_processes` 接入 mixed 收口；文件头已知限制补 2 条；`#[cfg(test)] mod tests` 10 → 15 条 | A1–A5、B |
+| `engine/tests/locking_shutdown.rs` | `+280/-…`：`Holder` 助手（ready/done 标记 + 独立 console + 退出码）；B7 重写归因；新增 `shutdown_refuses_protected_image_holder` + `holder_child_holds_file` | C6–C7、A5 真机 |
+| `engine/Cargo.toml` | 仅追加 `windows` feature 一行：`Win32_System_Threading` | D8 |
+
+**未改动**：`executor.rs` / `whitelist.rs` / `safe_box.rs` / `delete.rs` / `commands.rs` / `lib.rs` / 其他页面 / `tauri.conf.json` / `capabilities/default.json` / `app/package.json` / workflows / rules / scripts（`git diff --stat 37375fb..HEAD` 只有上表 3 个文件）。
+**`app/src/pages/Items.tsx` 未改**——选 A 方案（fail-closed），黄条文案「以下进程受保护未关闭」在 mixed 场景下变成真话，无需改文案。
+**未新增 npm / cargo 依赖**（`pnpm-lock.yaml`、`Cargo.lock` 零改动）。
+
+### 2. `image_file_name` 的失败分支处理
+
+```rust
+fn image_file_name(pid: u32) -> Option<String>
+// OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION) → QueryFullProcessImageNameW
+// → 取路径末段 → trim().to_lowercase()
+```
+
+失败一律返回 `None`，由 `decide()` 的 **fail-closed** 分支兜住（`reason = unknown process`）：
+
+| 失败场景 | 结果 |
+|---|---|
+| `pid == 0` | `None`（短路，不去 OpenProcess） |
+| `OpenProcess` 失败（权限不足 / 进程已退出 / 非法 pid） | `None` |
+| `QueryFullProcessImageNameW` 失败（进程刚退出 / 缓冲区不足） | `None` |
+| 路径末段为空 | `None` |
+
+句柄用函数内的 `OwnedHandle(HANDLE)` + `Drop` 释放（RAII），三条失败路径都不会漏 `CloseHandle`。缓冲区 `32768 u16`，覆盖 `\\?\` 长路径上限，避免 `ERROR_INSUFFICIENT_BUFFER`。
+**为什么新增 `unknown process` 而不是复用 `protected process`**：任务书允许二者之一；分开后前端提示能区分「认出来了但在名单里」与「根本认不出是谁」，排查「点重试什么都没发生」时不必再猜。两者都是拒绝，方向一致。
+
+### 3. mixed 方案选择与理由（选 A，fail-closed）
+
+`shutdown_locking_processes` 现在先逐条判定，再走 `apply_mixed_fail_closed(closable, refused)`：**只要 `refused` 非空，`closable` 就清空 → 不调 `RmShutdown` → `closed = []`**。
+
+选 A 而不是 B 的理由：
+1. 评审 Bug #2 的本质是「上报与事实相反」。B 方案（保留关闭 + 改文案）仍会把保护进程关掉，只是把话说圆；A 方案让「受保护未关闭」变成事实。
+2. 代价可控：mixed 占用（保护进程 + 普通进程同占一个文件）本身罕见，且用户在失败明细里仍能看到全部占用进程（`execute_items` 的 `lockingProcesses` 未被清掉），不会「静默什么都没发生」。
+3. 与护栏的「宁可不关」原则同向，不需要额外的文案翻译层。
+
+被清掉的可关进程**不写入 `refused`**（任务书 A 方案原文：「返回 `closed=[]` + 完整 `refused`」）——它们既没被关，也不该被标成「受保护」。这一点在代码注释与文件头已知限制 2 里都写明了。
+
+### 4. 新增 windows feature
+
+`engine/Cargo.toml` → `[target.'cfg(windows)'.dependencies] windows.features` 追加 **`Win32_System_Threading`**（提供 `OpenProcess` / `QueryFullProcessImageNameW` / `PROCESS_QUERY_LIMITED_INFORMATION` / `PROCESS_NAME_WIN32`）。`CloseHandle` / `HANDLE` 走已有的 `Win32_Foundation`，`PWSTR` 走 `windows::core`。仅加 feature，未升版本、未换 crate。
+
+### 5. 六道门禁（本地实测退出码）
+
+| # | 命令 | 结果 |
+|---|---|---|
+| 1 | `cargo fmt --all -- --check` | **exit 0** |
+| 2 | `cargo clippy --workspace --all-targets -- -D warnings` | **exit 0**（0 warning） |
+| 3 | `cargo test -p engine` | **全绿**；测试清单 **196 条**（含真机 `#[ignore]` 用例，CI 跳过），修复前 189 条 → 新增 7 条（单测 +5、集成 +2） |
+| 4 | `pnpm --filter app lint` | **exit 0**（eslint 0 error） |
+| 5 | `pnpm --filter app test` | **34 passed / 6 files**（Items.test.tsx 6 条不变） |
+| 6 | `pnpm --filter app build` | **exit 0**，`dist/assets/index-*.js 176.39 kB │ gzip 56.25 kB`（与修复前一致，前端零改动） |
+
+护栏单测（`cargo test -p engine --lib execute::locking`）：**15 passed**，用例名：
+
+```
+allows_normal_process / refuses_explorer / refuses_svchost /
+refuses_protected_name_case_insensitive / refuses_windows_service /
+refuses_system_pid / refuses_self / refuses_empty_app_name /
+refuses_rm_friendly_name_of_protected_app / allows_rm_friendly_name_of_normal_app
+refuses_localized_explorer_description / refuses_when_image_name_unavailable
+mixed_batch_is_fail_closed / batch_without_protected_process_closes_all /
+batch_all_refused_stays_refused
+```
+
+> 注：既有 10 条断言语义全部保留，只是改为调 `decide()` 并**显式注入映像名**——否则在 fail-closed 下，任何「测试机上不存在的 pid」都会被判 `unknown process`，用例结果会随机器漂移。
+
+### 6. 真机证据（zh-CN 环境）
+
+```
+PS> Get-Item C:\Windows\explorer.exe, C:\Windows\System32\dwm.exe | % { $_.Name, $_.VersionInfo.FileDescription }
+explorer.exe   Windows 资源管理器
+dwm.exe        桌面窗口管理器
+PS> (Get-Process explorer).Path
+C:\WINDOWS\Explorer.EXE
+```
+
+即：RM 的 `strAppName` 是中文 FileDescription，而 `QueryFullProcessImageNameW` 拿到的是 `explorer.exe` —— 旧实现三条名字规则对中文名全部不命中（Bug #1 成立），新实现按映像名命中（修复有效）。
+
+**端到端真机用例** `shutdown_refuses_protected_image_holder`（`--ignored`，无需 GUI）：把测试二进制复制成 `explorer.exe` 并让它独占持有文件，实测输出
+
+```
+fake explorer outcome: ShutdownOutcome { closed: [], refused: [RefusedProcess { pid: 38568,
+  app_name: "explorer.exe", reason: "protected process" }] }
+```
+
+即 `closed` 不含 explorer、`refused` 含 `protected process`、holder 仍存活（护栏拒绝 → 未调 `RmShutdown`）。
+
+### 7. Bug #3 根因与连跑 5 次证据
+
+**根因不是「环境抖动」，是 holder 之间的 console 耦合**（本轮实测定位）：
+
+- 单跑 B7：`2/2 PASS`；
+- 全量 `--include-ignored --test-threads=1`：**改前 `2/2 FAILED`**，输出
+  `b_after=[] holder_b_alive=false holder_b_exit=Some(1) holder_b_done_marker=false`
+  ——B 的 holder 没走到脚本结尾（无 done 标记）、退出码 1，即**被外部终止**，而不是自然退出；
+- 给两个 holder 各加 `CREATE_NO_WINDOW`（独立隐藏 console，彼此不再共用测试进程的 console）后，全量 `2/2 PASS`。
+
+结论：`RmShutdown` 对**同一 console / 进程组**里的兄弟进程会连带关闭（已写进 `locking.rs` 文件头已知限制 4）；真实场景里两个占用方本就是彼此独立的进程，独立 console 更贴近事实。用例因此既稳定，也把「只关注册资源」这一性质单独隔离出来测。
+归因能力也已补齐：holder 写 `.ready`（替代盲等 5s）与 `.done`（自然退出标记），失败信息带 `b_before` / `b_after` / `holder_b_alive` / `holder_b_exit` / `holder_b_done_marker`，并在「没写 done 就退出」时直接判失败而不是 `inconclusive`。
+
+**连跑 5 次**（`--include-ignored --test-threads=1`，8 条用例全跑）：
+
+```
+=== RUN 1 === b_after=[pid 15320] holder_b_alive=true holder_b_exit=None -> ok. 8 passed; 0 failed (45.60s)
+=== RUN 2 === b_after=[pid 2328]  holder_b_alive=true holder_b_exit=None -> ok. 8 passed; 0 failed (45.36s)
+=== RUN 3 === b_after=[pid 40608] holder_b_alive=true holder_b_exit=None -> ok. 8 passed; 0 failed (45.30s)
+=== RUN 4 === b_after=[pid 41304] holder_b_alive=true holder_b_exit=None -> ok. 8 passed; 0 failed (45.01s)
+=== RUN 5 === b_after=[pid 14884] holder_b_alive=true holder_b_exit=None -> ok. 8 passed; 0 failed (45.16s)
+```
+
+### 8. Git 与 CI
+
+| 项 | 值 |
+|---|---|
+| 分支 | `bugfix/task-049-guard-image-name`（从 feature @ `37375fb` 拉出，一层） |
+| fix commit | `199527a` `fix(engine): 护栏改为按 PID 映像名判定，本地化应用名不再可绕过 (#task-049)` |
+| test commit | `c34af2c` `test(engine): 补本地化应用名/映像名不可得/mixed 用例，B7 可归因 (#task-049)` |
+| 触发 CI | draft PR #13（`bugfix/task-049-guard-image-name` → `feature/task-049-rm-shutdown-locking`，仅用于触发 CI，不通过 PR 合并） |
+| CI run | **`40054417543`**（job `build`，windows-latest）`conclusion=success`，head = `c34af2c` |
+
+### 9. 与任务书不符之处（3 处，均为主动判断）
+
+1. **分支基点取 `37375fb` 而非 `6705493`**：`6705493` 之后 feature 上只有 3 个 docs 提交（评审报告 / PROJECT_STATE / 本任务书），从分支最新 tip 拉出可避免合回时把 docs 提交再合一遍，拓扑更干净。**未 rebase / 未 force push 任何已评审历史**。
+2. **提交粒度 2 条（fix / test）而非任务书的 4 条**：改动集中在 `locking.rs` 单文件，单测与生产代码同文件，按「生产代码 / 测试资产」两个维度拆分（`Cargo.toml` 的 feature 归入 fix）；任务书建议的第 2 条「mixed fail-closed」并入 fix commit 并在 body 里单独列点，未另起 commit。
+3. **`refused` 不追加「因 mixed 而未关」的可关进程**：严格按任务书 A 方案「返回 `closed=[]` + 完整 `refused`」实现（`refused` 仍是护栏判定的原样结果）；理由与被清进程的去向写在 `apply_mixed_fail_closed` 的文档注释与文件头已知限制 2 里，避免前端出现「被标成受保护」的错误语义。
+
+> 另：本轮**未**修复 Bug #4/#5/#6（probe 提交混杂 / 任务书状态字段 / 测试资产越界），三者属流程与文档，按评审 §10「可延后」处理，仅在此留痕。
