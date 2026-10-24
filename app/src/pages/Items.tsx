@@ -238,8 +238,9 @@ export default function Items() {
   }, [selected, busy, load]);
 
   // task-049 C10/C11：确认 → 关闭占用进程 → 自动重试删除。
+  // C12：与 cleanup / preview 共用 busy，重试按钮同样纳入三态互斥。
   const retryLocked = useCallback(async () => {
-    if (!result || retrying) return;
+    if (!result || busy) return;
     const locked = result.failures.filter((f) => f.lockingProcesses.length > 0);
     if (locked.length === 0) return;
 
@@ -279,7 +280,7 @@ export default function Items() {
     } finally {
       setRetrying(false);
     }
-  }, [result, retrying, load]);
+  }, [result, busy, load]);
 
   // task-040 C2：只读预览。走 apiRaw 以拿回 2002 信封里的 blockedByL3。
   const previewSelection = useCallback(async () => {
@@ -404,19 +405,20 @@ export default function Items() {
             </div>
           )}
 
-          {/* 只有存在占用进程时才给重试入口；没有占用就别让用户空点。 */}
+          {/* 只有存在占用进程时才给重试入口；没有占用就别让用户空点。
+              C12：cleaning / retrying / previewing 任一为真时禁用。 */}
           {result.failures.some((f) => f.lockingProcesses.length > 0) && (
             <button
               onClick={retryLocked}
-              disabled={retrying}
+              disabled={busy}
               style={{
                 marginTop: 10,
                 padding: "6px 14px",
                 borderRadius: 6,
                 border: "1px solid #b45309",
-                background: retrying ? "#fde68a" : "#d97706",
+                background: busy ? "#fde68a" : "#d97706",
                 color: "#fff",
-                cursor: retrying ? "not-allowed" : "pointer",
+                cursor: busy ? "not-allowed" : "pointer",
               }}
             >
               {retrying ? "关闭并重试中…" : "关闭占用进程并重试"}
