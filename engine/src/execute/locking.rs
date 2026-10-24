@@ -658,10 +658,14 @@ mod tests {
 
     #[test]
     fn refuses_localized_explorer_description() {
-        // 任务书 A5 指定写法：这个 pid 在测试机上取不到映像名 → fail-closed。
-        // 旧实现（只按 app_name 匹配）在这里返回 None，也就是「可以关」。
-        assert!(
-            is_protected_process("Windows 资源管理器", None, 1234, SELF).is_some(),
+        // 任务书 A5 的语义：本地化应用名 + 取不到映像名 → fail-closed。
+        // pid 用 `u32::MAX - 1`（必然不存在）而不是 `1234`：`1234` 是合法 PID，
+        // 一旦被某个普通进程占用，`OpenProcess` 就会成功、映像名不命中名单、
+        // app_name 兜底也命中不了英文名单，断言随即漂移（测试轮实测本机 PID 1234
+        // 当时未被占用，属偶然，不能作为用例前提）。
+        assert_eq!(
+            is_protected_process("Windows 资源管理器", None, u32::MAX - 1, SELF),
+            Some(REASON_UNKNOWN),
             "本地化应用名 + 取不到映像名 必须 fail-closed"
         );
 

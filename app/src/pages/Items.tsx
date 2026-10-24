@@ -49,7 +49,10 @@ interface LockingProcess {
 interface RefusedProcess {
   pid: number;
   appName: string;
-  /** "windows service" / "system process" / "self" / "protected process" */
+  /**
+   * "windows service" / "system process" / "self" / "protected process" /
+   * "unknown process"（task-049b：取不到进程映像名时的 fail-closed 原因）
+   */
   reason: string;
 }
 
