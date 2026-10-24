@@ -226,3 +226,89 @@ fn execute_retry_after_shutdown_deletes_locked_file() {
     let _ = holder.kill();
     let _ = holder.wait();
 }
+
+/// task-049 B7：只关闭「本次注册的资源」的占用方，不误伤其他文件。
+///
+/// 两个文件各由一个外部进程独占持有：只对 A 调 shutdown → A 的占用必须消失，
+/// B 的占用必须原样保留（B 依然锁着、文件依然删不掉）。
+#[test]
+#[cfg(windows)]
+#[ignore = "真机冒烟：需要两个真实外部占用进程，RmShutdown 最坏等 30s，CI 跳过"]
+fn shutdown_only_touches_registered_path() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let a = tmp.path().join("target_a_049.txt");
+    let b = tmp.path().join("bystander_b_049.txt");
+    std::fs::write(&a, b"aaa").expect("write a");
+    std::fs::write(&b, b"bbb").expect("write b");
+    let path_a = a.to_string_lossy().to_string();
+    let path_b = b.to_string_lossy().to_string();
+
+    let hold = |p: &str| {
+        let script = format!(
+            "$f=[System.IO.File]::Open('{}','Open','ReadWrite','None'); Start-Sleep -Seconds 90; $f.Close()",
+            p.replace('\\', "\\\\")
+        );
+        std::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+            .spawn()
+            .expect("spawn holder")
+    };
+    let mut holder_a = hold(&path_a);
+    let mut holder_b = hold(&path_b);
+    std::thread::sleep(std::time::Duration::from_secs(5));
+
+    // 前置：两个文件都确实被占用。
+    assert!(
+        !engine::execute::locking::who_is_locking(&path_a)
+            .expect("who a")
+            .is_empty(),
+        "file A should be locked before shutdown"
+    );
+    let b_before = engine::execute::locking::who_is_locking(&path_b).expect("who b");
+    assert!(
+        !b_before.is_empty(),
+        "file B should be locked before shutdown"
+    );
+
+    // 只对 A 请求关闭。
+    let outcome = shutdown_locking_processes(&path_a).expect("shutdown a ok");
+    println!("shutdown a: {outcome:?}");
+    assert!(!outcome.closed.is_empty(), "closed={outcome:?}");
+
+    // A 的占用应消失（≤5s 轮询）。
+    let mut a_gone = false;
+    for _ in 0..10 {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        if engine::execute::locking::who_is_locking(&path_a)
+            .map(|v| v.is_empty())
+            .unwrap_or(false)
+        {
+            a_gone = true;
+            break;
+        }
+    }
+    assert!(a_gone, "A still locked after shutdown");
+
+    // B 必须毫发无损：占用还在，且仍处于「删不掉」状态。
+    let b_after = engine::execute::locking::who_is_locking(&path_b).expect("who b after");
+    let holder_b_alive = holder_b.try_wait().expect("try_wait b").is_none();
+    println!("b before={b_before:?} b after={b_after:?} holder_b_alive={holder_b_alive}");
+    assert!(
+        holder_b_alive,
+        "inconclusive: B 的占用进程在 shutdown 前自行退出（环境抖动），请重跑"
+    );
+    assert_eq!(
+        b_after.len(),
+        b_before.len(),
+        "shutdown on A must not touch B's lockers"
+    );
+    assert!(
+        std::fs::remove_file(&b).is_err(),
+        "B must still be undeletable (its holder is alive)"
+    );
+
+    let _ = holder_a.kill();
+    let _ = holder_b.kill();
+    let _ = holder_a.wait();
+    let _ = holder_b.wait();
+}
