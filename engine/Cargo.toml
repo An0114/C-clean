@@ -25,4 +25,7 @@ tempfile = "3.27.0"
 windows = { version = "0.58", features = [
     "Win32_Foundation",
     "Win32_System_RestartManager",
+    # task-049b：护栏按「PID → 映像文件名」判定，需要 OpenProcess /
+    # QueryFullProcessImageNameW（与系统语言无关）。评审 Bug #1。
+    "Win32_System_Threading",
 ] }

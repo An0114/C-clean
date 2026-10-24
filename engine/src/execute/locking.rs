@@ -15,9 +15,22 @@
 //! 2. RM 的关闭粒度是**会话**，不是进程：`RmShutdown` 会关闭该会话里所有占用
 //!    已注册资源的应用。本模块的会话只注册了**一个**文件路径，所以作用域就是
 //!    「占用这个文件的进程」；但若同一文件同时被保护进程与普通进程占用，
-//!    RM 无法只关其中一个——护栏只能保证**不把它记进 `closed`**，
-//!    对服务/系统进程 RM 本身也关不掉（Windows 不允许）。
-//! 3. 本模块不提供 `RmRestart`（不自动重启被关掉的进程），留 task-050+。
+//!    RM 无法只关其中一个。因此 task-049b 起采取 **mixed fail-closed**：
+//!    只要枚举出的占用进程里有任何一个被护栏拒绝，整批都不调 `RmShutdown`
+//!    （`closed` 为空），保证 `refused` 里写的「受保护未关闭」与事实一致。
+//!    代价是这类混合占用场景点「重试」不会关闭任何进程（宁可不关）。
+//! 3. 护栏的判定依据是 **PID → 进程映像文件名**（`QueryFullProcessImageNameW`），
+//!    不是 `RmGetList` 的 `strAppName`——后者是**本地化 FileDescription**
+//!    （`zh-CN` 下 `explorer.exe` → `Windows 资源管理器`），按它匹配在非英文
+//!    系统上必然失效（task-049 评审 Bug #1）。取不到映像名时 **fail-closed**
+//!    （拒绝，reason = `unknown process`）。
+//! 4. 同一个 console / 进程组里的兄弟进程可能被**连带**关闭：task-049b 实测，
+//!    两个共用 console 的 `powershell.exe` holder，只对 A 的文件调 `RmShutdown`，
+//!    B 也会退出（exit code 1，且没走到脚本结尾）。本模块无法控制这个粒度，
+//!    调用方若发现相邻进程被波及，原因在这里。集成用例
+//!    `shutdown_only_touches_registered_path` 给每个 holder 独立 console，
+//!    以便把「只关注册资源」这一性质单独测出来。
+//! 5. 本模块不提供 `RmRestart`（不自动重启被关掉的进程），留 task-050+。
 
 /// 占用进程的最小可序列化视图（给前端 toast 用）。
 #[derive(Debug, Clone, serde::Serialize)]
@@ -31,6 +44,11 @@ pub struct LockingProcess {
 }
 
 /// task-049：一次 `shutdown_locking_processes` 的结果。
+///
+/// task-049b（评审 Bug #2）：`RmShutdown` 是**会话级**的，只要会话里有 1 个可关
+/// 进程，被护栏拒绝的保护进程也会被一并请求关闭——那样 `refused` 里写「受保护
+/// 未关闭」就与事实相反。所以现在的语义是：**只要存在被拒绝的进程，整批都不关**，
+/// 此时 `closed` 必为空、`refused` 就是这次枚举到的全部被拒进程。
 #[derive(Debug, Clone, Default, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ShutdownOutcome {
@@ -47,7 +65,7 @@ pub struct RefusedProcess {
     pub pid: u32,
     pub app_name: String,
     /// 稳定文案，见 [`is_protected_process`]：`windows service` / `system process` /
-    /// `self` / `protected process`。
+    /// `self` / `protected process` / `unknown process`。
     pub reason: String,
 }
 
@@ -71,6 +89,11 @@ const REASON_SERVICE: &str = "windows service";
 const REASON_SYSTEM: &str = "system process";
 const REASON_SELF: &str = "self";
 const REASON_PROTECTED: &str = "protected process";
+/// task-049b：取不到进程映像名（`OpenProcess` 被拒 / 进程已退出）时的拒绝原因。
+///
+/// 与 `protected process` 分开是为了可排查：前者是「认不出是谁」，后者是
+/// 「认出来了，但在名单里」。两者都拒绝（fail-closed），方向一致。
+const REASON_UNKNOWN: &str = "unknown process";
 
 /// 内置保护名单（小写比较；命中即拒绝关闭）。
 ///
@@ -91,10 +114,17 @@ const PROTECTED_APP_NAMES: &[&str] = &[
     "cdisk-cleaner.exe",
 ];
 
-/// 判断 `app_name` 是否命中保护名单。
+/// 判断一个名字是否命中保护名单。
 ///
-/// RM 的 `strAppName` 是**应用友好名**（实测 `powershell.exe` → `Windows PowerShell`），
-/// 不一定是 exe 文件名，所以不能只做全名相等比较：
+/// 两处调用：
+/// 1. **主判定**（task-049b 起）：传入 `image_file_name(pid)` 的结果——真实的
+///    exe 文件名，与系统语言无关，这是唯一可信的判据；
+/// 2. **兜底判定**：传入 RM 的 `strAppName`。它是**应用友好名**（实测
+///    `powershell.exe` → `Windows PowerShell`，`zh-CN` 下 `explorer.exe` →
+///    `Windows 资源管理器`），只能覆盖「RM 直接返回 exe 名」的情形，不能作为
+///    唯一防线（task-049 评审 Bug #1 的成因）。
+///
+/// 三条规则（任一命中即算命中）：
 /// 1. 全名相等（`explorer.exe`）；
 /// 2. 去掉 `.exe` 后相等（`EXPLORER.EXE` → `explorer`）；
 /// 3. 去掉 `.exe` 后以名单基名结尾（`Windows Explorer` → `explorer`）。
@@ -113,21 +143,25 @@ fn matches_protected_name(app_name: &str) -> bool {
     })
 }
 
-/// 判断一个占用进程是否**禁止关闭**。
+/// 单个占用进程的判定核心（纯函数，映像名由调用方注入，便于单测穷举）。
 ///
-/// 返回 `Some(reason)` 表示拒绝（reason 为四个稳定文案之一），`None` 表示可关。
+/// `image_name` 为 `None` 表示「取不到映像名」，此时 **fail-closed**（拒绝）。
 ///
 /// 判定顺序（先命中先返回，避免同一进程给出模棱两可的原因）：
 /// 1. `pid == self_pid` → `self`（不自杀，优先级最高）；
 /// 2. `pid <= 4` → `system process`（Idle / System）；
 /// 3. `service_name` 非空 → `windows service`（服务一律不碰）；
-/// 4. `app_name` 为空 → `system process`（保守，认不出就不关）；
-/// 5. `app_name` 忽略大小写命中内置名单 → `protected process`。
-pub(crate) fn is_protected_process(
+/// 4. `image_name` 命中内置名单 → `protected process`（**主判据，与语言无关**）；
+/// 5. 取不到 `image_name` → `unknown process`（**fail-closed**，认不出就不关）；
+/// 6. `app_name` 为空 → `system process`（保守）；
+/// 7. `app_name` 命中内置名单 → `protected process`（兜底，覆盖 RM 直接返回
+///    exe 名的情形）。
+fn decide(
     app_name: &str,
     service_name: Option<&str>,
     pid: u32,
     self_pid: u32,
+    image_name: Option<&str>,
 ) -> Option<&'static str> {
     if pid == self_pid {
         return Some(REASON_SELF);
@@ -140,6 +174,15 @@ pub(crate) fn is_protected_process(
             return Some(REASON_SERVICE);
         }
     }
+    match image_name {
+        Some(img) => {
+            if matches_protected_name(img) {
+                return Some(REASON_PROTECTED);
+            }
+        }
+        // 取不到映像名：认不出是谁，宁可不关。
+        None => return Some(REASON_UNKNOWN),
+    }
     let name = app_name.trim();
     if name.is_empty() {
         return Some(REASON_SYSTEM);
@@ -147,6 +190,110 @@ pub(crate) fn is_protected_process(
     if matches_protected_name(name) {
         return Some(REASON_PROTECTED);
     }
+    None
+}
+
+/// 判断一个占用进程是否**禁止关闭**（对外入口，映像名由 PID 实时查询）。
+///
+/// 返回 `Some(reason)` 表示拒绝（reason 为稳定文案之一），`None` 表示可关。
+pub(crate) fn is_protected_process(
+    app_name: &str,
+    service_name: Option<&str>,
+    pid: u32,
+    self_pid: u32,
+) -> Option<&'static str> {
+    let image = image_file_name(pid);
+    decide(app_name, service_name, pid, self_pid, image.as_deref())
+}
+
+/// 批量判定的收口：落实 mixed fail-closed。
+///
+/// mixed fail-closed（task-049b，评审 Bug #2）：`RmShutdown` 是会话级的，
+/// 会话里只要有一个可关进程，被拒绝的保护进程也会被一并请求关闭。为了不让
+/// `refused` 的「受保护未关闭」变成假话，**只要有任何一个进程被拒绝，整批都不关**
+/// （`closable` 清空 → 调用方不调 `RmShutdown`）。
+///
+/// 被清掉的可关进程不会静默消失：前端的失败明细里仍然列着它们
+/// （`execute_items` 返回的 `lockingProcesses`）。
+fn apply_mixed_fail_closed(
+    closable: Vec<LockingProcess>,
+    refused: Vec<RefusedProcess>,
+) -> (Vec<LockingProcess>, Vec<RefusedProcess>) {
+    if !closable.is_empty() && !refused.is_empty() {
+        return (Vec::new(), refused);
+    }
+    (closable, refused)
+}
+
+/// 取进程映像文件名（小写，含扩展名）；取不到返回 `None`。
+///
+/// 用 `QueryFullProcessImageNameW` 而不是 RM 的 `strAppName`：前者返回真实的
+/// 可执行文件路径，与系统语言无关；后者是本地化的 FileDescription。
+///
+/// 失败分支（一律返回 `None`，由 [`decide`] fail-closed 兜住）：
+/// - `OpenProcess` 被拒（权限不足 / 进程已退出）→ `None`；
+/// - `QueryFullProcessImageNameW` 失败（进程刚退出 / 缓冲区不足）→ `None`；
+/// - 路径末段为空 → `None`。
+#[cfg(windows)]
+fn image_file_name(pid: u32) -> Option<String> {
+    use windows::core::PWSTR;
+    use windows::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+        PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    /// 句柄 RAII：任何提前 return 都会 `CloseHandle`，不新增泄漏点。
+    struct OwnedHandle(HANDLE);
+
+    impl Drop for OwnedHandle {
+        fn drop(&mut self) {
+            // SAFETY: 句柄由 OpenProcess 返回，且只被这一个 OwnedHandle 持有。
+            unsafe {
+                let _ = CloseHandle(self.0);
+            }
+        }
+    }
+
+    if pid == 0 {
+        return None;
+    }
+    // SAFETY: 只请求查询权限（PROCESS_QUERY_LIMITED_INFORMATION），不改变目标
+    // 进程状态；失败返回 Err，由 `?` 转成 None（fail-closed）。
+    let handle =
+        OwnedHandle(unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }.ok()?);
+
+    // 32768 u16 覆盖 \\?\ 长路径上限，避免 ERROR_INSUFFICIENT_BUFFER。
+    let mut buf = vec![0u16; 32768];
+    let mut len = buf.len() as u32;
+    // SAFETY: buf 整块可写且容量由 len 声明；handle 由 OwnedHandle 保证有效。
+    unsafe {
+        QueryFullProcessImageNameW(
+            handle.0,
+            PROCESS_NAME_WIN32,
+            PWSTR(buf.as_mut_ptr()),
+            &mut len,
+        )
+    }
+    .ok()?;
+
+    let path = String::from_utf16_lossy(&buf[..(len as usize).min(buf.len())]);
+    let name = path
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_lowercase();
+    if name.is_empty() {
+        None
+    } else {
+        Some(name)
+    }
+}
+
+/// 非 Windows：没有「进程映像」概念，恒返回 `None`（调用方 fail-closed）。
+#[cfg(not(windows))]
+fn image_file_name(_pid: u32) -> Option<String> {
     None
 }
 
@@ -171,11 +318,12 @@ pub fn who_is_locking(path: &str) -> Result<Vec<LockingProcess>, String> {
 /// 请求关闭占用 `path` 的进程（task-049）。
 ///
 /// 流程：`RmStartSession → RmRegisterResources(只注册这一个文件) → RmGetList →
-/// 护栏过滤 → RmShutdown(RmForceShutdown) → RmEndSession`。
+/// 护栏过滤（PID → 映像名）→ RmShutdown(RmForceShutdown) → RmEndSession`。
 ///
 /// - 无占用进程：不调 `RmShutdown`，返回空结果（幂等，重复点「重试」不报错）；
-/// - 有占用但全部被护栏拒绝：不调 `RmShutdown`，`closed` 为空、`refused` 完整；
-/// - 至少一个可关进程：调 `RmShutdown`，成功后把这些进程放进 `closed`。
+/// - 有占用但**任何一个**被护栏拒绝：不调 `RmShutdown`，`closed` 为空、`refused` 完整
+///   （mixed fail-closed，见 [`apply_mixed_fail_closed`]）；
+/// - 全部可关：调 `RmShutdown`，成功后把这些进程放进 `closed`。
 ///
 /// 会话由 [`RmSession`] 的 `Drop` 收尾，任何提前返回都不会泄漏 handle。
 pub fn shutdown_locking_processes(path: &str) -> Result<ShutdownOutcome, String> {
@@ -189,23 +337,24 @@ pub fn shutdown_locking_processes(path: &str) -> Result<ShutdownOutcome, String>
             return Ok(ShutdownOutcome::default());
         }
 
+        let lockers: Vec<LockingProcess> = infos.iter().map(to_locking_process).collect();
         let self_pid = std::process::id();
         let mut closable: Vec<LockingProcess> = Vec::new();
         let mut refused: Vec<RefusedProcess> = Vec::new();
-        for info in &infos {
-            let lp = to_locking_process(info);
+        for lp in &lockers {
             match is_protected_process(&lp.app_name, lp.service_name.as_deref(), lp.pid, self_pid) {
                 Some(reason) => refused.push(RefusedProcess {
                     pid: lp.pid,
                     app_name: lp.app_name.clone(),
                     reason: reason.to_string(),
                 }),
-                None => closable.push(lp),
+                None => closable.push(lp.clone()),
             }
         }
+        let (closable, refused) = apply_mixed_fail_closed(closable, refused);
 
         if closable.is_empty() {
-            // 全部被护栏拒绝：连 RmShutdown 都不调（绝不关闭）。
+            // 全被护栏拒绝（或 mixed fail-closed）：连 RmShutdown 都不调（绝不关闭）。
             return Ok(ShutdownOutcome {
                 closed: Vec::new(),
                 refused,
@@ -372,72 +521,102 @@ fn u16_to_string(buf: &[u16]) -> String {
 
 #[cfg(test)]
 mod tests {
-    //! task-049 护栏纯函数单测（8 条，验收项 A3）。
+    //! task-049 / task-049b 护栏纯函数单测。
     //!
-    //! 放在模块内而不是 `engine/tests/`：`is_protected_process` 是 `pub(crate)`，
-    //! 跨 crate 的集成测试看不见它（见任务实现备注里的偏差说明）。
+    //! 放在模块内而不是 `engine/tests/`：`is_protected_process` / `decide` 是
+    //! `pub(crate)`，跨 crate 的集成测试看不见它（见任务实现备注里的偏差说明）。
+    //!
+    //! task-049b 起，判定主依据是**映像文件名**，所以绝大多数用例直接调
+    //! [`decide`] 并显式注入映像名——结果与跑测试的机器无关（不会因为测试机上
+    //! 恰好存在某个 pid 而漂移）。只有「取不到映像名」相关的用例才走
+    //! [`is_protected_process`]（真实 `OpenProcess` 路径）。
 
-    use super::is_protected_process;
+    use super::{
+        apply_mixed_fail_closed, decide, is_protected_process, LockingProcess, RefusedProcess,
+        REASON_PROTECTED, REASON_SYSTEM, REASON_UNKNOWN,
+    };
 
     const SELF: u32 = 4242;
 
+    /// 构造一个普通占用进程（无服务名），用于批量判定用例。
+    fn lp(pid: u32, app_name: &str) -> LockingProcess {
+        LockingProcess {
+            pid,
+            app_name: app_name.to_string(),
+            service_name: None,
+        }
+    }
+
+    /// 构造一条「被护栏拒绝」的记录。
+    fn refused(pid: u32, app_name: &str, reason: &'static str) -> RefusedProcess {
+        RefusedProcess {
+            pid,
+            app_name: app_name.to_string(),
+            reason: reason.to_string(),
+        }
+    }
+
     #[test]
     fn allows_normal_process() {
-        assert_eq!(is_protected_process("notepad.exe", None, 1234, SELF), None);
+        assert_eq!(
+            decide("notepad.exe", None, 1234, SELF, Some("notepad.exe")),
+            None
+        );
     }
 
     #[test]
     fn refuses_explorer() {
         assert_eq!(
-            is_protected_process("explorer.exe", None, 1234, SELF),
-            Some("protected process")
+            decide("explorer.exe", None, 1234, SELF, Some("explorer.exe")),
+            Some(REASON_PROTECTED)
         );
     }
 
     #[test]
     fn refuses_svchost() {
         assert_eq!(
-            is_protected_process("svchost.exe", None, 1234, SELF),
-            Some("protected process")
+            decide("svchost.exe", None, 1234, SELF, Some("svchost.exe")),
+            Some(REASON_PROTECTED)
         );
     }
 
     #[test]
     fn refuses_protected_name_case_insensitive() {
         assert_eq!(
-            is_protected_process("EXPLORER.EXE", None, 1234, SELF),
-            Some("protected process")
+            decide("EXPLORER.EXE", None, 1234, SELF, Some("EXPLORER.EXE")),
+            Some(REASON_PROTECTED)
         );
         assert_eq!(
-            is_protected_process("MsMpEng.exe", None, 1234, SELF),
-            Some("protected process")
+            decide("MsMpEng.exe", None, 1234, SELF, Some("MsMpEng.exe")),
+            Some(REASON_PROTECTED)
         );
     }
 
     #[test]
     fn refuses_windows_service() {
         assert_eq!(
-            is_protected_process("anything.exe", Some("wuauserv"), 1234, SELF),
+            decide(
+                "anything.exe",
+                Some("wuauserv"),
+                1234,
+                SELF,
+                Some("anything.exe")
+            ),
             Some("windows service")
         );
     }
 
     #[test]
     fn refuses_system_pid() {
-        assert_eq!(
-            is_protected_process("System", None, 4, SELF),
-            Some("system process")
-        );
-        assert_eq!(
-            is_protected_process("Idle", None, 0, SELF),
-            Some("system process")
-        );
+        // pid 判定先于映像名判定：即使取不到映像名，也给出 system process。
+        assert_eq!(decide("System", None, 4, SELF, None), Some(REASON_SYSTEM));
+        assert_eq!(decide("Idle", None, 0, SELF, None), Some(REASON_SYSTEM));
     }
 
     #[test]
     fn refuses_self() {
         assert_eq!(
-            is_protected_process("cdisk-cleaner.exe", None, SELF, SELF),
+            decide("cdisk-cleaner.exe", None, SELF, SELF, None),
             Some("self")
         );
     }
@@ -445,18 +624,18 @@ mod tests {
     #[test]
     fn refuses_empty_app_name() {
         assert_eq!(
-            is_protected_process("   ", None, 1234, SELF),
-            Some("system process")
+            decide("   ", None, 1234, SELF, Some("notepad.exe")),
+            Some(REASON_SYSTEM)
         );
     }
 
     #[test]
     fn refuses_rm_friendly_name_of_protected_app() {
-        // RM 的 strAppName 是应用友好名，不是 exe 文件名（实测 PowerShell 报
-        // "Windows PowerShell"），所以 "Windows Explorer" 也必须拦住。
+        // 兜底规则：RM 的 strAppName 是应用友好名（实测 "Windows Explorer"），
+        // 即使映像名查到了别的东西，友好名命中名单也必须拦住。
         assert_eq!(
-            is_protected_process("Windows Explorer", None, 1234, SELF),
-            Some("protected process")
+            decide("Windows Explorer", None, 1234, SELF, Some("notepad.exe")),
+            Some(REASON_PROTECTED)
         );
     }
 
@@ -464,8 +643,98 @@ mod tests {
     fn allows_rm_friendly_name_of_normal_app() {
         // 反例：真实 RM 输出 "Windows PowerShell"，不能被误判成受保护进程。
         assert_eq!(
-            is_protected_process("Windows PowerShell", None, 1234, SELF),
+            decide(
+                "Windows PowerShell",
+                None,
+                1234,
+                SELF,
+                Some("powershell.exe")
+            ),
             None
         );
+    }
+
+    // ---- task-049b 新增（评审 Bug #1：本地化应用名可绕过护栏） ----
+
+    #[test]
+    fn refuses_localized_explorer_description() {
+        // 任务书 A5 指定写法：这个 pid 在测试机上取不到映像名 → fail-closed。
+        // 旧实现（只按 app_name 匹配）在这里返回 None，也就是「可以关」。
+        assert!(
+            is_protected_process("Windows 资源管理器", None, 1234, SELF).is_some(),
+            "本地化应用名 + 取不到映像名 必须 fail-closed"
+        );
+
+        // 真正的修复路径：pid 能取到映像名时，按映像名判定，与语言无关。
+        // zh-CN 真机实测：explorer.exe → "Windows 资源管理器"，
+        // dwm.exe → "桌面 窗口管理器"，旧的三条名字规则全部不命中。
+        assert_eq!(
+            decide("Windows 资源管理器", None, 1234, SELF, Some("explorer.exe")),
+            Some(REASON_PROTECTED)
+        );
+        assert_eq!(
+            decide("桌面 窗口管理器", None, 1234, SELF, Some("dwm.exe")),
+            Some(REASON_PROTECTED)
+        );
+        // 反向确认：本地化名不是靠「往名单里加中文名」修好的。
+        assert_eq!(
+            decide("Windows 资源管理器", None, 1234, SELF, Some("notepad.exe")),
+            None
+        );
+    }
+
+    #[test]
+    fn refuses_when_image_name_unavailable() {
+        // 纯函数层：取不到映像名 → 拒绝（fail-closed），而不是放行。
+        assert_eq!(
+            decide("notepad.exe", None, 1234, SELF, None),
+            Some(REASON_UNKNOWN)
+        );
+        // 真实 API 层：u32::MAX - 1 必然不是合法进程 → OpenProcess 失败 → 拒绝。
+        assert_eq!(
+            is_protected_process("notepad.exe", None, u32::MAX - 1, SELF),
+            Some(REASON_UNKNOWN)
+        );
+    }
+
+    // ---- task-049b 新增（评审 Bug #2：mixed 场景 fail-closed） ----
+
+    #[test]
+    fn mixed_batch_is_fail_closed() {
+        // 混合占用：notepad 可关，但 explorer 被拒绝 → 一个都不关。
+        let (closable, refused_list) = apply_mixed_fail_closed(
+            vec![lp(1000, "notepad.exe")],
+            vec![refused(1001, "Windows 资源管理器", REASON_PROTECTED)],
+        );
+        assert!(
+            closable.is_empty(),
+            "mixed 场景必须一个都不关: {closable:?}"
+        );
+        assert_eq!(refused_list.len(), 1, "refused={refused_list:?}");
+        assert_eq!(refused_list[0].pid, 1001);
+        assert_eq!(refused_list[0].reason, REASON_PROTECTED);
+    }
+
+    #[test]
+    fn batch_without_protected_process_closes_all() {
+        // 全是普通进程 → 全部可关（fail-closed 不能把正常场景也挡掉）。
+        let lockers = vec![lp(1000, "notepad.exe"), lp(1001, "chrome.exe")];
+        let (closable, refused_list) = apply_mixed_fail_closed(lockers, Vec::new());
+        assert_eq!(closable.len(), 2, "closable={closable:?}");
+        assert!(refused_list.is_empty(), "refused={refused_list:?}");
+    }
+
+    #[test]
+    fn batch_all_refused_stays_refused() {
+        // 全部被拒绝 → closable 本来就空，refused 原样保留（不重复包装）。
+        let (closable, refused_list) = apply_mixed_fail_closed(
+            Vec::new(),
+            vec![
+                refused(1000, "notepad.exe", REASON_UNKNOWN),
+                refused(1001, "explorer.exe", REASON_PROTECTED),
+            ],
+        );
+        assert!(closable.is_empty(), "closable={closable:?}");
+        assert_eq!(refused_list.len(), 2, "refused={refused_list:?}");
     }
 }
