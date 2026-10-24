@@ -5,7 +5,7 @@
 ## 当前目标
 **M2 updater 正式关闭（2026-10-23）**：task-048 真机升级验证通过——已装 v0.1.0 的机器启动应用，顶部 banner 正确弹出「发现新版本 v0.1.1」+ 设置页应用更新卡片同步显示「发现新版本 0.1.1 / 新版本 0.1.1」，updater 从 check → 展示 → 引导下载安装全链路真机闭环。叠加 bugfix/task-035-release-signing 的签名/版本号修复（真实发版 run `39942401586` 产出 `.sig` + `latest.json`，pubkey keyid 一致），M2 里程碑收官。
 
-下一阶段焦点：**task-049b 修复完成（2026-10-24），状态 `testing`，待测试 Agent 全量回归 + 评审重评**——评审轮 1 的三项否决/阻塞缺陷已在 `bugfix/task-049-guard-image-name` 修掉并合回 feature：① 护栏改按 **PID → 映像文件名**（`QueryFullProcessImageNameW`）判定，取不到映像名 fail-closed，中文 Windows 下 `explorer.exe` 不再可绕过；② mixed 占用改 **fail-closed**（存在被拒进程即整批不调 `RmShutdown`），`closed/refused` 与事实一致；③ B7 用例根因定位为 **holder 共用 console**（`RmShutdown` 会连带关闭同 console 的兄弟进程），改独立 console + ready/done 标记 + 退出码归因后连跑 5/5 全绿。CI run `40054417543` success。评审报告：`docs/reviews/049-review.md`；修复备注：`tasks/049b-bugfix-guard-image-name.md` §实现备注。**仍未合并 main**。下一项（task-049 评审通过后）：派发 safe_box 增强（时间范围筛选 / 多选 session / audit_log 联表）。品牌图标决策：暂时不做，沿用 Tauri 默认占位。
+下一阶段焦点：**task-049b 修复完成（2026-10-24），状态 `testing`，待测试 Agent 全量回归 + 评审重评**——评审轮 1 的三项否决/阻塞缺陷已在 `bugfix/task-049-guard-image-name` 修掉并合回 feature：① 护栏改按 **PID → 映像文件名**（`QueryFullProcessImageNameW`）判定，取不到映像名 fail-closed，中文 Windows 下 `explorer.exe` 不再可绕过；② mixed 占用改 **fail-closed**（存在被拒进程即整批不调 `RmShutdown`），`closed/refused` 与事实一致；③ B7 用例根因定位为 **holder 共用 console**（`RmShutdown` 会连带关闭同 console 的兄弟进程），改独立 console + ready/done 标记 + 退出码归因后连跑 5/5 全绿。CI run `40054417543`（bugfix 分支）+ `40055549993`（合回 feature 后）均 success。评审报告：`docs/reviews/049-review.md`；修复备注：`tasks/049b-bugfix-guard-image-name.md` §实现备注。**仍未合并 main**。下一项（task-049 评审通过后）：派发 safe_box 增强（时间范围筛选 / 多选 session / audit_log 联表）。品牌图标决策：暂时不做，沿用 Tauri 默认占位。
 
 ## 最近一次变更
 2026-10-11：完成 PRD / TRD / ARCHITECTURE / AGENTS / 立项决策记录全套长期基线文档，并初始化本状态白板。
@@ -215,7 +215,9 @@
   - **Bug #2（中）mixed 语义失真**：新增 `apply_mixed_fail_closed`——只要有进程被护栏拒绝就整批不调 `RmShutdown`（`closed=[]`，`refused` 为原样结果），黄条「受保护未关闭」变成事实。
   - **Bug #3（中）B7 不稳定**：根因定位为 **holder 共用 console**（`RmShutdown` 连带关闭同 console 兄弟进程，实测 `holder_b_exit=1` 且无 done 标记；单跑 2/2 PASS、全量 2/2 FAILED），改 `CREATE_NO_WINDOW` 独立 console + ready/done 标记 + 退出码归因后 **连跑 5/5 全绿**；该 console 耦合已登记为 `locking.rs` 已知限制 4。
   - **新增测试**：护栏单测 10 → 15 条（中文名 / 映像名不可得 / mixed 三分支）；集成新增 `shutdown_refuses_protected_image_holder`（把测试二进制复制成 `explorer.exe` 持锁，实测 `closed=[]` + `refused=[protected process]`）与 holder 子用例。
-  - **门禁**：fmt / clippy(-D warnings) / `cargo test -p engine`（196 条）/ pnpm lint / vitest 34 / vite build 176.39 kB gzip 56.25 kB 全绿；**CI run `40054417543` success**（head `c34af2c`，draft PR #13 触发）。
+  - **门禁**：fmt / clippy(-D warnings) / `cargo test -p engine`（196 条）/ pnpm lint / vitest 34 / vite build 176.39 kB gzip 56.25 kB 全绿。
+  - **CI**：bugfix 分支 run `40054417543` success（head `c34af2c`，draft PR #13 触发）；**合回 feature 后** run `40055549993` success（head `b1055aa`，PR #11 触发）——合并后状态本身也过闸。
+  - **Git**：`199527a`(fix) → `c34af2c`(test) → `11feafe`(docs task) → `75e43f6`(docs state) → `b1055aa`(merge --no-ff 合回 feature)；bugfix 子分支已删除（本地 + 远端），**main 仍为 `401f336` 未动**。
   - 详见 `tasks/049b-bugfix-guard-image-name.md` §实现备注。
 
 ## 已完成事项
@@ -308,7 +310,7 @@ M2 updater 已关闭（task-048）；task-049b 修复完成（状态 `testing`�
 7. ⑦ 更新体验：banner「立即更新」的下载进度反馈 / 差量更新（M3+，非阻塞）。
 
 ## 当前负责人 Agent
-DocsKeeper（文档与状态管家）
+测试 Agent（提示词 9）—— 对 task-049 做**全量回归**（分层测试 + 运行时冒烟 + 契约核对 + CI 门禁），通过后交评审 Agent（提示词 10）重评。上一手：Bug 修复 Agent（提示词 11，task-049b）。
 
 ## Git 提交记录
 | Commit | 任务 | 说明 |
