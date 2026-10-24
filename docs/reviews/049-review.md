@@ -282,11 +282,14 @@ PROJECT_STATE 的「Git 提交记录」表里补注了「（含 who_is_locking p
 
 | commit | 内容 |
 |---|---|
-| 见 `git log -1` | `docs(review): 任务049评审报告 (#task-049)` —— 仅 `docs/reviews/049-review.md` |
-| 见 `git log -1` | `docs(state): 任务049评审不通过，登记护栏本地化缺陷 (#task-049)` —— 仅 `docs/PROJECT_STATE.md` |
-| 见 `git log -1` | `docs(task): 新增任务049b护栏映像名修复任务书 (#task-049)` —— 仅 `tasks/049b-bugfix-guard-image-name.md` |
+| `8731c44` | `docs(review): 任务049评审报告 (#task-049)` —— 仅 `docs/reviews/049-review.md` |
+| `27d8057` | `docs(state): 任务049评审不通过，登记护栏本地化缺陷 (#task-049)` —— 仅 `docs/PROJECT_STATE.md` |
+| `2c91242` | `docs(task): 新增任务049b护栏映像名修复任务书 (#task-049)` —— 仅 `tasks/049b-bugfix-guard-image-name.md` |
 
-> 未修改任何业务源码（`git diff --stat` 对本轮提交校验：仅 3 个 md 文件）。
+推送记录：`git push origin HEAD:refs/heads/feature/task-049-rm-shutdown-locking` → `6705493..2c91242`（远端 feature 已同步；`origin/main` 仍为 `401f336`，未动）。
+CI：代码态 `6705493` 对应 run **40048746500** success；docs 提交 `2c91242` 触发 run **40050538936**（评审时 in progress，纯 md 变更，不影响结论）。
+
+> 未修改任何业务源码（`git diff --name-only 6705493..HEAD` = 3 个 md 文件）。
 
 ---
 
