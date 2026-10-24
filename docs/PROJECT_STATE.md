@@ -5,7 +5,7 @@
 ## 当前目标
 **M2 updater 正式关闭（2026-10-23）**：task-048 真机升级验证通过——已装 v0.1.0 的机器启动应用，顶部 banner 正确弹出「发现新版本 v0.1.1」+ 设置页应用更新卡片同步显示「发现新版本 0.1.1 / 新版本 0.1.1」，updater 从 check → 展示 → 引导下载安装全链路真机闭环。叠加 bugfix/task-035-release-signing 的签名/版本号修复（真实发版 run `39942401586` 产出 `.sig` + `latest.json`，pubkey keyid 一致），M2 里程碑收官。
 
-下一阶段焦点：**task-049b 测试通过（2026-10-24 测试轮 2），状态 `awaiting_review`（待评审重评）**——049b 的三项修复已由测试 Agent 独立复测闭环：① 护栏 **PID → 映像文件名**（`QueryFullProcessImageNameW`，取不到 fail-closed），真机假 `explorer.exe` 持锁用例实测 `closed=[]` + `refused=[protected process]`；② mixed 占用 **fail-closed**（有被拒进程即整批不调 `RmShutdown`），单测三分支覆盖；③ B7 用例独立 console + ready/done 归因，合并前后各连跑 5 次、共 10 次全绿（每次 8/8）。测试期另修 2 项第一档：护栏「本地化名」用例用合法 PID 1234 导致结论随环境漂移（改 `u32::MAX - 1` + 断言收紧）、前端 `RefusedProcess.reason` 注释缺 `unknown process`。门禁：fmt 0 / clippy 0 / engine **196 条**（188 passed + 8 ignored）/ lint 0 / vitest 34 / build 176.39 kB；NSIS 干净目录安装 exit 0 + 安装目录 9/9 文件 SHA-256 零变化；CI `40059150999`（`5550f61`）success。GUI 点击/Console 仍因无活动桌面（WebView2 渲染进程崩溃，Crashpad 新增 `.dmp`）未取得，登记第三档。**仍未合并 main**。下一项：评审重评 task-049（通过后由评审合并 main）→ 派发 safe_box 增强（时间范围筛选 / 多选 session / audit_log 联表）。品牌图标决策：暂时不做，沿用 Tauri 默认占位。
+下一阶段焦点：**task-049 评审轮 2 通过并已合并 main（2026-10-24，merge commit `60e0797`）**——占用进程从「只报告」升级为「可处置」正式落地：护栏按 **PID → 映像文件名**（`QueryFullProcessImageNameW`）判定，与系统语言无关、取不到即 fail-closed；mixed 占用整批不关；`cleanup_retry_locked` + Items 失败明细/一键关闭重试。评审轮 1 的三项否决/阻塞缺陷（本地化绕过 / `closed-refused` 语义失真 / B7 不稳定）全部闭环，评审报告 `docs/reviews/049-review.md`（不通过）与 `docs/reviews/049b-review.md`（通过）。**M1-D 遗留第一项清零**。遗留（已登记第三档，不阻塞合并）：GUI 真机点击/Console 证据仍缺（需活动桌面机器，放行发版前补做）、`RmShutdown` 会连带关闭同 console 兄弟进程、mixed 场景无解释文案、打包资源路径错位（预存在）。下一项：派发 task-050（safe_box 增强：时间范围筛选 / 多选 session / audit_log 联表），并决策 `bugfix/task-050-bundle-resources-path` 是否插队。品牌图标决策：暂时不做，沿用 Tauri 默认占位。
 
 ## 最近一次变更
 2026-10-11：完成 PRD / TRD / ARCHITECTURE / AGENTS / 立项决策记录全套长期基线文档，并初始化本状态白板。
@@ -233,6 +233,14 @@
   - **CI**：`ci` run `40057717120`（bugfix `448275a`）/ `40059150999`（feature `5550f61`）/ `40056574881`（`0c02485`）全部 `conclusion=success`。
   - 详见 `docs/test-reports/049b-test-report.md`。
 
+2026-10-24：**task-049 评审轮 2 通过，已合并 main（merge commit `60e0797`）**——评审报告 `docs/reviews/049b-review.md`：
+  - **输入核验**：测试报告 `docs/test-reports/049b-test-report.md`；CI run `40060421641`（head `03b53b4`）`conclusion=success`（另 40059150999 / 40057717120 / 40056574881 均 success）；feature HEAD `03b53b4`（代码态 `5550f61`）。
+  - **提交规范**：本轮 11 个提交全部关联 `#task-049`、type/scope 规范、原子（护栏重写 `199527a` / 测试 `c34af2c` / 测试期修复 `a740dea` 各自独立，两次合并均显式 `--no-ff`），无敏感文件；变更 7 文件，`Cargo.lock` 零改动（仅给已有 `windows` crate 加 `Win32_System_Threading` feature）。轮 1 的「行为变更混在 feat commit」未复发。
+  - **轮 1 三项缺陷闭环**：① 护栏本地化绕过 → 改 `PID → 映像文件名`，评审侧本机（`zh-CN`）复现 `shutdown_refuses_protected_image_holder`：`closed=[]`、`refused=[{appName:"explorer.exe", reason:"protected process"}]`，1 passed；② mixed 语义失真 → `apply_mixed_fail_closed` 按路径收口，跨路径聚合时「A 全可关 + B 有保护」仍各自成立；③ B7 不稳定 → 根因为 holder 共用 console（`RmShutdown` 连带关闭），独立 console + ready/done 归因后连跑 10 次全绿。
+  - **抽查复现**：`cargo test -p engine --lib execute::locking::tests` → **15 passed**；真机假 explorer 用例 1 passed。未重跑全量功能测试（职责分离）。
+  - **新发现（不阻塞，已登记）**：`RmShutdown` 连带关闭同 console / 进程组兄弟进程（用户确认范围外的进程可能被波及）→ 建议 `confirm` 补一句 + 后续评估逐进程关闭；mixed 场景「已关闭 0 个进程」无解释文案。
+  - **Git**：`git checkout main`（`401f336`）→ `merge --no-ff feature/task-049-rm-shutdown-locking` → merge commit **`60e0797`**；feature 分支已删除（本地 + 远端）；本任务两个 bugfix 子分支复核无残留；PR #11 由该合并提交关闭（GitHub 连接器无 merge 权限，403，故走本地 `--no-ff` + push）。
+
 ## 已完成事项
 - [x] 项目立项与仓库初始化（commit 67990f5 / 4972f9d）
 - [x] 固化立项阶段 8 项关键决策：Tauri 无 Plan B / Cargo.lock 入库 / 保险箱 5GB FIFO / 规则库 GitHub Raw+SHA-256 / 不买 EV 签名 / 仅 Windows / 按业务模块 A~F 切分 / PROJECT_STATE 由 M0 当天首写（commit c0bdf05）
@@ -312,18 +320,17 @@
 - [B 高] ~~发版 workflow 两个 bug：① 安装包版本号永远 0.1.0，不随 workflow_dispatch 输入变化；② 配了签名私钥却不生成 .sig（多轮改私钥传递方式均无效）。~~ **已由 bugfix/task-035-release-signing 修复（2026-10-23，状态 testing，待 CI 全绿 + 测试/评审复核）**：根因分别是「版本注入无校验、失败静默」与「`tauri.conf.json` 缺 `bundle.createUpdaterArtifacts`（Tauri 2 默认 false，为 false 时 bundler 不读私钥）」；修法与证据见「最近一次变更」。遗留：真机端到端升级验证（装旧版 → 检查更新 → 下载安装 → 重启到新版）需发版后人工跑。~~GitHub Secret `TAURI_SIGNING_PRIVATE_KEY` / `_PASSWORD` 必须与 `plugins.updater.pubkey` 配对（本地 `~/.tauri/cclean.key.pub` 与仓内 pubkey 不是同一对，CI 侧 secret 需用户自查）~~ **已证实配对（2026-10-23）**：v0.1.5 的 `.exe.sig` keyid `52ACA0C8DAA19EB3` 与 `plugins.updater.pubkey` 一致，真实发版 run `39942401586` 全绿、产物含 `.sig` + `latest.json`。
 
 ## 下一步计划
-M2 updater 已关闭（task-048）；task-049b 修复完成（状态 `testing`，已合回 feature，未合并 main）。下一轮优先级：
+M2 updater 已关闭（task-048）；**task-049 评审通过并合并 main（merge commit `60e0797`）**，M1-D 遗留第一项清零。下一轮优先级：
 
-1. **① 测试 Agent 全量回归 task-049**（`feature/task-049-rm-shutdown-locking`）：分层测试 + 运行时冒烟 + 契约核对 + CI 门禁，重点复核「中文环境护栏」「mixed fail-closed 行为变化」「B7 连跑 5 次」「`unknown process` 新拒绝原因对前端提示的影响」；需更新 `docs/test-reports/` 并复跑六门禁。
-2. **② 评审 Agent 重评 task-049**（评审轮 2）：核对 Bug #1/#2/#3 是否闭环、是否有新引入问题；通过后才允许合并 main。**循环刹车**：同一缺陷连续 2 次不通过将由调度 Agent 置 `blocked`。
-3. **③ 决策打包资源路径错位**（见「已知问题」）：是否另开 `bugfix/task-050-bundle-resources-path` 修 `bundle.resources` / `AppPaths` 资源定位（影响全新安装用户首次启动）。
-4. **④ 派发 task-051：safe_box 增强**——时间范围筛选 / 多选 session / audit_log 联表（`list_paged` 已支持 session_id 与分页，本轮加时间区间与联表视图）。
-5. ⑤ GUI 真机冒烟补做：task-049 的红条明细 / confirm 文案 / 绿条结果 + Console 0 红错，需在具备活动桌面的机器上执行；`RmRestart` 是否要做由产品侧拍板（当前用户需自行重开被关进程）。
-6. ⑥ 发版类小修：`release.yml` 补 `target_commitish: ${{ github.sha }}`（tag 溯源，需再发一版验证）。
-7. ⑦ 更新体验：banner「立即更新」的下载进度反馈 / 差量更新（M3+，非阻塞）。
+1. **① 派发 task-050：safe_box 增强**——时间范围筛选 / 多选 session / audit_log 联表（`list_paged` 已支持 session_id 与分页，本轮加时间区间与联表视图）。
+2. **② 决策打包资源路径错位**（见「已知问题」）：是否插队开 `bugfix/task-050-bundle-resources-path` 修 `bundle.resources` / `AppPaths` 资源定位（影响全新安装用户首次启动，优先级建议高于 ①）。
+3. **③ 关闭体验文案小改**（task-049 遗留观察项，约 2 行）：`confirm` 补「同一控制台内的相关进程可能一并关闭」；mixed 场景补「因存在受保护进程，本次未关闭任何进程」。
+4. ④ GUI 真机冒烟补做：task-049 的红条明细 / confirm 文案 / 绿条结果 + Console 0 红错，需在具备活动桌面的机器上执行（**放行发版前必做**）；`RmRestart` 是否要做由产品侧拍板（当前用户需自行重开被关进程）。
+5. ⑤ 发版类小修：`release.yml` 补 `target_commitish: ${{ github.sha }}`（tag 溯源，需再发一版验证）。
+6. ⑥ 更新体验：banner「立即更新」的下载进度反馈 / 差量更新（M3+，非阻塞）。
 
 ## 当前负责人 Agent
-测试 Agent（提示词 9）—— 对 task-049 做**全量回归**（分层测试 + 运行时冒烟 + 契约核对 + CI 门禁），通过后交评审 Agent（提示词 10）重评。上一手：Bug 修复 Agent（提示词 11，task-049b）。
+DocsKeeper（文档与状态管家）—— task-049 已评审通过并合并 main，下一手由 DocsKeeper 派发 task-050 / 打包资源路径决策。上一手：Review Lead（提示词 10，评审轮 2 通过并合并）。
 
 ## Git 提交记录
 | Commit | 任务 | 说明 |
@@ -606,6 +613,19 @@ M2 updater 已关闭（task-048）；task-049b 修复完成（状态 `testing`�
 | 199527a | #task-049 | fix(engine): 护栏改为按 PID 映像名判定，本地化应用名不再可绕过（bugfix/task-049-guard-image-name） |
 | c34af2c | #task-049 | test(engine): 补本地化应用名/映像名不可得/mixed 用例，B7 可归因 |
 | （本次） | #task-049 | docs(state): 任务049b 修复完成，待重测（状态 testing） |
+| b1055aa | #task-049 | merge: task-049b 护栏映像名判定 + mixed fail-closed 合回 feature（--no-ff） |
+| a740dea | #task-049 | test(engine): 本地化护栏用例改用必然不存在的 pid，消除环境依赖（bugfix/task-049-guard-test-stability） |
+| 448275a | #task-049 | docs(frontend): 补齐 RefusedProcess.reason 的 unknown process 说明 |
+| 5550f61 | #task-049 | merge: 测试期修复（护栏用例去环境依赖 + reason 注释）合回 feature（--no-ff） |
+| 17aa869 | #task-049 | docs(test): 任务049b 测试报告 |
+| 03b53b4 | #task-049 | docs(state): 任务049b 测试通过，状态 awaiting_review |
+| 8731c44 | #task-049 | docs(review): 任务049评审报告（轮 1，不通过） |
+| 27d8057 | #task-049 | docs(state): 任务049评审不通过，登记护栏本地化缺陷 |
+| 2c91242 | #task-049 | docs(task): 新增任务049b 护栏映像名修复任务书 |
+| 37375fb | #task-049 | docs(review): 补齐评审报告 Git 操作记录 |
+| （本次） | #task-049 | docs(review): 任务049b评审报告（轮 2，通过） |
+| （本次） | #task-049 | docs(state): 任务049合并main并记录merge commit |
+| **60e0797** | #task-049 | **merge: task-049 占用进程 RmShutdown 与一键关闭重试（--no-ff，评审轮 2 通过）** |
 
 ---
 变更轨迹：
@@ -704,3 +724,4 @@ M2 updater 已关闭（task-048）；task-049b 修复完成（状态 `testing`�
 - 2026-10-24  task-049  评审轮 1 **不通过**（`docs/reviews/049-review.md`）：输入齐全、提交规范、契约四项对齐、六门禁与 CI（run 40048746500 @ 6705493）绿；但抽查发现护栏按本地化应用名匹配，`zh-CN` 下 `explorer.exe`（`Windows 资源管理器`）绕过护栏；另 mixed 场景 `closed/refused` 语义失真、B7 用例连跑 1/3 失败。**不合并 main，feature 保留 @ 6705493**，转 `bugfix/task-049-guard-image-name`
 - 2026-10-24  task-049b 修复轮：护栏改 PID→映像名（`QueryFullProcessImageNameW`）+ 取不到映像名 fail-closed；mixed 占用 fail-closed（存在被拒进程即整批不关）；B7 根因定为 holder 共用 console，改独立 console + ready/done + 退出码归因，连跑 5/5 全绿；护栏单测 10→15、集成新增假 explorer 持锁用例；六门禁 + CI run 40054417543 全绿；`--no-ff` 合回 feature，状态 `testing`，待测试 Agent 全量回归 + 评审重评
 - 2026-10-24  task-049b 测试轮 2 **通过**（`docs/test-reports/049b-test-report.md`）：独立重跑 fmt 0 / clippy 0 / engine 196 条（188+8）/ vitest 34 / build 176.39 kB；真机 `--include-ignored` 合并前后各连跑 5 次共 10 次全绿，假 `explorer.exe` 持锁实测 `closed=[]` + `refused=[protected process]`；NSIS 干净目录安装 exit 0 + 安装目录 9/9 文件零变化；修 2 项第一档（护栏「本地化名」用例 PID 环境依赖 → `a740dea`；`reason` 注释缺 `unknown process` → `448275a`），`--no-ff` 合回 feature `5550f61`，CI 40059150999 绿；GUI 点击/Console 仍因无活动桌面（Crashpad 新增 dmp）登记第三档；状态置 awaiting_review
+- 2026-10-24  task-049  **评审轮 2 通过并合并 main**（`docs/reviews/049b-review.md`）：轮 1 三项否决/阻塞缺陷全部闭环（护栏 PID→映像名 + fail-closed、mixed 整批不关、B7 独立 console 后 10 次连跑全绿）；抽查复现 15 条护栏单测 + 真机假 explorer 用例（`closed=[]`、`refused=[protected process]`）；CI 40060421641 @03b53b4 success；`--no-ff` merge commit **`60e0797`**，feature 与 bugfix 子分支已清理；新登记「`RmShutdown` 连带关闭同 console 兄弟进程」「mixed 无解释文案」两项遗留观察
