@@ -1,4 +1,4 @@
-//! 应用路径解析（debt-cleanup-003 Bug-2）。
+//! 应用路径解析（debt-cleanup-003 Bug-2 / bugfix/task-050）。
 //!
 //! perMachine 安装到 `C:\Program Files\C-Disk Cleaner\` 后，`std::env::current_dir()`
 //! 指向只读安装目录，SQLite DB / safe_box / rules 更新全部 EACCES。
@@ -8,6 +8,13 @@
 //! - 首次启动把 bundled `rules/` 复制到 `data_root/rules/`，后续 `apply_update`
 //!   直接写 data_root 下的副本（不再动安装目录）；
 //! - `scripts/` 只读 ps1 脚本从 resource_dir 读。
+//!
+//! task-050 修复点：`bundle.resources` 曾用数组式，Tauri 按「保留原目录结构」把
+//! `../../rules/x.json` 落到 `<安装目录>\_up_\_up_\rules\x.json`，而这里只认
+//! `<resource_dir>/rules` → 全新安装用户首次启动找不到规则与脚本。现在
+//! 打包侧改为映射式（见 `tauri.conf.json`），本文件同步把定位逻辑收紧：
+//! release 下**只认** `resource_dir()`，不再用 cwd 向上搜索（否则从任意含
+//! `rules/`+`scripts/` 的目录启动安装版就能劫持资源），也不再静默回退 `.`。
 
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager};
@@ -40,22 +47,72 @@ fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// 在 dev / prod 两种模式下定位只读资源目录。
+/// 返回第一个同时含 `rules/` 与 `scripts/` 的候选目录。
 ///
-/// prod：`resource_dir()` 即安装目录，`rules/` `scripts/` 由 bundle.resources 带过去。
-/// dev：cwd 是 `app/src-tauri/`，resource_dir() 指向 target/debug/，里面没有
-///      rules/scripts；逐级向上找（src-tauri/ → app/ → workspace 根）。
-fn locate_resource_dir() -> PathBuf {
-    if let Ok(cwd) = std::env::current_dir() {
-        // 逐级向上：src-tauri/、app/、workspace 根。
-        for candidate in [cwd.clone(), cwd.join(".."), cwd.join("../..")] {
-            if candidate.join("rules").exists() && candidate.join("scripts").exists() {
-                return candidate;
-            }
+/// 抽成纯函数是为了可单测：判定只看磁盘结构，不依赖真实 cwd / 真实安装目录。
+/// 用 `is_dir()` 而非 `exists()`——同名普通文件不算资源目录。
+fn pick_resource_root(candidates: &[PathBuf]) -> Option<PathBuf> {
+    candidates
+        .iter()
+        .find(|c| c.join("rules").is_dir() && c.join("scripts").is_dir())
+        .cloned()
+}
+
+/// 组装资源候选目录列表（顺序即优先级）。
+///
+/// - **release**：只有 `resource_dir()`。`dev_cwd` 在 release 下恒为 `None`
+///   （见 `from_app()` 里的 `cfg` 分叉），因此 release 分支根本不碰 cwd；
+/// - **dev**：先 cwd 向上三级（`app/src-tauri/` → `app/` → workspace 根），再退到
+///   `resource_dir()`。顺序有意为之：`tauri dev` 会把 resources 复制到
+///   `target/debug/`，若优先用它，改 `scripts/*.ps1` 后 dev 仍读陈旧副本；
+///   而 `cargo run` 直跑时 target/debug 下没有资源，resource_dir 作兜底。
+fn build_candidates(resource_dir: Option<PathBuf>, dev_cwd: Option<PathBuf>) -> Vec<PathBuf> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if cfg!(debug_assertions) {
+        if let Some(cwd) = dev_cwd {
+            candidates.push(cwd.clone());
+            candidates.push(cwd.join(".."));
+            candidates.push(cwd.join("../.."));
         }
     }
-    // 最终回退（prod 走这里）。
-    PathBuf::from(".")
+    candidates.extend(resource_dir);
+    candidates
+}
+
+/// 资源缺失时的错误信息：必须带**绝对路径**与每处实际缺失项。
+///
+/// 旧实现静默返回 `.`，打包不全时表现为后续扫描报 INTERNAL，现场极难定位；
+/// 这里把「哪个目录缺什么」直接写进消息，让首次启动的失败可自解释。
+fn describe_missing(candidates: &[PathBuf]) -> String {
+    if candidates.is_empty() {
+        return "无法获取 resource_dir()，且 release 模式不再回退当前工作目录；\
+                安装包可能不完整，请重新安装"
+            .to_string();
+    }
+
+    let details: Vec<String> = candidates
+        .iter()
+        .map(|c| {
+            let mut missing: Vec<&str> = Vec::new();
+            if !c.join("rules").is_dir() {
+                missing.push("rules/");
+            }
+            if !c.join("scripts").is_dir() {
+                missing.push("scripts/");
+            }
+            if missing.is_empty() {
+                // 理论上不会走到：两条都在就不是缺失候选。
+                format!("{} 结构完整", c.display())
+            } else {
+                format!("{} 下缺少 {}", c.display(), missing.join(" 与 "))
+            }
+        })
+        .collect();
+
+    format!(
+        "找不到同时含 rules/ 与 scripts/ 的资源目录：{}；安装包可能不完整，请重新安装",
+        details.join("；")
+    )
 }
 
 impl AppPaths {
@@ -68,32 +125,38 @@ impl AppPaths {
             .map_err(|e| format!("app_data_dir: {e}"))?;
         std::fs::create_dir_all(&data_root).map_err(|e| format!("mkdir data_root: {e}"))?;
 
-        // 2. 只读资源目录。
-        let resource_dir = if let Ok(res) = app.path().resource_dir() {
-            if res.join("rules").exists() || res.join("scripts").exists() {
-                res
-            } else {
-                locate_resource_dir()
-            }
-        } else {
-            locate_resource_dir()
-        };
+        // 2. 只读资源目录：候选列表 + 纯函数挑选。
+        //    release 分支不取 cwd —— 这行 cfg 分叉就是「安装版不会被工作目录劫持」的保证。
+        #[cfg(debug_assertions)]
+        let dev_cwd = std::env::current_dir().ok();
+        #[cfg(not(debug_assertions))]
+        let dev_cwd: Option<PathBuf> = None;
 
-        // 3. rules_dir：可写副本。首次启动从 bundled 复制。
+        let candidates = build_candidates(app.path().resource_dir().ok(), dev_cwd);
+        let resource_dir =
+            pick_resource_root(&candidates).ok_or_else(|| describe_missing(&candidates))?;
+
+        // 3. rules_dir：可写副本。首次启动从 bundled 复制，失败即 Err（不吞）。
         let rules_dir = data_root.join("rules");
         let bundled_rules = resource_dir.join("rules");
-        if !rules_dir.exists() && bundled_rules.exists() {
-            copy_dir_all(&bundled_rules, &rules_dir)
-                .map_err(|e| format!("copy bundled rules: {e}"))?;
+        if !rules_dir.exists() {
+            copy_dir_all(&bundled_rules, &rules_dir).map_err(|e| {
+                format!(
+                    "copy bundled rules {} -> {}: {e}",
+                    bundled_rules.display(),
+                    rules_dir.display()
+                )
+            })?;
         }
 
-        // 4. scripts_dir：只读。
+        // 4. scripts_dir：只读，随安装包版本走。
         let scripts_dir = resource_dir.join("scripts");
 
         // 5. safe_box：可写。
         let box_dir = data_root.join("safe_box");
         std::fs::create_dir_all(&box_dir).map_err(|e| format!("mkdir safe_box: {e}"))?;
 
+        // 启动日志必须打印绝对路径：缺陷态这里是 `.\scripts`，一眼能看出来。
         eprintln!(
             "[paths] data_root={} rules_dir={} scripts_dir={} box_dir={}",
             data_root.display(),
@@ -108,5 +171,171 @@ impl AppPaths {
             scripts_dir,
             box_dir,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    /// 临时目录守卫：drop 时递归删除，避免污染 %TEMP%。
+    /// 不用 tempfile crate（app crate 无该依赖，且本任务禁止新增依赖）。
+    struct TempTree(PathBuf);
+
+    impl TempTree {
+        fn new(tag: &str) -> Self {
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("系统时间早于 UNIX_EPOCH")
+                .as_nanos();
+            let dir = std::env::temp_dir()
+                .join(format!("cclean-paths-{tag}-{}-{nanos}", std::process::id()));
+            std::fs::create_dir_all(&dir).expect("创建临时根目录失败");
+            Self(dir)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+
+        fn dir(&self) -> PathBuf {
+            self.0.clone()
+        }
+
+        fn mkdir(&self, name: &str) -> PathBuf {
+            let p = self.0.join(name);
+            std::fs::create_dir_all(&p).expect("创建子目录失败");
+            p
+        }
+    }
+
+    impl Drop for TempTree {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn pick_resource_root_只有_rules_返回_none() {
+        let tree = TempTree::new("only-rules");
+        tree.mkdir("rules");
+        assert_eq!(
+            pick_resource_root(&[tree.dir()]),
+            None,
+            "只有 rules/ 不算完整资源根（缺 scripts/）"
+        );
+    }
+
+    #[test]
+    fn pick_resource_root_只有_scripts_返回_none() {
+        let tree = TempTree::new("only-scripts");
+        tree.mkdir("scripts");
+        assert_eq!(
+            pick_resource_root(&[tree.dir()]),
+            None,
+            "只有 scripts/ 不算完整资源根（缺 rules/）"
+        );
+    }
+
+    #[test]
+    fn pick_resource_root_两者齐_命中该候选() {
+        let tree = TempTree::new("both");
+        tree.mkdir("rules");
+        tree.mkdir("scripts");
+        assert_eq!(
+            pick_resource_root(&[tree.dir()]),
+            Some(tree.dir()),
+            "rules/ 与 scripts/ 都在时应返回该候选"
+        );
+    }
+
+    #[test]
+    fn pick_resource_root_候选全空_返回_none() {
+        assert_eq!(
+            pick_resource_root(&[]),
+            None,
+            "没有候选时必须返回 None（由调用方转成明确错误，禁止静默回退）"
+        );
+        // 候选存在但目录不存在 / 是普通文件，同样不命中。
+        let tree = TempTree::new("empty");
+        assert_eq!(pick_resource_root(&[tree.dir()]), None);
+        std::fs::write(tree.path().join("rules"), b"not a dir").expect("写文件失败");
+        std::fs::write(tree.path().join("scripts"), b"not a dir").expect("写文件失败");
+        assert_eq!(
+            pick_resource_root(&[tree.dir()]),
+            None,
+            "同名普通文件不能被当成资源目录"
+        );
+    }
+
+    #[test]
+    fn pick_resource_root_多候选取第一个命中() {
+        let broken = TempTree::new("broken");
+        broken.mkdir("rules");
+        let good = TempTree::new("good");
+        good.mkdir("rules");
+        good.mkdir("scripts");
+
+        let candidates = vec![broken.dir(), good.dir()];
+        assert_eq!(
+            pick_resource_root(&candidates),
+            Some(good.dir()),
+            "应跳过不完整候选，命中后面那个完整候选"
+        );
+    }
+
+    #[test]
+    fn build_candidates_只给_resource_dir_时只产出一条() {
+        let res = PathBuf::from(r"C:\Program Files\C-DiskCleaner");
+        // dev_cwd=None 模拟 release 语义：列表里绝不能出现 cwd 派生目录。
+        let candidates = build_candidates(Some(res.clone()), None);
+        assert_eq!(candidates, vec![res]);
+    }
+
+    #[test]
+    fn build_candidates_dev_优先_cwd_再退_resource_dir() {
+        let res = PathBuf::from(r"D:\repo\app\src-tauri\target\debug");
+        let cwd = PathBuf::from(r"D:\repo\app\src-tauri");
+        let candidates = build_candidates(Some(res.clone()), Some(cwd.clone()));
+
+        if cfg!(debug_assertions) {
+            assert_eq!(
+                candidates,
+                vec![cwd.clone(), cwd.join(".."), cwd.join("../.."), res],
+                "dev 下应优先 cwd 三级（仓库内资源，ps1 改动即时生效），resource_dir 仅兜底"
+            );
+        } else {
+            // release 编译时即便传入 cwd 也不追加，双保险。
+            assert_eq!(candidates, vec![res]);
+        }
+    }
+
+    #[test]
+    fn describe_missing_带绝对路径与缺失项() {
+        let only_rules = TempTree::new("missing-scripts");
+        only_rules.mkdir("rules");
+        let msg = describe_missing(&[only_rules.dir()]);
+
+        assert!(
+            msg.contains(&only_rules.dir().display().to_string()),
+            "错误信息必须含候选绝对路径，实际：{msg}"
+        );
+        assert!(
+            msg.contains("scripts/"),
+            "错误信息必须点出缺失项，实际：{msg}"
+        );
+        assert!(
+            !msg.contains("缺少 rules/"),
+            "rules/ 存在时不应报缺 rules/，实际：{msg}"
+        );
+        assert!(msg.contains("重新安装"), "应给出可操作建议，实际：{msg}");
+    }
+
+    #[test]
+    fn describe_missing_空候选说明_release_不回退_cwd() {
+        let msg = describe_missing(&[]);
+        assert!(msg.contains("resource_dir()"), "实际：{msg}");
+        assert!(msg.contains("当前工作目录"), "实际：{msg}");
     }
 }
