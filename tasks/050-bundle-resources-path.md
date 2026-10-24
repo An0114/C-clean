@@ -35,7 +35,7 @@ pending
 ## 前置条件
 
 1. `main` 已含 task-001~049 全部产出（当前 `b547988`，task-049 合并提交 `60e0797`），工作区干净；
-2. 从 `main` 拉出 **一层** bugfix 分支 `bugfix/task-050-bundle-resources-path`（hotfix 语义，先例：`bugfix/task-035-release-signing` 直接从 main 拉；本任务无 feature 分支）；
+2. 分支 `bugfix/task-050-bundle-resources-path` **已由派发方从 `main` 拉出并推送**（hotfix 语义，先例：`bugfix/task-035-release-signing` 直接从 main 拉；本任务无 feature 分支）。执行方直接 `git fetch origin && git checkout bugfix/task-050-bundle-resources-path` 起手，**不要**再从 main 重建同名分支；若本地已有同名旧分支，先确认其 base 是 `86d89b7`（含任务书 050 的提交），否则删除重建；
 3. 关键锚点（**先读真实代码，以代码为准，不以本文档伪代码为准**）：
    - `app/src-tauri/tauri.conf.json` → `bundle.resources`（7 条，全部 `../../` 前缀）、`bundle.createUpdaterArtifacts: true`；
    - `app/src-tauri/src/paths.rs` → `locate_resource_dir()`（48-59 行）、`from_app()`（63-111 行）、启动日志 `eprintln!("[paths] ...")`；
