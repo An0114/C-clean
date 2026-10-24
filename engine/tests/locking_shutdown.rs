@@ -1,15 +1,19 @@
-//! task-049 集成测试：`shutdown_locking_processes`（Restart Manager 请求关闭）。
+//! task-049 / task-049b 集成测试：`shutdown_locking_processes`（Restart Manager 请求关闭）。
 //!
 //! - `shutdown_no_lockers_is_idempotent`：CI 必跑，无占用 → 空结果且重复调用不报错。
 //! - `shutdown_nonexistent_path_does_not_panic`：CI 必跑，坏路径不 panic。
 //! - `shutdown_never_closes_self`：CI 必跑，本进程持句柄时绝不把自己放进 `closed`。
 //! - `shutdown_returns_empty_on_non_windows`：非 Windows 编译期分支。
 //! - `shutdown_locked_file_closes_holder`：`#[ignore]`，真机手动 `--ignored` 跑。
+//! - `execute_retry_after_shutdown_deletes_locked_file`：`#[ignore]`，端到端。
+//! - `shutdown_only_touches_registered_path`：`#[ignore]`，B7（旁路文件不误伤）。
+//! - `shutdown_refuses_protected_image_holder`：`#[ignore]`，task-049b 护栏映像名判定。
+//! - `holder_child_holds_file`：`#[ignore]`，被上一条复制成 `explorer.exe` 拉起当 holder。
 //!
-//! 护栏纯函数 `is_protected_process` 是 `pub(crate)`，跨 crate 不可见，
+//! 护栏纯函数 `is_protected_process` / `decide` 是 `pub(crate)`，跨 crate 不可见，
 //! 其单测放在 `engine/src/execute/locking.rs` 的 `#[cfg(test)] mod tests`。
 
-use engine::execute::locking::shutdown_locking_processes;
+use engine::execute::locking::{shutdown_locking_processes, who_is_locking};
 
 #[test]
 fn shutdown_no_lockers_is_idempotent() {
@@ -227,10 +231,99 @@ fn execute_retry_after_shutdown_deletes_locked_file() {
     let _ = holder.wait();
 }
 
+/// 一个「外部进程独占持有文件」的 holder，带就绪/自然退出两个标记文件。
+///
+/// 为什么不再用「盲等 5 秒」：评审侧观察到 B7 用例偶发失败（`b after=[]`），
+/// 但无法区分「holder 自己退出」和「被 RmShutdown 波及」。用标记文件把两种
+/// 情况分开：
+/// - `.ready`：脚本已拿到独占句柄（等它出现，而不是 sleep 固定时长）；
+/// - `.done`：脚本正常走完（`Start-Sleep` 到点后写），被强杀时**不会**存在。
+#[cfg(windows)]
+struct Holder {
+    child: std::process::Child,
+    ready: std::path::PathBuf,
+    done: std::path::PathBuf,
+}
+
+#[cfg(windows)]
+impl Holder {
+    /// PowerShell 版 holder：独占打开 → 写 ready → 睡 180s → 写 done → 关闭。
+    ///
+    /// 180s 远大于单条用例的耗时（RmShutdown 最坏 ~30s），因此「用例还没跑完
+    /// holder 就自然退出」不可能发生，`.done` 也就成了「自然退出」的判据。
+    ///
+    /// `CREATE_NO_WINDOW`（0x0800_0000）给每个 holder 一个**独立**的隐藏控制台：
+    /// 否则两个 holder 与测试进程共用同一个 console，`RmShutdown` 强杀 A 时
+    /// 会连带把共用 console 的 B 一起带走（实测：单跑通过、全量连跑必失败，
+    /// `holder_b_exit=1` 且没有 done 标记）。真实场景里两个占用方本来就是彼此
+    /// 独立的进程，独立控制台更贴近事实。
+    fn spawn_powershell(file: &str, tag: &str) -> Self {
+        use std::os::windows::process::CommandExt;
+
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+        let dir = std::path::Path::new(file)
+            .parent()
+            .expect("holder file has parent")
+            .to_path_buf();
+        let ready = dir.join(format!("holder_{tag}.ready"));
+        let done = dir.join(format!("holder_{tag}.done"));
+        let script = format!(
+            "$f=[System.IO.File]::Open('{file}','Open','ReadWrite','None'); \
+             Set-Content -Path '{ready}' -Value $PID; \
+             Start-Sleep -Seconds 180; \
+             Set-Content -Path '{done}' -Value 'done'; \
+             $f.Close()",
+            file = file.replace('\\', "\\\\"),
+            ready = ready.to_string_lossy().replace('\\', "\\\\"),
+            done = done.to_string_lossy().replace('\\', "\\\\"),
+        );
+        let child = std::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .expect("spawn powershell holder");
+        Self { child, ready, done }
+    }
+
+    /// 等 holder 真的拿到句柄（最多 20s；PowerShell 冷启动在 CI 上可能 3-5s）。
+    fn wait_ready(&self) -> bool {
+        for _ in 0..200 {
+            if self.ready.exists() {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        false
+    }
+
+    /// (是否存活, 退出码)。
+    fn poll(&mut self) -> (bool, Option<i32>) {
+        match self.child.try_wait() {
+            Ok(Some(status)) => (false, status.code()),
+            _ => (true, None),
+        }
+    }
+
+    /// 自然退出标记：只有脚本跑到 `$f.Close()` 之前才写。
+    fn exited_naturally(&self) -> bool {
+        self.done.exists()
+    }
+
+    fn kill(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
 /// task-049 B7：只关闭「本次注册的资源」的占用方，不误伤其他文件。
 ///
 /// 两个文件各由一个外部进程独占持有：只对 A 调 shutdown → A 的占用必须消失，
 /// B 的占用必须原样保留（B 依然锁着、文件依然删不掉）。
+///
+/// task-049b 起失败必须可归因（评审 Bug #3）：失败信息里带 `b_before` / `b_after` /
+/// `holder_b_alive` / `holder_b_exit` / `holder_b_done_marker`，能区分
+/// 「holder 自然退出（环境抖动）」与「RmShutdown 真的波及了旁路进程」。
 #[test]
 #[cfg(windows)]
 #[ignore = "真机冒烟：需要两个真实外部占用进程，RmShutdown 最坏等 30s，CI 跳过"]
@@ -243,31 +336,27 @@ fn shutdown_only_touches_registered_path() {
     let path_a = a.to_string_lossy().to_string();
     let path_b = b.to_string_lossy().to_string();
 
-    let hold = |p: &str| {
-        let script = format!(
-            "$f=[System.IO.File]::Open('{}','Open','ReadWrite','None'); Start-Sleep -Seconds 90; $f.Close()",
-            p.replace('\\', "\\\\")
-        );
-        std::process::Command::new("powershell.exe")
-            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
-            .spawn()
-            .expect("spawn holder")
-    };
-    let mut holder_a = hold(&path_a);
-    let mut holder_b = hold(&path_b);
-    std::thread::sleep(std::time::Duration::from_secs(5));
-
-    // 前置：两个文件都确实被占用。
+    let mut holder_a = Holder::spawn_powershell(&path_a, "a");
+    let mut holder_b = Holder::spawn_powershell(&path_b, "b");
     assert!(
-        !engine::execute::locking::who_is_locking(&path_a)
-            .expect("who a")
-            .is_empty(),
-        "file A should be locked before shutdown"
+        holder_a.wait_ready(),
+        "holder A 未在 20s 内就绪（ready 标记没出现）"
     );
-    let b_before = engine::execute::locking::who_is_locking(&path_b).expect("who b");
+    assert!(
+        holder_b.wait_ready(),
+        "holder B 未在 20s 内就绪（ready 标记没出现）"
+    );
+
+    // 前置：两个文件都确实被 RM 枚举为「有占用」（ready 只证明句柄已拿到）。
+    let a_before = who_is_locking(&path_a).expect("who a");
+    let b_before = who_is_locking(&path_b).expect("who b");
+    assert!(
+        !a_before.is_empty(),
+        "file A should be locked before shutdown: {a_before:?}"
+    );
     assert!(
         !b_before.is_empty(),
-        "file B should be locked before shutdown"
+        "file B should be locked before shutdown: {b_before:?}"
     );
 
     // 只对 A 请求关闭。
@@ -275,11 +364,11 @@ fn shutdown_only_touches_registered_path() {
     println!("shutdown a: {outcome:?}");
     assert!(!outcome.closed.is_empty(), "closed={outcome:?}");
 
-    // A 的占用应消失（≤5s 轮询）。
+    // A 的占用应消失（≤10s 轮询）。
     let mut a_gone = false;
-    for _ in 0..10 {
+    for _ in 0..20 {
         std::thread::sleep(std::time::Duration::from_millis(500));
-        if engine::execute::locking::who_is_locking(&path_a)
+        if who_is_locking(&path_a)
             .map(|v| v.is_empty())
             .unwrap_or(false)
         {
@@ -290,25 +379,146 @@ fn shutdown_only_touches_registered_path() {
     assert!(a_gone, "A still locked after shutdown");
 
     // B 必须毫发无损：占用还在，且仍处于「删不掉」状态。
-    let b_after = engine::execute::locking::who_is_locking(&path_b).expect("who b after");
-    let holder_b_alive = holder_b.try_wait().expect("try_wait b").is_none();
-    println!("b before={b_before:?} b after={b_after:?} holder_b_alive={holder_b_alive}");
+    let b_after = who_is_locking(&path_b).expect("who b after");
+    let (holder_b_alive, holder_b_exit) = holder_b.poll();
+    let holder_b_done = holder_b.exited_naturally();
+    println!(
+        "b_before={b_before:?} b_after={b_after:?} holder_b_alive={holder_b_alive} \
+         holder_b_exit={holder_b_exit:?} holder_b_done_marker={holder_b_done}"
+    );
+
+    // 归因（评审 Bug #3 要求）：holder 是 180s 长睡眠，用例总耗时远小于 180s，
+    // 所以「没写 done 就退出」= 被外部终止（RM 波及旁路进程）——这是真缺陷，
+    // 不能再用 inconclusive 糊过去。
+    if !holder_b_alive && !holder_b_done {
+        holder_a.kill();
+        panic!(
+            "RmShutdown 波及了未注册路径的旁路进程：holder_b_exit={holder_b_exit:?} \
+             b_before={b_before:?} b_after={b_after:?}（holder 未写 done 标记即退出）"
+        );
+    }
     assert!(
         holder_b_alive,
-        "inconclusive: B 的占用进程在 shutdown 前自行退出（环境抖动），请重跑"
+        "inconclusive: holder B 在用例结束前自行退出（done 标记={holder_b_done}，\
+         exit={holder_b_exit:?}），环境抖动，请重跑"
     );
     assert_eq!(
         b_after.len(),
         b_before.len(),
-        "shutdown on A must not touch B's lockers"
+        "shutdown on A must not touch B's lockers: b_before={b_before:?} b_after={b_after:?}"
     );
     assert!(
         std::fs::remove_file(&b).is_err(),
         "B must still be undeletable (its holder is alive)"
     );
 
-    let _ = holder_a.kill();
-    let _ = holder_b.kill();
-    let _ = holder_a.wait();
-    let _ = holder_b.wait();
+    holder_a.kill();
+    holder_b.kill();
+}
+
+/// task-049b（评审 Bug #1）：护栏按 **PID → 映像文件名** 判定，不受系统语言影响。
+///
+/// 构造方式：把本测试二进制复制成 `explorer.exe`，再用 libtest 的 `--exact`
+/// 拉起其中的 `holder_child_holds_file` 子用例去独占持有文件。于是 RM 看到的是
+/// 一个**映像名 = explorer.exe** 的真实外部进程——这正好复刻了评审 Bug #1 的
+/// 场景（`zh-CN` 下 RM 报的是 `Windows 资源管理器`，旧实现三条名字规则全不命中），
+/// 且不需要 GUI、不依赖真 explorer 恰好持有文件，任意语言环境都能跑。
+#[test]
+#[cfg(windows)]
+#[ignore = "真机冒烟：需要外部进程真实占用，CI 跳过"]
+fn shutdown_refuses_protected_image_holder() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let target = tmp.path().join("held_by_fake_explorer_049b.txt");
+    std::fs::write(&target, b"x").expect("write");
+    let path = target.to_string_lossy().to_string();
+
+    let fake_explorer = tmp.path().join("explorer.exe");
+    std::fs::copy(
+        std::env::current_exe().expect("current_exe"),
+        &fake_explorer,
+    )
+    .expect("copy test exe as explorer.exe");
+
+    let ready = tmp.path().join("fake_explorer.ready");
+    let mut child = std::process::Command::new(&fake_explorer)
+        .args([
+            "--exact",
+            "holder_child_holds_file",
+            "--ignored",
+            "--nocapture",
+        ])
+        .env("HOLDER_FILE", &path)
+        .env("HOLDER_READY", &ready)
+        .spawn()
+        .expect("spawn fake explorer holder");
+
+    // 等它真的持有文件（ready 标记 + RM 枚举双重确认，不盲等）。
+    let mut locked = false;
+    for _ in 0..200 {
+        if ready.exists()
+            && who_is_locking(&path)
+                .map(|v| !v.is_empty())
+                .unwrap_or(false)
+        {
+            locked = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    if !locked {
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!(
+            "fake explorer 未能在 20s 内持有文件（ready={}）",
+            ready.exists()
+        );
+    }
+
+    let outcome = shutdown_locking_processes(&path).expect("shutdown ok");
+    println!("fake explorer outcome: {outcome:?}");
+
+    // 红线：explorer.exe 命中护栏 → 一个都不关，且必须出现在 refused 里。
+    assert!(
+        outcome.closed.iter().all(|lp| lp.pid != child.id()),
+        "explorer.exe 绝不能进 closed: {outcome:?}"
+    );
+    assert!(
+        outcome.closed.is_empty(),
+        "存在受保护进程时不应关闭任何进程（mixed fail-closed）: {outcome:?}"
+    );
+    let refused = outcome.refused.iter().find(|r| r.pid == child.id());
+    assert_eq!(
+        refused.map(|r| r.reason.as_str()),
+        Some("protected process"),
+        "refused 应含 protected process: {outcome:?}"
+    );
+    // 护栏拒绝 → 不调 RmShutdown → holder 必须还活着。
+    assert!(
+        child.try_wait().expect("try_wait").is_none(),
+        "受保护进程不应被关闭"
+    );
+
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// holder 子用例：只被 [`shutdown_refuses_protected_image_holder`] 以「复制成
+/// `explorer.exe` 的测试二进制」形式拉起，用来扮演持有文件的外部进程。
+/// 常规跑测试时永不执行（`#[ignore]` + 需要环境变量）。
+#[test]
+#[cfg(windows)]
+#[ignore = "holder 子进程专用，不单独跑"]
+fn holder_child_holds_file() {
+    // 被 `--include-ignored` 全量跑时会进来，但没有环境变量就静默跳过，
+    // 避免污染连跑证据（真正的 holder 一定由上面那条用例带 env 拉起）。
+    let (Ok(file), Ok(ready)) = (std::env::var("HOLDER_FILE"), std::env::var("HOLDER_READY"))
+    else {
+        println!("holder_child_holds_file: 无 HOLDER_FILE/HOLDER_READY，跳过（非 holder 子进程）");
+        return;
+    };
+    // Rust 的 File::open 不带 FILE_SHARE_DELETE → 天然制造「删不掉」的占用。
+    let handle = std::fs::File::open(&file).expect("open holder file");
+    std::fs::write(&ready, b"ready").expect("write ready marker");
+    std::thread::sleep(std::time::Duration::from_secs(120));
+    drop(handle);
 }

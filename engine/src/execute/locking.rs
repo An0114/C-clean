@@ -521,72 +521,102 @@ fn u16_to_string(buf: &[u16]) -> String {
 
 #[cfg(test)]
 mod tests {
-    //! task-049 护栏纯函数单测（8 条，验收项 A3）。
+    //! task-049 / task-049b 护栏纯函数单测。
     //!
-    //! 放在模块内而不是 `engine/tests/`：`is_protected_process` 是 `pub(crate)`，
-    //! 跨 crate 的集成测试看不见它（见任务实现备注里的偏差说明）。
+    //! 放在模块内而不是 `engine/tests/`：`is_protected_process` / `decide` 是
+    //! `pub(crate)`，跨 crate 的集成测试看不见它（见任务实现备注里的偏差说明）。
+    //!
+    //! task-049b 起，判定主依据是**映像文件名**，所以绝大多数用例直接调
+    //! [`decide`] 并显式注入映像名——结果与跑测试的机器无关（不会因为测试机上
+    //! 恰好存在某个 pid 而漂移）。只有「取不到映像名」相关的用例才走
+    //! [`is_protected_process`]（真实 `OpenProcess` 路径）。
 
-    use super::is_protected_process;
+    use super::{
+        apply_mixed_fail_closed, decide, is_protected_process, LockingProcess, RefusedProcess,
+        REASON_PROTECTED, REASON_SYSTEM, REASON_UNKNOWN,
+    };
 
     const SELF: u32 = 4242;
 
+    /// 构造一个普通占用进程（无服务名），用于批量判定用例。
+    fn lp(pid: u32, app_name: &str) -> LockingProcess {
+        LockingProcess {
+            pid,
+            app_name: app_name.to_string(),
+            service_name: None,
+        }
+    }
+
+    /// 构造一条「被护栏拒绝」的记录。
+    fn refused(pid: u32, app_name: &str, reason: &'static str) -> RefusedProcess {
+        RefusedProcess {
+            pid,
+            app_name: app_name.to_string(),
+            reason: reason.to_string(),
+        }
+    }
+
     #[test]
     fn allows_normal_process() {
-        assert_eq!(is_protected_process("notepad.exe", None, 1234, SELF), None);
+        assert_eq!(
+            decide("notepad.exe", None, 1234, SELF, Some("notepad.exe")),
+            None
+        );
     }
 
     #[test]
     fn refuses_explorer() {
         assert_eq!(
-            is_protected_process("explorer.exe", None, 1234, SELF),
-            Some("protected process")
+            decide("explorer.exe", None, 1234, SELF, Some("explorer.exe")),
+            Some(REASON_PROTECTED)
         );
     }
 
     #[test]
     fn refuses_svchost() {
         assert_eq!(
-            is_protected_process("svchost.exe", None, 1234, SELF),
-            Some("protected process")
+            decide("svchost.exe", None, 1234, SELF, Some("svchost.exe")),
+            Some(REASON_PROTECTED)
         );
     }
 
     #[test]
     fn refuses_protected_name_case_insensitive() {
         assert_eq!(
-            is_protected_process("EXPLORER.EXE", None, 1234, SELF),
-            Some("protected process")
+            decide("EXPLORER.EXE", None, 1234, SELF, Some("EXPLORER.EXE")),
+            Some(REASON_PROTECTED)
         );
         assert_eq!(
-            is_protected_process("MsMpEng.exe", None, 1234, SELF),
-            Some("protected process")
+            decide("MsMpEng.exe", None, 1234, SELF, Some("MsMpEng.exe")),
+            Some(REASON_PROTECTED)
         );
     }
 
     #[test]
     fn refuses_windows_service() {
         assert_eq!(
-            is_protected_process("anything.exe", Some("wuauserv"), 1234, SELF),
+            decide(
+                "anything.exe",
+                Some("wuauserv"),
+                1234,
+                SELF,
+                Some("anything.exe")
+            ),
             Some("windows service")
         );
     }
 
     #[test]
     fn refuses_system_pid() {
-        assert_eq!(
-            is_protected_process("System", None, 4, SELF),
-            Some("system process")
-        );
-        assert_eq!(
-            is_protected_process("Idle", None, 0, SELF),
-            Some("system process")
-        );
+        // pid 判定先于映像名判定：即使取不到映像名，也给出 system process。
+        assert_eq!(decide("System", None, 4, SELF, None), Some(REASON_SYSTEM));
+        assert_eq!(decide("Idle", None, 0, SELF, None), Some(REASON_SYSTEM));
     }
 
     #[test]
     fn refuses_self() {
         assert_eq!(
-            is_protected_process("cdisk-cleaner.exe", None, SELF, SELF),
+            decide("cdisk-cleaner.exe", None, SELF, SELF, None),
             Some("self")
         );
     }
@@ -594,18 +624,18 @@ mod tests {
     #[test]
     fn refuses_empty_app_name() {
         assert_eq!(
-            is_protected_process("   ", None, 1234, SELF),
-            Some("system process")
+            decide("   ", None, 1234, SELF, Some("notepad.exe")),
+            Some(REASON_SYSTEM)
         );
     }
 
     #[test]
     fn refuses_rm_friendly_name_of_protected_app() {
-        // RM 的 strAppName 是应用友好名，不是 exe 文件名（实测 PowerShell 报
-        // "Windows PowerShell"），所以 "Windows Explorer" 也必须拦住。
+        // 兜底规则：RM 的 strAppName 是应用友好名（实测 "Windows Explorer"），
+        // 即使映像名查到了别的东西，友好名命中名单也必须拦住。
         assert_eq!(
-            is_protected_process("Windows Explorer", None, 1234, SELF),
-            Some("protected process")
+            decide("Windows Explorer", None, 1234, SELF, Some("notepad.exe")),
+            Some(REASON_PROTECTED)
         );
     }
 
@@ -613,8 +643,98 @@ mod tests {
     fn allows_rm_friendly_name_of_normal_app() {
         // 反例：真实 RM 输出 "Windows PowerShell"，不能被误判成受保护进程。
         assert_eq!(
-            is_protected_process("Windows PowerShell", None, 1234, SELF),
+            decide(
+                "Windows PowerShell",
+                None,
+                1234,
+                SELF,
+                Some("powershell.exe")
+            ),
             None
         );
+    }
+
+    // ---- task-049b 新增（评审 Bug #1：本地化应用名可绕过护栏） ----
+
+    #[test]
+    fn refuses_localized_explorer_description() {
+        // 任务书 A5 指定写法：这个 pid 在测试机上取不到映像名 → fail-closed。
+        // 旧实现（只按 app_name 匹配）在这里返回 None，也就是「可以关」。
+        assert!(
+            is_protected_process("Windows 资源管理器", None, 1234, SELF).is_some(),
+            "本地化应用名 + 取不到映像名 必须 fail-closed"
+        );
+
+        // 真正的修复路径：pid 能取到映像名时，按映像名判定，与语言无关。
+        // zh-CN 真机实测：explorer.exe → "Windows 资源管理器"，
+        // dwm.exe → "桌面 窗口管理器"，旧的三条名字规则全部不命中。
+        assert_eq!(
+            decide("Windows 资源管理器", None, 1234, SELF, Some("explorer.exe")),
+            Some(REASON_PROTECTED)
+        );
+        assert_eq!(
+            decide("桌面 窗口管理器", None, 1234, SELF, Some("dwm.exe")),
+            Some(REASON_PROTECTED)
+        );
+        // 反向确认：本地化名不是靠「往名单里加中文名」修好的。
+        assert_eq!(
+            decide("Windows 资源管理器", None, 1234, SELF, Some("notepad.exe")),
+            None
+        );
+    }
+
+    #[test]
+    fn refuses_when_image_name_unavailable() {
+        // 纯函数层：取不到映像名 → 拒绝（fail-closed），而不是放行。
+        assert_eq!(
+            decide("notepad.exe", None, 1234, SELF, None),
+            Some(REASON_UNKNOWN)
+        );
+        // 真实 API 层：u32::MAX - 1 必然不是合法进程 → OpenProcess 失败 → 拒绝。
+        assert_eq!(
+            is_protected_process("notepad.exe", None, u32::MAX - 1, SELF),
+            Some(REASON_UNKNOWN)
+        );
+    }
+
+    // ---- task-049b 新增（评审 Bug #2：mixed 场景 fail-closed） ----
+
+    #[test]
+    fn mixed_batch_is_fail_closed() {
+        // 混合占用：notepad 可关，但 explorer 被拒绝 → 一个都不关。
+        let (closable, refused_list) = apply_mixed_fail_closed(
+            vec![lp(1000, "notepad.exe")],
+            vec![refused(1001, "Windows 资源管理器", REASON_PROTECTED)],
+        );
+        assert!(
+            closable.is_empty(),
+            "mixed 场景必须一个都不关: {closable:?}"
+        );
+        assert_eq!(refused_list.len(), 1, "refused={refused_list:?}");
+        assert_eq!(refused_list[0].pid, 1001);
+        assert_eq!(refused_list[0].reason, REASON_PROTECTED);
+    }
+
+    #[test]
+    fn batch_without_protected_process_closes_all() {
+        // 全是普通进程 → 全部可关（fail-closed 不能把正常场景也挡掉）。
+        let lockers = vec![lp(1000, "notepad.exe"), lp(1001, "chrome.exe")];
+        let (closable, refused_list) = apply_mixed_fail_closed(lockers, Vec::new());
+        assert_eq!(closable.len(), 2, "closable={closable:?}");
+        assert!(refused_list.is_empty(), "refused={refused_list:?}");
+    }
+
+    #[test]
+    fn batch_all_refused_stays_refused() {
+        // 全部被拒绝 → closable 本来就空，refused 原样保留（不重复包装）。
+        let (closable, refused_list) = apply_mixed_fail_closed(
+            Vec::new(),
+            vec![
+                refused(1000, "notepad.exe", REASON_UNKNOWN),
+                refused(1001, "explorer.exe", REASON_PROTECTED),
+            ],
+        );
+        assert!(closable.is_empty(), "closable={closable:?}");
+        assert_eq!(refused_list.len(), 2, "refused={refused_list:?}");
     }
 }
