@@ -5,7 +5,7 @@
 ## 当前目标
 **M2 updater 正式关闭（2026-10-23）**：task-048 真机升级验证通过——已装 v0.1.0 的机器启动应用，顶部 banner 正确弹出「发现新版本 v0.1.1」+ 设置页应用更新卡片同步显示「发现新版本 0.1.1 / 新版本 0.1.1」，updater 从 check → 展示 → 引导下载安装全链路真机闭环。叠加 bugfix/task-035-release-signing 的签名/版本号修复（真实发版 run `39942401586` 产出 `.sig` + `latest.json`，pubkey keyid 一致），M2 里程碑收官。
 
-下一阶段焦点：清 M1 遗留——① 占用进程 RmShutdown（task-049，清理失败从「只报告」升级为「可处置」）；② safe_box 时间范围筛选 / 多选 session / audit_log 联表（task-050+）。品牌图标决策：暂时不做，沿用 Tauri 默认占位。
+下一阶段焦点：**task-049b 测试通过（2026-10-24 测试轮 2），状态 `awaiting_review`（待评审重评）**——049b 的三项修复已由测试 Agent 独立复测闭环：① 护栏 **PID → 映像文件名**（`QueryFullProcessImageNameW`，取不到 fail-closed），真机假 `explorer.exe` 持锁用例实测 `closed=[]` + `refused=[protected process]`；② mixed 占用 **fail-closed**（有被拒进程即整批不调 `RmShutdown`），单测三分支覆盖；③ B7 用例独立 console + ready/done 归因，合并前后各连跑 5 次、共 10 次全绿（每次 8/8）。测试期另修 2 项第一档：护栏「本地化名」用例用合法 PID 1234 导致结论随环境漂移（改 `u32::MAX - 1` + 断言收紧）、前端 `RefusedProcess.reason` 注释缺 `unknown process`。门禁：fmt 0 / clippy 0 / engine **196 条**（188 passed + 8 ignored）/ lint 0 / vitest 34 / build 176.39 kB；NSIS 干净目录安装 exit 0 + 安装目录 9/9 文件 SHA-256 零变化；CI `40059150999`（`5550f61`）success。GUI 点击/Console 仍因无活动桌面（WebView2 渲染进程崩溃，Crashpad 新增 `.dmp`）未取得，登记第三档。**仍未合并 main**。下一项：评审重评 task-049（通过后由评审合并 main）→ 派发 safe_box 增强（时间范围筛选 / 多选 session / audit_log 联表）。品牌图标决策：暂时不做，沿用 Tauri 默认占位。
 
 ## 最近一次变更
 2026-10-11：完成 PRD / TRD / ARCHITECTURE / AGENTS / 立项决策记录全套长期基线文档，并初始化本状态白板。
@@ -188,6 +188,51 @@
   - 结论：task-036 启动自动 check + 非阻塞 banner、task-035 plugins.updater 配置 + `latest.json` 直拉、bugfix/task-035 签名修复三者链路在真机安装态下一致成立；M2 无遗留阻塞项。
   - 后续（非阻塞）：banner「立即更新」点击后的下载安装进度反馈、差量更新留 M3+；`target_commitish` 溯源修正留发版类任务。
 
+2026-10-23：task-049 完成（feature/task-049-rm-shutdown-locking，状态 testing）——占用进程从「只报告」升级为「可处置」：
+  - 后端 `engine/src/execute/locking.rs`：抽出 `RmSession`（`RmEndSession` 放进 `Drop`，任何路径都不泄漏会话）；新增 `shutdown_locking_processes`（单资源会话 + `RmGetList` 护栏过滤 + `RmShutdown(RmForceShutdown)`，无占用/全拒时**不调** `RmShutdown`）；新增 `is_protected_process` 纯函数（服务 / `pid<=4` / 自身 / 12 条保护名单，含 RM 应用友好名兜底）。
+  - **顺带修掉一个既有 bug**：`who_is_locking` 的 probe 用 `Error::code()` 与 `234` 比较，实际拿到 HRESULT `0x800700EA`，导致「真有进程占用时直接返回 Err」——task-020/021 的占用检测在真机上从未生效，`ExecResult.lockingProcesses` 一直是空的。
+  - 命令层：新增 `cleanup_retry_locked`（`RmShutdown` 阻塞 FFI 走 `spawn_blocking`，closed/refused 按 pid 去重，删除复用 `execute_items` 同一段编排，白名单二次校验照常）。
+  - 前端 `Items.tsx`：`cleanup_execute` 返回值不再丢弃，失败明细展示「路径 — 原因 — 占用进程 `app.exe (PID x)`」；有占用时出现「关闭占用进程并重试」，`window.confirm` 列出进程清单 + 「未保存的数据可能丢失」；结果条展示「已关闭 N 个 / 受保护未关闭清单 / 仍失败 Y 项」；cleaning/retrying/previewing 三态互斥。
+  - 门禁：fmt 0 / clippy 0 / `cargo test -p engine` 183 passed + 5 ignored（合计 188，基线 173，+15）/ pnpm lint 0 / pnpm test 28 / pnpm build 176.39 kB（gzip 56.25 kB）。`pnpm tauri build` 出包成功（NSIS 4.01 MiB / MSI 5.80 MiB）。
+  - **真机证据（后端全链路）**：`engine/tests/locking_shutdown.rs::execute_retry_after_shutdown_deletes_locked_file`（`--ignored` 手动跑）PASS——首次删除 `deleted=false` + `lockingProcesses=[PID]` → `closed=[PID]` → 重试 `deleted=true, bytesFreed=7`，文件消失。
+  - **未取得**：GUI 点击截图与安装态冒烟。原因：Tauri 显式传 `additionalBrowserArgs` 使 WebView2 忽略 `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS`（CDP 9222 开不出来，改 `tauri.conf.json` 属禁止范围）；且当前会话无活动桌面合成（`PrintWindow`/`BitBlt` 客户区全黑）；安装器执行被环境拦截（exit 126）。已登记为遗留项，交测试 Agent 在真机安装态补齐。
+  - 详见 `tasks/049-rm-shutdown-locking-processes.md` 的「实现备注」。
+
+2026-10-24：task-049 测试完成（测试 Agent / 提示词 9，状态 **awaiting_review**）——独立重跑全部门禁 + 测试期缺陷闭环：
+  - **基线**：`git fetch` 后本地 = 远端 `0541235`；改动 7 文件（3 代码 + 2 测试 + 2 文档），未越界（`executor.rs` / `tauri.conf.json` / `Cargo.toml` / `package.json` 均未动）。
+  - **L1 全绿**：fmt 0 / clippy 0 / `cargo test -p engine` **183 passed + 6 ignored**（基线 173，+10）/ `pnpm lint` 0 / vitest **34 passed（6 files，含本轮新增 6 条 Items 组件用例）** / `pnpm build` 176.39 kB（gzip 56.25 kB）。
+  - **L2 契约**：命令签名↔实参、5 个结构体 camelCase、Envelope 解包、事件 payload 四项逐字段核对一致；真机 `--ignored` 用例输出真实 JSON 与前端 interface 完全对齐。
+  - **缺陷 1（已修）**：清理失败后 `cleaning` / `previewing` 期间「关闭占用进程并重试」仍可点（违反 C12 三态互斥）→ `bugfix/task-049-retry-btn-mutex` `0129de9`，`disabled={busy}` + 入口守卫改 `busy`；新增组件用例在修复前代码上实测失败、修复后通过。
+  - **缺陷 2（已修）**：任务书证据清单要求的「只传 1 个 id 不误伤其他文件」无对应用例 → 同分支 `f667c70` 新增 `shutdown_only_touches_registered_path`，真机 3/3 PASS（A 关闭、B 占用与进程原样保留）。
+  - **合并**：`merge --no-ff` → `be60f55`；合并后全量回归（fmt/clippy/cargo 183/vitest 34/build 0）全绿。
+  - **L4 打包安装**：`pnpm tauri build` 出包（NSIS 4.01 MiB / MSI 6.94 MiB）；`/S /D=%TEMP%\cclean-smoke-049-nsis` 安装 exit 0；安装版启动后 `data_root=%APPDATA%\com.and0114.cclean`，安装目录 9 个文件 SHA-256 前后**零变化**。
+  - **未取得（第三档，已登记）**：GUI 真机点击与 DevTools Console —— 本会话无活动桌面合成，WebView2 渲染进程创建即崩溃（Crashpad 持续产出 `.dmp`、应用进程 0 子进程、CDP 9222 不监听、`CopyFromScreen` 句柄无效）。补偿：C8–C12 用 jsdom 组件用例 + 后端真实占用进程端到端 + 代码走查，**未伪造截图/日志**。
+  - **新登记预存在问题（非本任务引入）**：打包态 `bundle.resources` 落在 `$INSTDIR\_up_\_up_\rules`，而 `AppPaths` 只查 `resource_dir()/rules` → 安装版 `scripts_dir=.\scripts`，全新用户首次启动取不到规则会导致 `cleanup_execute`/`cleanup_retry_locked` 返回 INTERNAL（本机因 `%APPDATA%\...\rules` 已存在而未暴露）。引入于 `16b30e2`，修复需改 `tauri.conf.json` 或 `paths.rs`（均在 task-049 禁止清单内），建议另开任务。
+  - **CI**：`ci` run 39967340368（0541235）/ 40045174671（8b84cf4）/ 40045926460（f667c70）/ 40047649773（be60f55）/ 40047903556（b1d6118）/ 40048375380（e23cdce）全部 `conclusion=success`（末次 20 步全绿，含 Rust 测试 / 前端 lint+test+build / Tauri build / 产物与规则库校验）。
+  - 详见 `docs/test-reports/049-test-report.md`。
+2026-10-24：task-049b 修复完成（`bugfix/task-049-guard-image-name`，状态 `testing`，**未合并 main**）——评审轮 1 的三项否决/阻塞缺陷全部闭环：
+  - **Bug #1（高）护栏本地化绕过**：新增 `image_file_name(pid)`（`OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` + `QueryFullProcessImageNameW`，句柄 RAII 释放），`decide()` 判定顺序改为 `self → pid<=4 → service → 映像名命中名单 → 取不到映像名 fail-closed(unknown process) → 空名 → 友好名兜底`；**未往名单追加任何中文名**。`engine/Cargo.toml` 仅追加 `windows` feature `Win32_System_Threading`。
+  - **Bug #2（中）mixed 语义失真**：新增 `apply_mixed_fail_closed`——只要有进程被护栏拒绝就整批不调 `RmShutdown`（`closed=[]`，`refused` 为原样结果），黄条「受保护未关闭」变成事实。
+  - **Bug #3（中）B7 不稳定**：根因定位为 **holder 共用 console**（`RmShutdown` 连带关闭同 console 兄弟进程，实测 `holder_b_exit=1` 且无 done 标记；单跑 2/2 PASS、全量 2/2 FAILED），改 `CREATE_NO_WINDOW` 独立 console + ready/done 标记 + 退出码归因后 **连跑 5/5 全绿**；该 console 耦合已登记为 `locking.rs` 已知限制 4。
+  - **新增测试**：护栏单测 10 → 15 条（中文名 / 映像名不可得 / mixed 三分支）；集成新增 `shutdown_refuses_protected_image_holder`（把测试二进制复制成 `explorer.exe` 持锁，实测 `closed=[]` + `refused=[protected process]`）与 holder 子用例。
+  - **门禁**：fmt / clippy(-D warnings) / `cargo test -p engine`（196 条）/ pnpm lint / vitest 34 / vite build 176.39 kB gzip 56.25 kB 全绿。
+  - **CI**：bugfix 分支 run `40054417543` success（head `c34af2c`，draft PR #13 触发）；**合回 feature 后** run `40055549993` success（head `b1055aa`，PR #11 触发）——合并后状态本身也过闸。
+  - **Git**：`199527a`(fix) → `c34af2c`(test) → `11feafe`(docs task) → `75e43f6`(docs state) → `b1055aa`(merge --no-ff 合回 feature)；bugfix 子分支已删除（本地 + 远端），**main 仍为 `401f336` 未动**。
+  - 详见 `tasks/049b-bugfix-guard-image-name.md` §实现备注。
+
+2026-10-24：task-049b **测试轮 2 通过**（测试 Agent / 提示词 9，状态 **awaiting_review**，**未合并 main**）——独立重跑全部门禁 + 测试期 2 项第一档缺陷闭环：
+  - **基线**：本地 = 远端 `0c02485`；改动仅 `bugfix/task-049-guard-test-stability`（2 文件），未越界（`executor.rs` / `commands.rs` / `lib.rs` / `Cargo.lock` / `tauri.conf.json` 均未动）。
+  - **L1 全绿**：fmt 0 / clippy 0（`-D warnings`）/ `cargo test -p engine` **196 条（188 passed + 8 ignored，0 failed）** / lint 0 / vitest **34 passed（6 files）** / build **176.39 kB（gzip 56.25 kB）**；合并前后各跑一遍，数字一致。
+  - **L2 真机**：`--include-ignored --test-threads=1` **合并前 5 次 + 合并后 5 次，共 10 次全绿（每次 8/8）**；`shutdown_refuses_protected_image_holder` 实测 `fake explorer outcome: ShutdownOutcome { closed: [], refused: [RefusedProcess { pid: 37836, app_name: "explorer.exe", reason: "protected process" }] }`——护栏本地化绕过（评审 Bug #1）确认闭环。
+  - **契约**：`reason` 取值域新增 `unknown process` 与前端展示对齐；mixed 场景 `closed=[]` + 黄条 + headline「已关闭 0 个进程，仍失败 N 项」（tone=fail）走查确认不误报绿条。
+  - **缺陷 1（已修，测试资产）**：`refuses_localized_explorer_description` 用合法 PID `1234` 调 `is_protected_process`，结论取决于「1234 是否被普通进程占用」（本机实测当时空闲 → 属偶然前提）；改 `u32::MAX - 1` + 断言由 `is_some()` **收紧**为 `Some(REASON_UNKNOWN)`（`a740dea`）。
+  - **缺陷 2（已修，注释）**：`Items.tsx` 的 `RefusedProcess.reason` 注释缺 `unknown process`（`448275a`）。
+  - **合并**：`merge --no-ff` → `5550f61`；子分支已删（本地 + 远端），临时 PR #14 已关闭；合并后全量回归 + 真机 5 连跑全绿。
+  - **L4 打包安装**：`pnpm tauri build` 出包（NSIS 4.01 MiB / MSI 6.95 MiB；本地因缺 `TAURI_SIGNING_PRIVATE_KEY` 退出码 1 且无 `.sig`，产物已生成）；`/S /D=%TEMP%\cclean-smoke-049b` 安装 `exit 0`、payload 9 文件；安装版数据落 `%APPDATA%\com.and0114.cclean\data\cdiskcleaner.db`，安装目录 **9/9 文件 SHA-256 零变化（NO_DIFF）**。
+  - **未取得（第三档，已登记）**：GUI 真机点击与 Console——本轮再次实测：窗口标题 `C-Disk Cleaner` 短暂存在 → 12s 内 Crashpad 新增 `.dmp`（dev `11:47:22` / 安装版 `11:55:02`）→ 应用退出，`MY_WV2=0`、CDP 9222 不监听。补偿：jsdom 组件用例 6 条 + 后端真实占用进程端到端 + 代码走查，**未伪造证据**。
+  - **CI**：`ci` run `40057717120`（bugfix `448275a`）/ `40059150999`（feature `5550f61`）/ `40056574881`（`0c02485`）全部 `conclusion=success`。
+  - 详见 `docs/test-reports/049b-test-report.md`。
+
 ## 已完成事项
 - [x] 项目立项与仓库初始化（commit 67990f5 / 4972f9d）
 - [x] 固化立项阶段 8 项关键决策：Tauri 无 Plan B / Cargo.lock 入库 / 保险箱 5GB FIFO / 规则库 GitHub Raw+SHA-256 / 不买 EV 签名 / 仅 Windows / 按业务模块 A~F 切分 / PROJECT_STATE 由 M0 当天首写（commit c0bdf05）
@@ -237,12 +282,18 @@
 - [x] 037：safe_box purge 单条永久删除——后端 purge_item + Tauri 命令 + 前端红色按钮 + confirm
 - [x] 038：safe_box 批量 purge——后端 purge_many + Tauri 命令 + 前端 checkbox 列 + 批量删除按钮
 - [x] 039：safe_box 批量恢复——后端 restore_many + Tauri 命令 + 前端绿色批量恢复按钮（复用 task-038 checkbox）
+- [x] 049：占用进程 RmShutdown——后端 `shutdown_locking_processes` + 危险进程护栏 + `cleanup_retry_locked` 命令 + Items 失败明细与「关闭占用进程并重试」（**评审轮 1 不通过 → task-049b 修三项缺陷 → 测试轮 2 通过，状态 `awaiting_review`，待评审重评**；测试轮 1 修 C12 三态互斥 + 补 B7 隔离用例；修复轮改 PID→映像名护栏 + mixed fail-closed + B7 独立 console；测试轮 2 修护栏用例 PID 环境依赖 + `reason` 注释）
 - [x] 048：v0.1.1 真机升级验证收尾——已装 v0.1.0 的机器启动应用，updater banner 正确弹出「发现新版本 v0.1.1」（用户真机验证通过，2026-10-23），**M2 正式关闭**
 
 > 注：040~047 的完成明细未回填本清单（历史遗漏），以「最近一次变更」段与 `tasks/040-*.md`~`tasks/047-*.md` 为准。
 
 ## 已知问题
-- [B 中] task-021 仅做「报告」（who_is_locking 结果写 audit_log + 返回前端），**未实现 RmShutdown/RmRestart（请求关闭占用进程）**，前端 UI toast 也未接（`Items.tsx` 的 `cleanup_execute` 返回值被直接丢弃，`ExecResult.lockingProcesses` 根本没渲染）；notepad 端到端真机验证 CI 用例 `#[ignore]`。**已派发 task-049**（`tasks/049-rm-shutdown-locking-processes.md`）：RmShutdown + 前端占用进程提示 + 一键「关闭占用并重试」；RmRestart（自动重启被关进程）本批不做，留 task-050+。
+- [B 高] ~~task-049 评审不通过（2026-10-24，评审轮 1）——护栏依赖本地化应用名，中文 Windows 下 `explorer.exe` 可被关闭~~ **已由 task-049b 解决（2026-10-24，`199527a`）**：护栏改按 `PID → 映像文件名`（`OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` + `QueryFullProcessImageNameW`）判定，与系统语言无关；取不到映像名一律 **fail-closed**（`reason = unknown process`），保留原友好名匹配作兜底，未往名单里追加任何中文名。证据：真机 `explorer.exe` FileDescription = `Windows 资源管理器`、`dwm.exe` = `桌面窗口管理器`，而映像名为 `explorer.exe`；端到端用例 `shutdown_refuses_protected_image_holder` 实测 `closed=[]`、`refused=[{appName:"explorer.exe", reason:"protected process"}]`。原缺陷记录：`RmGetList` 的 `strAppName` 是本地化 FileDescription，三条名字规则对中文名全不命中；任务书要求的「explorer 拒绝场景真机验证」因 GUI 环境阻塞从未执行。
+- [B 中] ~~task-049 评审发现（2026-10-24）——`closed`/`refused` 上报与会话级关闭事实不一致~~ **已由 task-049b 解决（2026-10-24）**：`shutdown_locking_processes` 增加 `apply_mixed_fail_closed` 收口——只要枚举出的占用进程里有任何一个被护栏拒绝，**整批都不调 `RmShutdown`**（`closed = []`，`refused` 为护栏判定原样结果），前端黄条「以下进程受保护未关闭」在 mixed 场景下变成事实。代价：mixed 占用时点「重试」不关任何进程（用户仍能在失败明细里看到全部占用方，不静默）。单测 `mixed_batch_is_fail_closed` 覆盖。
+- [B 中] ~~task-049 评审发现（2026-10-24）——B7 用例 `shutdown_only_touches_registered_path` 不稳定~~ **已由 task-049b 解决（2026-10-24，`c34af2c`）**：根因不是环境抖动，而是**两个 holder 共用测试进程的 console**——`RmShutdown` 强杀 A 时连带带走同 console 的 B（实测 `holder_b_exit=1` 且无 done 标记；单跑 2/2 PASS、全量连跑 2/2 FAILED）。给每个 holder 加 `CREATE_NO_WINDOW`（独立 console）后全量连跑 **5/5 全绿**；用例同时补 ready/done 标记与退出码归因，失败可直接区分「自然退出」与「被 RM 波及」。该 console 耦合行为已登记为 `locking.rs` 文件头已知限制 4。
+- [B 中] ~~task-021 仅做「报告」（who_is_locking 结果写 audit_log + 返回前端），未实现 RmShutdown，前端 `cleanup_execute` 返回值被直接丢弃、`ExecResult.lockingProcesses` 没渲染~~ **已由 task-049 解决**（`shutdown_locking_processes` + 护栏 + `cleanup_retry_locked` + Items 失败明细/一键重试）。**并顺带修掉 task-020 的 probe 判断 bug**（`Error::code()` 是 HRESULT，与 `234` 比较恒不等 → 真有占用时直接 Err，占用列表一直是空的）。
+- [B 中] task-049 遗留：① `RmRestart`（关闭后自动重启进程）未做，用户需自行重开；② `RmShutdown` 阻塞最坏 ~30s（目标不响应关闭请求时等 RM 超时），期间前端只有「关闭并重试中…」无进度；③ ~~RM 会话是「按资源」而非「按进程」，同一文件同时被保护进程与普通进程占用时无法只关普通进程（`closed` 不会记保护进程，但 `explorer.exe` 会随会话被请求关闭）~~ **task-049b 已改为 mixed fail-closed：只要有一个进程被拒就整批不关，保护进程不会再被会话连带关闭**；④ GUI 真机截图与 NSIS 安装态冒烟未取得——**测试轮（2026-10-24）已补安装态冒烟（干净目录安装 + 数据目录隔离 + 安装目录零写入），GUI 点击/Console 仍因「本会话无活动桌面、WebView2 渲染进程创建即崩溃」未取得，登记为第三档，补偿为 jsdom 组件用例（C8–C12）+ 后端真实占用进程端到端，需在有活动桌面的机器补做**；⑤ **task-049b 新增**：`RmShutdown` 会连带关闭**同 console / 进程组**里的兄弟进程（实测两个共用 console 的 powershell holder，只对 A 的文件请求关闭，B 也退出），本模块无法控制该粒度，已写入 `locking.rs` 文件头已知限制 4。
+- [B 中] **打包态资源路径错位（2026-10-24 测试轮发现，非 task-049 引入）**：`tauri.conf.json` 的 `bundle.resources` 用 `../../rules/...` 相对路径，NSIS/WiX 按 `$INSTDIR\_up_\_up_\rules` 落盘，而 `AppPaths::from_app` 只查 `resource_dir().join("rules")` → 安装版实测 `[paths] scripts_dir=.\scripts`。影响：全新用户首次启动取不到 bundled 规则 → `load_external_deny` 失败 → `cleanup_execute` / `cleanup_retry_locked` 返回 `INTERNAL`（本机因 `%APPDATA%\com.and0114.cclean\rules` 已存在而未暴露）。引入于 `16b30e2`（debt-cleanup）；修复需改 `tauri.conf.json` 或 `paths.rs`，建议另开任务。
 - [B 低] ~~task-018 list 边界：无分页（保险箱总量 ≤5GB，条目数有限）、无 session 过滤（先返回全部）、无单条 purge 命令、未接前端 React UI~~（~~无分页~~：task-045 已落地 list_paged LIMIT/OFFSET + 前端分页栏；~~无 session 过滤~~：task-046 已落地 session_id 可选参数 + list_sessions + 前端下拉）。真多了再加 时间范围筛选 / 多选 session / audit_log 联表 留 task-047+。
 - [B 低] ~~task-017 restore 边界：不自动建原父目录（ParentMissing 直接报错让用户手动处理）、不支持批量恢复、未加 `restored_at` 审计列（DELETE 行 + audit_log action='restore' 已留痕）。批量恢复与父目录自动 mkdir 留后续。~~ **已由 task-043 解决**（restore_from_safe_box 在父目录缺失时自动 `std::fs::create_dir_all`，mkdir 失败返回「无法创建父目录 <path>: <os error>」；ParentMissing 枚举变体保留但不再返回）。遗留：未加 `restored_at` 审计列。
 - [B 中] task-016 保险箱原子性：`fs::rename` 成功但 `INSERT INTO safe_box` 失败时，文件已在 box 目录但 DB 无行——当前简单报错，不做回滚；跨盘 rename 走 copy+remove 也非原子。补偿：下次 enforce_quota 扫到磁盘上有孤儿文件时会 NotFound 直接标 purged（不会重复占用 quota）。
@@ -261,15 +312,18 @@
 - [B 高] ~~发版 workflow 两个 bug：① 安装包版本号永远 0.1.0，不随 workflow_dispatch 输入变化；② 配了签名私钥却不生成 .sig（多轮改私钥传递方式均无效）。~~ **已由 bugfix/task-035-release-signing 修复（2026-10-23，状态 testing，待 CI 全绿 + 测试/评审复核）**：根因分别是「版本注入无校验、失败静默」与「`tauri.conf.json` 缺 `bundle.createUpdaterArtifacts`（Tauri 2 默认 false，为 false 时 bundler 不读私钥）」；修法与证据见「最近一次变更」。遗留：真机端到端升级验证（装旧版 → 检查更新 → 下载安装 → 重启到新版）需发版后人工跑。~~GitHub Secret `TAURI_SIGNING_PRIVATE_KEY` / `_PASSWORD` 必须与 `plugins.updater.pubkey` 配对（本地 `~/.tauri/cclean.key.pub` 与仓内 pubkey 不是同一对，CI 侧 secret 需用户自查）~~ **已证实配对（2026-10-23）**：v0.1.5 的 `.exe.sig` keyid `52ACA0C8DAA19EB3` 与 `plugins.updater.pubkey` 一致，真实发版 run `39942401586` 全绿、产物含 `.sig` + `latest.json`。
 
 ## 下一步计划
-M2 updater 已正式关闭（task-048 真机验证通过）；task-043~047 全部闭环。下一轮优先级：
+M2 updater 已关闭（task-048）；task-049b 修复完成（状态 `testing`，已合回 feature，未合并 main）。下一轮优先级：
 
-1. **① 派发 task-049：占用进程 RmShutdown**——`who_is_locking` 从只读查询升级为可请求关闭（`RmShutdown` + 危险进程白名单护栏），前端把 `lockingProcesses` 渲染出来并提供「关闭占用进程并重试」，把「清理失败只能看原因」补成「可处置」。任务书：`tasks/049-rm-shutdown-locking-processes.md`。
-2. ② safe_box 增强：时间范围筛选 / 多选 session / audit_log 联表（task-050+）。
-3. ③ 发版类小修：`release.yml` 补 `target_commitish: ${{ github.sha }}`（tag 溯源，需再发一版验证）。
-4. ④ 更新体验：banner「立即更新」的下载进度反馈 / 差量更新（M3+，非阻塞）。
+1. **① 测试 Agent 全量回归 task-049**（`feature/task-049-rm-shutdown-locking`）：分层测试 + 运行时冒烟 + 契约核对 + CI 门禁，重点复核「中文环境护栏」「mixed fail-closed 行为变化」「B7 连跑 5 次」「`unknown process` 新拒绝原因对前端提示的影响」；需更新 `docs/test-reports/` 并复跑六门禁。
+2. **② 评审 Agent 重评 task-049**（评审轮 2）：核对 Bug #1/#2/#3 是否闭环、是否有新引入问题；通过后才允许合并 main。**循环刹车**：同一缺陷连续 2 次不通过将由调度 Agent 置 `blocked`。
+3. **③ 决策打包资源路径错位**（见「已知问题」）：是否另开 `bugfix/task-050-bundle-resources-path` 修 `bundle.resources` / `AppPaths` 资源定位（影响全新安装用户首次启动）。
+4. **④ 派发 task-051：safe_box 增强**——时间范围筛选 / 多选 session / audit_log 联表（`list_paged` 已支持 session_id 与分页，本轮加时间区间与联表视图）。
+5. ⑤ GUI 真机冒烟补做：task-049 的红条明细 / confirm 文案 / 绿条结果 + Console 0 红错，需在具备活动桌面的机器上执行；`RmRestart` 是否要做由产品侧拍板（当前用户需自行重开被关进程）。
+6. ⑥ 发版类小修：`release.yml` 补 `target_commitish: ${{ github.sha }}`（tag 溯源，需再发一版验证）。
+7. ⑦ 更新体验：banner「立即更新」的下载进度反馈 / 差量更新（M3+，非阻塞）。
 
 ## 当前负责人 Agent
-DocsKeeper（文档与状态管家）
+测试 Agent（提示词 9）—— 对 task-049 做**全量回归**（分层测试 + 运行时冒烟 + 契约核对 + CI 门禁），通过后交评审 Agent（提示词 10）重评。上一手：Bug 修复 Agent（提示词 11，task-049b）。
 
 ## Git 提交记录
 | Commit | 任务 | 说明 |
@@ -536,6 +590,22 @@ DocsKeeper（文档与状态管家）
 | （本次） | #task-047 | docs(state): 任务047完成，rules applyUpdate 前端确认弹窗就绪 |
 | （本次） | #task-048 | docs(state): 任务048真机验证通过，v0.1.1 updater banner 正确弹出，M2 关闭 |
 | （本次） | #task-049 | docs(task): 新增任务049-RmShutdown 占用进程处置 |
+| 20d1b04 | #task-049 | feat(engine): 新增 shutdown_locking_processes 与危险进程护栏（含 who_is_locking probe bug 修复） |
+| 081d0ea | #task-049 | test(engine): 补 RmShutdown 护栏与无占用用例 |
+| f3a6828 | #task-049 | feat(tauri): 新增 cleanup_retry_locked 命令 |
+| 69b6b33 | #task-049 | feat(frontend): 清理失败展示占用进程并支持关闭后重试 |
+| 7cfe53e | #task-049 | test(engine): 补关闭后重试删除的端到端用例 |
+| 3b5cddd | #task-049 | test(engine): 输出 RetryLockedResp 真实 JSON 便于契约核对 |
+| 1b467ba | #task-049 | docs(task): 补任务049实现备注 |
+| （本次） | #task-049 | docs(state): 任务049完成，占用进程 RmShutdown 就绪 |
+| 0129de9 | #task-049 | fix(frontend): 重试按钮纳入三态互斥（测试轮缺陷 1） |
+| 8b84cf4 | #task-049 | test(frontend): 补 Items 清理失败与关闭重试交互用例（6 条） |
+| f667c70 | #task-049 | test(engine): 补只关闭注册资源不误伤旁路文件的用例（B7） |
+| be60f55 | #task-049 | merge: 测试期缺陷修复合回 feature（--no-ff） |
+| （本次） | #task-049 | docs(test): 任务049测试报告 |
+| 199527a | #task-049 | fix(engine): 护栏改为按 PID 映像名判定，本地化应用名不再可绕过（bugfix/task-049-guard-image-name） |
+| c34af2c | #task-049 | test(engine): 补本地化应用名/映像名不可得/mixed 用例，B7 可归因 |
+| （本次） | #task-049 | docs(state): 任务049b 修复完成，待重测（状态 testing） |
 
 ---
 变更轨迹：
@@ -629,3 +699,8 @@ DocsKeeper（文档与状态管家）
 - 2026-10-16  task-047  rules.applyUpdate 前端 window.confirm 弹窗（嵌入版本号 + 回滚提示）
 - 2026-10-23  task-048  v0.1.1 真机升级验证通过（banner 弹出 v0.1.1 + 设置页应用更新卡片一致），M2 正式关闭
 - 2026-10-23  task-049  派发占用进程 RmShutdown（who_is_locking 升级为可请求关闭 + 前端占用提示/一键重试）
+- 2026-10-23  task-049  RmShutdown 落地：shutdown_locking_processes + 危险进程护栏 + cleanup_retry_locked + Items 失败明细/一键关闭重试；顺带修复 who_is_locking probe 判断（HRESULT vs Win32 码）导致占用列表恒空的 bug；后端全链路真机 PASS，GUI/安装态冒烟因环境限制留测试 Agent
+- 2026-10-24  task-049  测试轮：全部门禁独立重跑（cargo 183 / vitest 34 / build 176.39 kB）；修 C12 三态互斥缺陷（0129de9）+ 补 B7 隔离真机用例（f667c70）；NSIS 干净目录安装 + 数据目录隔离 + 安装目录零写入通过；GUI 点击/Console 因无活动桌面（WebView2 渲染进程崩溃）未取得，登记第三档；新登记预存在问题「打包资源路径错位」；状态置 awaiting_review
+- 2026-10-24  task-049  评审轮 1 **不通过**（`docs/reviews/049-review.md`）：输入齐全、提交规范、契约四项对齐、六门禁与 CI（run 40048746500 @ 6705493）绿；但抽查发现护栏按本地化应用名匹配，`zh-CN` 下 `explorer.exe`（`Windows 资源管理器`）绕过护栏；另 mixed 场景 `closed/refused` 语义失真、B7 用例连跑 1/3 失败。**不合并 main，feature 保留 @ 6705493**，转 `bugfix/task-049-guard-image-name`
+- 2026-10-24  task-049b 修复轮：护栏改 PID→映像名（`QueryFullProcessImageNameW`）+ 取不到映像名 fail-closed；mixed 占用 fail-closed（存在被拒进程即整批不关）；B7 根因定为 holder 共用 console，改独立 console + ready/done + 退出码归因，连跑 5/5 全绿；护栏单测 10→15、集成新增假 explorer 持锁用例；六门禁 + CI run 40054417543 全绿；`--no-ff` 合回 feature，状态 `testing`，待测试 Agent 全量回归 + 评审重评
+- 2026-10-24  task-049b 测试轮 2 **通过**（`docs/test-reports/049b-test-report.md`）：独立重跑 fmt 0 / clippy 0 / engine 196 条（188+8）/ vitest 34 / build 176.39 kB；真机 `--include-ignored` 合并前后各连跑 5 次共 10 次全绿，假 `explorer.exe` 持锁实测 `closed=[]` + `refused=[protected process]`；NSIS 干净目录安装 exit 0 + 安装目录 9/9 文件零变化；修 2 项第一档（护栏「本地化名」用例 PID 环境依赖 → `a740dea`；`reason` 注释缺 `unknown process` → `448275a`），`--no-ff` 合回 feature `5550f61`，CI 40059150999 绿；GUI 点击/Console 仍因无活动桌面（Crashpad 新增 dmp）登记第三档；状态置 awaiting_review
