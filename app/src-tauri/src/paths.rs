@@ -62,10 +62,12 @@ fn pick_resource_root(candidates: &[PathBuf]) -> Option<PathBuf> {
 ///
 /// - **release**：只有 `resource_dir()`。`dev_cwd` 在 release 下恒为 `None`
 ///   （见 `from_app()` 里的 `cfg` 分叉），因此 release 分支根本不碰 cwd；
-/// - **dev**：`resource_dir()` 之后追加 cwd 向上三级
-///   （`app/src-tauri/` → `app/` → workspace 根），保证 `pnpm tauri dev` 照常工作。
+/// - **dev**：先 cwd 向上三级（`app/src-tauri/` → `app/` → workspace 根），再退到
+///   `resource_dir()`。顺序有意为之：`tauri dev` 会把 resources 复制到
+///   `target/debug/`，若优先用它，改 `scripts/*.ps1` 后 dev 仍读陈旧副本；
+///   而 `cargo run` 直跑时 target/debug 下没有资源，resource_dir 作兜底。
 fn build_candidates(resource_dir: Option<PathBuf>, dev_cwd: Option<PathBuf>) -> Vec<PathBuf> {
-    let mut candidates: Vec<PathBuf> = resource_dir.into_iter().collect();
+    let mut candidates: Vec<PathBuf> = Vec::new();
     if cfg!(debug_assertions) {
         if let Some(cwd) = dev_cwd {
             candidates.push(cwd.clone());
@@ -73,6 +75,7 @@ fn build_candidates(resource_dir: Option<PathBuf>, dev_cwd: Option<PathBuf>) -> 
             candidates.push(cwd.join("../.."));
         }
     }
+    candidates.extend(resource_dir);
     candidates
 }
 
@@ -291,7 +294,7 @@ mod tests {
     }
 
     #[test]
-    fn build_candidates_dev_追加_cwd_向上三级() {
+    fn build_candidates_dev_优先_cwd_再退_resource_dir() {
         let res = PathBuf::from(r"D:\repo\app\src-tauri\target\debug");
         let cwd = PathBuf::from(r"D:\repo\app\src-tauri");
         let candidates = build_candidates(Some(res.clone()), Some(cwd.clone()));
@@ -299,12 +302,12 @@ mod tests {
         if cfg!(debug_assertions) {
             assert_eq!(
                 candidates,
-                vec![res, cwd.clone(), cwd.join(".."), cwd.join("../.."),],
-                "dev 下应在 resource_dir 之后追加 cwd、app/、workspace 根三级"
+                vec![cwd.clone(), cwd.join(".."), cwd.join("../.."), res],
+                "dev 下应优先 cwd 三级（仓库内资源，ps1 改动即时生效），resource_dir 仅兜底"
             );
         } else {
             // release 编译时即便传入 cwd 也不追加，双保险。
-            assert_eq!(candidates.len(), 1);
+            assert_eq!(candidates, vec![res]);
         }
     }
 
