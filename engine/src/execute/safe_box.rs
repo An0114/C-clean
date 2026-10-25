@@ -19,6 +19,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use rusqlite::params;
 use rusqlite::Connection;
 
+use crate::audit_log::query::AuditLogEntry;
 use crate::execute::delete::Deleter;
 use crate::execute::normalize::NormalizedPath;
 
@@ -324,6 +325,47 @@ pub struct SafeBoxEntry {
     pub size_bytes: u64,
     /// 移入时间（unix 秒），对应 schema 真实列 `quarantined_at`。
     pub quarantined_at: i64,
+    /// task-051：来源清理批次（`safe_box.source_task_id`），NULL = 历史遗留/未关联。
+    pub source_task_id: Option<i64>,
+}
+
+/// task-051：保险箱列表过滤条件。
+///
+/// 语义：
+/// - `session_ids` 空 = 不限 session；非空 = `source_task_id IN (...)`（内部去重，保序）；
+/// - `from_ts` / `to_ts` 是**闭区间**的 Unix 秒；`None` 或 `<= 0` 视为未设置；
+/// - `from_ts > to_ts` 由 [`list_paged`] 直接返回空页（不 Err）。
+#[derive(Debug, Clone, Default)]
+pub struct SafeBoxFilter {
+    /// 空 = 不限 session；非空 = 组合过滤（内部先去重）。
+    pub session_ids: Vec<i64>,
+    /// 含下界；Unix 秒；`<= 0` 视为未设置。
+    pub from_ts: Option<i64>,
+    /// 含上界；Unix 秒；`<= 0` 视为未设置。
+    pub to_ts: Option<i64>,
+}
+
+impl SafeBoxFilter {
+    /// 归一化：session id 去重（保序）+ 把 `<= 0` 的时间视作未设置。
+    pub fn normalized(&self) -> (Vec<i64>, Option<i64>, Option<i64>) {
+        let mut ids: Vec<i64> = Vec::with_capacity(self.session_ids.len());
+        for id in &self.session_ids {
+            if !ids.contains(id) {
+                ids.push(*id);
+            }
+        }
+        (
+            ids,
+            self.from_ts.filter(|v| *v > 0),
+            self.to_ts.filter(|v| *v > 0),
+        )
+    }
+
+    /// 区间是否自相矛盾（`from > to`）。只有两端都设置时才可能为真。
+    pub fn is_empty_range(&self) -> bool {
+        let (_, from, to) = self.normalized();
+        matches!((from, to), (Some(f), Some(t)) if f > t)
+    }
 }
 
 /// list 响应：条目 + 汇总。
@@ -360,7 +402,7 @@ pub struct SafeBoxPage {
 pub fn list_safe_box(conn: &Connection) -> Result<SafeBoxListResp, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, original_path, size_bytes, quarantined_at
+            "SELECT id, original_path, size_bytes, quarantined_at, source_task_id
              FROM safe_box WHERE status='in_box'
              ORDER BY quarantined_at DESC",
         )
@@ -373,6 +415,7 @@ pub fn list_safe_box(conn: &Connection) -> Result<SafeBoxListResp, String> {
                 original_path: r.get(1)?,
                 size_bytes: r.get::<_, i64>(2).map(|v| v as u64)?,
                 quarantined_at: r.get(3)?,
+                source_task_id: r.get(4)?,
             })
         })
         .map_err(|e| format!("query_map list_safe_box: {e}"))?
@@ -389,114 +432,117 @@ pub fn list_safe_box(conn: &Connection) -> Result<SafeBoxListResp, String> {
     })
 }
 
-/// task-045：分页列出 `status='in_box'` 条目。
+/// task-045 / task-051：分页列出 `status='in_box'` 条目。
 ///
 /// - `page` 从 1 起，<1 按 1 处理；
 /// - `page_size` clamp 到 [1, 200]（防前端传 99999）；
 /// - ORDER BY id DESC（最新在前，稳定排序）；
-/// - 同时跑 `SELECT COUNT(*)` 拿 total，SUM(size_bytes) 拿全表字节汇总。
+/// - `items` / `COUNT(*)` / `SUM(size_bytes)` **共用同一套 WHERE 与参数**，
+///   保证 `total` / `total_bytes` 与筛选条件一致（不是全表数）；
+/// - `filter.from_ts > filter.to_ts` 直接返回空页（不 Err、不回落全量）。
 ///
-/// task-046：`session_id: Option<i64>` 按 `source_task_id` 过滤（真实 schema
-/// 里 safe_box 没有 session_id 列，只有 source_task_id 外键；一个 cleanup_task
-/// 对应一次清理 session，所以前端的「session」= source_task_id）。
+/// task-051 重构：原来 `match session_id` 的两套硬编码 SQL（加时间区间会炸成 8 个
+/// 分支）改为**动态 WHERE 拼接 + 占位符绑定**——拼进 SQL 的只有固定片段，
+/// 任何用户输入（session id / 时间戳）都走 `?` 参数。
+///
+/// 真实 schema：safe_box 没有 session_id 列，只有 source_task_id；一个
+/// cleanup_task 对应一次清理 session，因此前端的「session」= source_task_id。
 pub fn list_paged(
     conn: &Connection,
     page: u32,
     page_size: u32,
-    session_id: Option<i64>,
+    filter: &SafeBoxFilter,
 ) -> Result<SafeBoxPage, String> {
     let page = (page.max(1)) as i64;
     let page_size = (page_size.clamp(1, 200)) as i64;
     let offset = (page - 1) * page_size;
 
-    // 动态 WHERE：status='in_box' 固定，session_id 可选。
-    // 真实 schema：safe_box 没有 session_id 列，只有 source_task_id；
-    // 一个 cleanup_task 对应一次清理 session，因此前端的「session」= source_task_id。
-    let (where_clause, items_sql) = match session_id {
-        Some(_) => (
-            "WHERE status='in_box' AND source_task_id = ?1",
-            "SELECT id, original_path, size_bytes, quarantined_at
-             FROM safe_box
-             WHERE status='in_box' AND source_task_id = ?1
-             ORDER BY id DESC
-             LIMIT ?2 OFFSET ?3",
-        ),
-        None => (
-            "WHERE status='in_box'",
-            "SELECT id, original_path, size_bytes, quarantined_at
-             FROM safe_box
-             WHERE status='in_box'
-             ORDER BY id DESC
-             LIMIT ?1 OFFSET ?2",
-        ),
-    };
+    let (session_ids, from_ts, to_ts) = filter.normalized();
+
+    // 区间自相矛盾：空页（A5）。放在查询前，避免跑两条注定为 0 的聚合。
+    if matches!((from_ts, to_ts), (Some(f), Some(t)) if f > t) {
+        return Ok(SafeBoxPage {
+            items: Vec::new(),
+            total: 0,
+            page,
+            page_size,
+            total_bytes: 0,
+        });
+    }
+
+    // ---- 动态 WHERE：status='in_box' 打底，其余条件按需追加 ----
+    let mut clauses: Vec<String> = vec!["status='in_box'".to_string()];
+    if !session_ids.is_empty() {
+        let holders = vec!["?"; session_ids.len()].join(", ");
+        clauses.push(format!("source_task_id IN ({holders})"));
+    }
+    if from_ts.is_some() {
+        clauses.push("quarantined_at >= ?".to_string());
+    }
+    if to_ts.is_some() {
+        clauses.push("quarantined_at <= ?".to_string());
+    }
+    let where_clause = format!("WHERE {}", clauses.join(" AND "));
+
+    // 绑定顺序必须与 WHERE 里占位符出现的顺序一致：session ids → from → to。
+    let mut filter_params: Vec<i64> = session_ids;
+    if let Some(f) = from_ts {
+        filter_params.push(f);
+    }
+    if let Some(t) = to_ts {
+        filter_params.push(t);
+    }
+
     let count_sql = format!("SELECT COUNT(*) FROM safe_box {where_clause}");
+    let total: i64 = conn
+        .query_row(
+            &count_sql,
+            rusqlite::params_from_iter(filter_params.iter()),
+            |r| r.get(0),
+        )
+        .map_err(|e| format!("count safe_box: {e}"))?;
+
     let sum_sql = format!("SELECT COALESCE(SUM(size_bytes),0) FROM safe_box {where_clause}");
+    let total_bytes: i64 = conn
+        .query_row(
+            &sum_sql,
+            rusqlite::params_from_iter(filter_params.iter()),
+            |r| r.get(0),
+        )
+        .map_err(|e| format!("sum safe_box: {e}"))?;
 
-    let total: i64 = match session_id {
-        Some(s) => conn.query_row(&count_sql, rusqlite::params![s], |r| r.get(0)),
-        None => conn.query_row(&count_sql, [], |r| r.get(0)),
-    }
-    .map_err(|e| format!("count safe_box: {e}"))?;
-
-    let total_bytes: i64 = match session_id {
-        Some(s) => conn.query_row(&sum_sql, rusqlite::params![s], |r| r.get(0)),
-        None => conn.query_row(&sum_sql, [], |r| r.get(0)),
-    }
-    .map_err(|e| format!("sum safe_box: {e}"))?;
-
+    let items_sql = format!(
+        "SELECT id, original_path, size_bytes, quarantined_at, source_task_id
+         FROM safe_box
+         {where_clause}
+         ORDER BY id DESC
+         LIMIT ? OFFSET ?"
+    );
     let mut stmt = conn
-        .prepare(items_sql)
+        .prepare(&items_sql)
         .map_err(|e| format!("prepare list_paged: {e}"))?;
 
-    let items: Vec<SafeBoxEntry> = match session_id {
-        Some(s) => {
-            let mut v = Vec::new();
-            let rows = stmt
-                .query_map(rusqlite::params![s, page_size, offset], |r| {
-                    Ok((
-                        r.get::<_, i64>(0)?,
-                        r.get::<_, String>(1)?,
-                        r.get::<_, i64>(2)?,
-                        r.get::<_, i64>(3)?,
-                    ))
-                })
-                .map_err(|e| format!("query_map list_paged: {e}"))?;
-            for row in rows {
-                let (id, p, sz, ts) = row.map_err(|e| format!("row: {e}"))?;
-                v.push(SafeBoxEntry {
-                    id,
-                    original_path: p,
-                    size_bytes: sz as u64,
-                    quarantined_at: ts,
-                });
-            }
-            v
-        }
-        None => {
-            let mut v = Vec::new();
-            let rows = stmt
-                .query_map(rusqlite::params![page_size, offset], |r| {
-                    Ok((
-                        r.get::<_, i64>(0)?,
-                        r.get::<_, String>(1)?,
-                        r.get::<_, i64>(2)?,
-                        r.get::<_, i64>(3)?,
-                    ))
-                })
-                .map_err(|e| format!("query_map list_paged: {e}"))?;
-            for row in rows {
-                let (id, p, sz, ts) = row.map_err(|e| format!("row: {e}"))?;
-                v.push(SafeBoxEntry {
-                    id,
-                    original_path: p,
-                    size_bytes: sz as u64,
-                    quarantined_at: ts,
-                });
-            }
-            v
-        }
-    };
+    // 分页参数追加在筛选参数之后（对应 SQL 末尾的 LIMIT ? OFFSET ?）。
+    let mut item_params = filter_params;
+    item_params.push(page_size);
+    item_params.push(offset);
+
+    let rows = stmt
+        .query_map(rusqlite::params_from_iter(item_params.iter()), |r| {
+            Ok(SafeBoxEntry {
+                id: r.get(0)?,
+                original_path: r.get(1)?,
+                size_bytes: r.get::<_, i64>(2).map(|v| v as u64)?,
+                quarantined_at: r.get(3)?,
+                source_task_id: r.get(4)?,
+            })
+        })
+        .map_err(|e| format!("query_map list_paged: {e}"))?;
+
+    let mut items: Vec<SafeBoxEntry> = Vec::new();
+    for row in rows {
+        items.push(row.map_err(|e| format!("row: {e}"))?);
+    }
 
     Ok(SafeBoxPage {
         items,
@@ -545,6 +591,24 @@ pub fn list_sessions(conn: &Connection) -> Result<Vec<SessionSummary>, String> {
         .map_err(|e| format!("collect list_sessions: {e}"))?;
 
     Ok(rows)
+}
+
+/// task-051：按 safe_box id 查该条目**原路径**的审计历史（只读）。
+///
+/// - 先取 `original_path`，再按路径查 `audit_log`（大小写不敏感，见
+///   [`crate::audit_log::query::list_by_target`]）；
+/// - 条目不存在 → `Err("safe_box item not found: id=...")`；
+/// - 只返回最近 20 条（`ts DESC, id DESC`）；无历史返回空 vec（不 Err）。
+pub fn item_history(conn: &Connection, safe_box_id: i64) -> Result<Vec<AuditLogEntry>, String> {
+    let original_path: String = conn
+        .query_row(
+            "SELECT original_path FROM safe_box WHERE id=?1",
+            [safe_box_id],
+            |r| r.get(0),
+        )
+        .map_err(|_| format!("safe_box item not found: id={safe_box_id}"))?;
+
+    crate::audit_log::query::list_by_target(conn, &original_path, 20)
 }
 
 // ===================== task-037: purge =====================
@@ -660,4 +724,80 @@ pub fn restore_many(conn: &Connection, box_dir: &Path, item_ids: &[i64]) -> Batc
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn filter_dedups_session_ids_keeping_order() {
+        let f = SafeBoxFilter {
+            session_ids: vec![3, 1, 3, 2, 1],
+            ..Default::default()
+        };
+        let (ids, from, to) = f.normalized();
+        assert_eq!(ids, vec![3, 1, 2], "去重且保持首次出现顺序");
+        assert!(from.is_none() && to.is_none());
+    }
+
+    #[test]
+    fn filter_treats_non_positive_ts_as_unset() {
+        let f = SafeBoxFilter {
+            from_ts: Some(0),
+            to_ts: Some(-5),
+            ..Default::default()
+        };
+        let (_, from, to) = f.normalized();
+        assert_eq!(from, None, "from_ts <= 0 视为未设置");
+        assert_eq!(to, None, "to_ts <= 0 视为未设置");
+        assert!(!f.is_empty_range(), "两端都未设置不算空区间");
+    }
+
+    #[test]
+    fn filter_keeps_positive_bounds() {
+        let f = SafeBoxFilter {
+            from_ts: Some(100),
+            to_ts: Some(200),
+            ..Default::default()
+        };
+        let (_, from, to) = f.normalized();
+        assert_eq!(from, Some(100));
+        assert_eq!(to, Some(200));
+        assert!(!f.is_empty_range(), "from <= to 是合法闭区间");
+    }
+
+    #[test]
+    fn filter_empty_range_only_when_from_greater_than_to() {
+        let bad = SafeBoxFilter {
+            from_ts: Some(201),
+            to_ts: Some(200),
+            ..Default::default()
+        };
+        assert!(bad.is_empty_range());
+
+        // 相等是合法闭区间（A4：from == ts 与 to == ts 都要包含）。
+        let equal = SafeBoxFilter {
+            from_ts: Some(200),
+            to_ts: Some(200),
+            ..Default::default()
+        };
+        assert!(!equal.is_empty_range());
+
+        // 只有单边时不判空。
+        let only_from = SafeBoxFilter {
+            from_ts: Some(999),
+            ..Default::default()
+        };
+        assert!(!only_from.is_empty_range());
+    }
+
+    #[test]
+    fn filter_default_is_no_filter() {
+        let f = SafeBoxFilter::default();
+        let (ids, from, to) = f.normalized();
+        assert!(ids.is_empty());
+        assert!(from.is_none() && to.is_none());
+        assert!(!f.is_empty_range());
+    }
 }

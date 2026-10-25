@@ -246,3 +246,196 @@ export TAURI_SIGNING_PRIVATE_KEY="$TEMP/cclean-smoke-051.key"
 2. 任务文件末尾追加 `## 实现备注`，至少包含：实际改动文件对账（对照允许表）、`list_paged` 重构前后的 SQL 与参数构造方式、既有 9 条测试的签名改动清单（证明断言未放宽）、新增用例条数与名称、`total/totalBytes` 一致性如何自证、门禁退出码、安装包布局、GUI 取证结论（取得/第三档）、CI run id、与任务书不符之处；
 3. 明确回答三句话：①「时间区间 + 多 session + 分页三者叠加时，`total` 与列表条数是否一致」；②「同路径历史能否跨大小写命中」；③「筛选变化后是否清空选中、重置页码」——各附证据编号；
 4. 更新 `docs/PROJECT_STATE.md`：勾选待办 051、关闭 `[B 低] task-018 list 边界` 里「时间范围筛选 / 多选 session / audit_log 联表」三项、把「下一步计划」推进到 ③（关闭体验文案小改），单独提交 `docs(state)`。
+
+## 实现备注
+
+> 执行角色：DevEngineRust + DevFrontendReact（串行）｜ 执行时间：2026-10-25 ｜ 分支：`feature/task-051-safebox-filter-history`（base `81bd298`，未合 main）
+
+### 1. 实际改动文件对账（对照「允许修改范围」）
+
+| 文件 | 允许？ | 实际改动 |
+|---|---|---|
+| `engine/src/execute/safe_box.rs` | 是 | `SafeBoxFilter` + `normalized()` / `is_empty_range()`；`list_paged` 动态 WHERE 重构；`SafeBoxEntry.source_task_id`；`item_history`；`#[cfg(test)] mod tests` 5 条 |
+| `engine/src/audit_log/query.rs` | 是 | 仅新增 `list_by_target`（未动 `list_audit_log` / `AuditLogFilter`） |
+| `engine/tests/safe_box_time_range.rs` | 是 | 新增 6 条 |
+| `engine/tests/safe_box_multi_session.rs` | 是 | 新增 6 条 |
+| `engine/tests/safe_box_item_history.rs` | 是 | 新增 6 条 |
+| `engine/tests/safe_box_pagination.rs` | 是 | 仅 5 处调用签名（`None` → `&SafeBoxFilter::default()`）+ import |
+| `engine/tests/safe_box_session_filter.rs` | 是 | 仅 3 处调用签名（`None`/`Some(1)`/`Some(999)` → filter）+ import；`list_sessions` 用例未动 |
+| `app/src-tauri/src/commands.rs` | 是 | `safe_box_list` 参数升级 + 新增 `safe_box_item_history` |
+| `app/src-tauri/src/lib.rs` | 是 | 仅新增 1 行命令注册 |
+| `app/src/pages/SafeBox.tsx` | 是 | 时间预设 / 多选 session / 来源列 / 历史展开 |
+| `app/src/pages/SafeBox.test.tsx` | 是 | 新增 11 条 |
+| `docs/PROJECT_STATE.md` / `tasks/051-*.md` | 是 | 收尾 docs 提交 |
+
+**未触碰**：`App.tsx`、`Items.tsx`、`Dashboard.tsx`、`History.tsx`、`Settings.tsx`、`app/src/utils/**`、`paths.rs`、`progress.rs`、`tauri.conf.json`、`app/src-tauri/Cargo.toml`、`engine/src/execute/{executor,delete,whitelist,locking,error_kind}.rs`、`engine/src/db/**`、`engine/src/rules/**`、`engine/src/ipc/**`、`elevation/**`、`rules/**`、`scripts/**`、`.github/workflows/**`、`capabilities/default.json`、`app/package.json`、`Cargo.lock`、`pnpm-lock.yaml`。
+
+### 2. `list_paged` 重构前后对比
+
+**重构前（task-046）**：`match session_id` 两套硬编码 SQL + 两套 `params!`，`COUNT` / `SUM` 各再 match 一次 → 加时间区间会变成 8 个分支。
+
+```rust
+let (where_clause, items_sql) = match session_id {
+    Some(_) => ("WHERE status='in_box' AND source_task_id = ?1", "... LIMIT ?2 OFFSET ?3"),
+    None    => ("WHERE status='in_box'", "... LIMIT ?1 OFFSET ?2"),
+};
+```
+
+**重构后（task-051）**：WHERE 片段按需 push，占位符一律 `?`，参数用 `Vec<i64>` 顺序绑定。
+
+```rust
+let (session_ids, from_ts, to_ts) = filter.normalized();
+let mut clauses = vec!["status='in_box'".to_string()];
+if !session_ids.is_empty() {
+    clauses.push(format!("source_task_id IN ({})", vec!["?"; session_ids.len()].join(", ")));
+}
+if from_ts.is_some() { clauses.push("quarantined_at >= ?".into()); }
+if to_ts.is_some()   { clauses.push("quarantined_at <= ?".into()); }
+let where_clause = format!("WHERE {}", clauses.join(" AND "));
+
+let mut filter_params: Vec<i64> = session_ids;          // 顺序 = WHERE 里占位符顺序
+if let Some(f) = from_ts { filter_params.push(f); }
+if let Some(t) = to_ts   { filter_params.push(t); }
+
+conn.query_row(&count_sql, params_from_iter(filter_params.iter()), ..)?;  // 同一套 WHERE + 参数
+conn.query_row(&sum_sql,   params_from_iter(filter_params.iter()), ..)?;
+let mut item_params = filter_params; item_params.push(page_size); item_params.push(offset);
+```
+
+拼进 SQL 的只有固定片段，session id / 时间戳全部走 `?` 绑定；`items` / `COUNT(*)` / `SUM(size_bytes)` 三条查询共用同一个 `where_clause` 与同一份 `filter_params`（这是 `total` 一致性的实现保证）。
+
+`from > to` 在查询前直接返回空页（不跑两条注定为 0 的聚合），`page` / `page_size` 按 clamp 后的值原样回显。
+
+### 3. 既有 9 条测试的签名改动清单（只改签名，断言未放宽）
+
+| 文件 | 用例 | 改前 | 改后 | 断言 |
+|---|---|---|---|---|
+| `safe_box_pagination.rs` | `list_paged_returns_first_page` | `list_paged(&conn, 1, 50, None)` | `list_paged(&conn, 1, 50, &SafeBoxFilter::default())` | 未改 |
+| 同上 | `list_paged_returns_second_page` | `(2, 50, None)` | `(2, 50, &default())` | 未改 |
+| 同上 | `list_paged_clamps_page_size` | `(1, 99999, None)` | `(1, 99999, &default())` | 未改 |
+| 同上 | `list_paged_empty_when_beyond_last_page` | `(99, 50, None)` | `(99, 50, &default())` | 未改 |
+| 同上 | `list_paged_id_desc_order` | 2 处 `None` | 2 处 `&default()` | 未改 |
+| `safe_box_session_filter.rs` | `list_paged_no_session_returns_all` | `None` | `&default()` | 未改 |
+| 同上 | `list_paged_filter_by_session` | `Some(1)` | `SafeBoxFilter { session_ids: vec![1], .. }` | 未改 |
+| 同上 | `list_paged_filter_no_match` | `Some(999)` | `SafeBoxFilter { session_ids: vec![999], .. }` | 未改 |
+| 同上 | `list_sessions_groups_by_session` | — | **未动** | 未改 |
+
+没有删用例、没有 `#[ignore]`、没有把 `assert_eq!` 降级为 `assert!`。
+
+### 4. 新增用例（共 23 条：引擎 5 单测 + 18 集成，前端 11）
+
+**`safe_box.rs` 单测（5）**：`filter_dedups_session_ids_keeping_order`、`filter_treats_non_positive_ts_as_unset`、`filter_keeps_positive_bounds`、`filter_empty_range_only_when_from_greater_than_to`、`filter_default_is_no_filter`
+
+**`safe_box_time_range.rs`（6）**：`only_from_returns_items_after_bound_and_total_matches`、`only_to_returns_items_before_bound_and_total_matches`、`closed_interval_includes_both_bounds`、`from_greater_than_to_returns_empty_page_not_error`、`non_positive_bounds_are_ignored`、`time_range_with_pagination_keeps_total_as_range_count`
+
+**`safe_box_multi_session.rs`（6）**：`two_sessions_return_only_those_items`、`single_existing_session_still_works`、`nonexistent_session_returns_empty_page`、`empty_session_ids_equals_no_filter`、`duplicate_session_ids_are_deduped`、`multi_session_with_time_range_and_pagination`
+
+**`safe_box_item_history.rs`（6）**：`returns_history_of_same_path_in_ts_desc_order`、`path_match_is_case_insensitive`、`unrelated_paths_are_not_returned`、`no_history_returns_empty_vec_not_error`、`missing_item_returns_not_found_error`、`limit_caps_result_to_20`
+
+**`SafeBox.test.tsx`（11）**：`presetFromTs` / `actionLabel` 2 条；首屏不带 `sessionIds`/`fromTs`、来源列 `#N` 与 `—` 2 条；「24 小时」带 `fromTs` 且 `page=1`、筛选后清空选中 2 条；多选 2 个 session、清空后不传 2 条；历史中文化展开、无历史占位、再次点击收起 3 条。
+
+### 5. `total` / `totalBytes` 一致性自证
+
+| 证据 | 内容 |
+|---|---|
+| 实现层 | `COUNT(*)` / `SUM(size_bytes)` / `items` 共用同一个 `where_clause` 与 `filter_params`（第 2 节代码） |
+| `only_from_..._and_total_matches` | 全表 5 条、筛后 3 条 → `total=3`、`totalBytes=30`（不是全表 50） |
+| `time_range_with_pagination_keeps_total_as_range_count` | 全表 45 条、区间内 25 条 → 第 2 页 `items=10`、`total=25`、`totalBytes=250` |
+| `multi_session_with_time_range_and_pagination` | session 1+3 共 7 条，加 `from_ts` 后 4 条 → 首页 3 条 + 次页 1 条，两页 `total` 均 4 |
+| 前端 | `共 {total} 项 / 总大小 {formatBytes(totalBytes)}` 直接取响应，不做本地累加 |
+
+### 6. 门禁（本地，2026-10-25）
+
+| 门禁 | 退出码 | 结果 |
+|---|---|---|
+| `cargo fmt --all -- --check` | 0 | 无 diff |
+| `cargo clippy --workspace --all-targets -- -D warnings` | 0 | 无代码级 warning（仅有 Windows 增量编译目录 `拒绝访问` 的清理告警，非 lint，见第 10 节） |
+| `cargo test --workspace` | 0 | **220 passed + 8 ignored**（基线 197+8；新增 5 单测 + 18 集成 = 23） |
+| `pnpm --filter app lint` | 0 | 0 error / **2 warning**（见第 10 节） |
+| `pnpm --filter app test` | 0 | **45 passed（7 files）**（基线 34 + 新增 11） |
+| `pnpm --filter app build` | 0 | `179.93 kB │ gzip 57.31 kB`（基线 176.39 / 56.25，**+3.54 kB**，在 ±5 kB 内） |
+| `node --test scripts/tauri-resources.test.mjs` | 0 | 6/6（task-050 资源映射未回归） |
+
+### 7. 打包与安装（F26）
+
+`tauri build` 退出码 **0**（临时密钥 `%TEMP%\cclean-smoke-051.key`，未入库）：
+
+```
+nsis\C-DiskCleaner_0.1.0_x64-setup.exe  4.01 MiB (+ .sig)
+msi\C-DiskCleaner_0.1.0_x64_en-US.msi   5.82 MiB (+ .sig)
+```
+
+**安装路径与任务书不同（重要）**：NSIS 是 `perMachine`，本会话**非管理员**（`is_admin=False`），`/S /D=...` 触发 UAC 且无人应答——残留 3 个 `consent.exe` 挂起进程，安装未发生（`installed=False`）。改用 **MSI per-user** 安装：
+
+```
+msiexec /i C-DiskCleaner_0.1.0_x64_en-US.msi /qn /norestart INSTALLDIR=%TEMP%\cclean-smoke-051 ALLUSERS=2 MSIINSTALLPERUSER=1
+```
+
+安装后目录清单（9 项，`INSTALLDIR` 下）：
+
+```
+cdisk-cleaner.exe                     16311808 bytes
+Uninstall C-DiskCleaner.lnk               1061 bytes
+rules\cache_rules.json                     614 bytes
+rules\rules_meta.json                      261 bytes
+scripts\scan_browser_cache.ps1            1909 bytes
+scripts\scan_dev_cache.ps1                1878 bytes
+scripts\scan_prefetch.ps1                 1445 bytes
+scripts\scan_temp.ps1                     1689 bytes
+scripts\scan_windows_update.ps1           1541 bytes
+```
+
+- `<INSTALLDIR>\_up_` **不存在**（task-050 回归防护通过）
+- `rules_ok=True`（2 个 json 齐全），5 个 `scan_*.ps1` 无缺失
+- 验证后已 `msiexec /x` 卸载，目录已删除（未在系统留下测试安装）
+
+### 8. GUI 取证（F25 / F28）：**第三档，未取得**
+
+| 观测项 | 实测结果 |
+|---|---|
+| 安装版启动 | 进程存活至 10s（`tasklist` 每秒 1 个进程），随后自行退出 |
+| dev 启动 | `[paths]` 正常打印（`scripts_dir=D:\GitHub\C-clean\app\src-tauri\../..\scripts`），进程随后同样退出 |
+| 窗口标题 | 取不到（进程已退出，`MainWindowHandle` 无值） |
+| WebView2 | 12 个 `msedgewebview2` 子进程残留（孤儿） |
+| Crashpad `.dmp` | `12:29:33`（安装版）/ `12:31:06`（dev）/ `12:32:30`（dev + CDP 参数），各 6.4–6.6 MB |
+| CDP 9222 | `curl http://127.0.0.1:9222/json/version` → `10061 目标计算机积极拒绝`；`netstat` 中 `:9222` 命中 0 行；带 `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222` 重启仍不监听 |
+
+结论：**「切时间预设 / 多选 session / 点历史」的 GUI 点击未执行**，无截图、无 Console 读数。补偿证据：`SafeBox.test.tsx` 11 条 jsdom 用例（覆盖全部四个新交互 + 三态）+ 引擎 18 条集成用例（筛选语义、`total` 一致性、NOCASE 命中）+ MSI 安装布局。**未伪造任何截图或日志。**
+
+### 9. 造数据（F27，数据为构造）
+
+GUI 无法走「扫描 → 清理」，按任务书允许的方式直接写库（`%APPDATA%\com.and0114.cclean\data\cdiskcleaner.db`，插入时 `now=1792902538`）：
+
+```sql
+INSERT OR REPLACE INTO scan_session (id, started_at, status, scope) VALUES (9001, 1792211338, 'finished', 'full');
+INSERT OR REPLACE INTO cleanup_task (id, session_id, started_at, finished_at, disk_before_bytes, disk_after_bytes, dry_run_snapshot, safebox_enabled)
+  VALUES (9001, 9001, 1792211338, 1792211438, 0, 0, '[]', 1);
+-- 同上再插 9002（started_at=1792038538）
+
+INSERT INTO safe_box (original_path, safe_rel_path, size_bytes, quarantined_at, expires_at, status, source_task_id)
+  VALUES ('C:\Temp\cclean051\recent_s1.bin', 'recent_s1.bin', 1024, 1792895338, 1793500138, 'in_box', 9001);
+  -- day2_s1.bin  2048  ts=1792729738  src=9001
+  -- day8_s2.bin  4096  ts=1792211338  src=9002
+  -- nul_src.bin   512  ts=1792895338  src=NULL
+
+INSERT INTO audit_log (ts, actor, action, target, detail, result)
+  VALUES (1792895338, 'user', 'quarantine',       'C:\Temp\cclean051\recent_s1.bin', '{"task":"051"}', 'success');
+  -- 1792898938 'scan' success；1792900738 'permanent_delete' fail
+```
+
+覆盖四档时间窗（2 小时 / 2 天 / 8 天）、两个 session、一个 `source_task_id IS NULL`、三条历史。**验证后已按 id 全部删除**（`safe_box` 71–74、`audit_log` 101–103、`cleanup_task`/`scan_session` 9001–9002），未在用户真实库留下测试数据。
+
+### 10. 与任务书不符之处 / 需评审知悉
+
+1. **多 1 个提交**（7 → 8）：`feat(engine)` 拆成了 A+B（`6eb7ba6`）与 C（`c1eba8d`）两次，中间 `6eb7ba6` 为保证「每个提交都能编译」，先把 `commands.rs` 的调用点做了一行适配（`session_id.into_iter().collect()` 装进 filter），命令签名升级仍在 `2e05177`。
+2. **NSIS 安装冒烟被 UAC 阻塞**，改用 MSI per-user 完成安装级布局验证（第 7 节）。NSIS 的 `/S /D=` 只验证到「安装器无法在非提权会话静默安装」，未取得 NSIS 安装目录清单——**这与任务书 F26 的「NSIS 干净目录安装」不完全一致**，需在提权会话或测试 Agent 侧补做。
+3. **`<tr colSpan>` 用 6 而不是任务书写的 7**：表格实际 6 列（勾选 / 原路径 / 大小 / 移入时间 / 来源 / 操作），colSpan=7 会多跨一列。
+4. **前端 lint 出现 2 条 warning**（`react-refresh/only-export-components`）：`presetFromTs` / `actionLabel` 从 `SafeBox.tsx` 导出以便单测（任务书测试要求「若抽成纯函数则加单测」），而 `app/src/utils/**` 在禁止修改范围内，无法另建文件。仍在 `--max-warnings 10` 门限内，**0 error**。
+5. **clippy 输出里的 `warning: error deleting lock file ... 拒绝访问`**：Windows 增量编译目录锁清理失败，来自本机并发构建残留，不是代码 lint，退出码 0；CI 干净 runner 上不会出现。
+6. **`list_paged` 的 `source_task_id IS NULL` 行**：`session_ids` 非空时这类行不会被 `IN (...)` 命中（SQL NULL 语义），前端「来源」列显示 `—`，符合预期；未额外为 NULL 做特殊分支。
+
+### 11. 三句话结论
+
+1. **「时间区间 + 多 session + 分页三者叠加时，`total` 与列表条数是否一致」——一致。** 证据：`multi_session_with_time_range_and_pagination`（首页 3 + 次页 1，两页 `total` 均为 4，`totalBytes=40`）、`time_range_with_pagination_keeps_total_as_range_count`（区间 25 条、第 2 页 10 条、`total=25` 而非全表 45）；实现上三条查询共用同一 WHERE 与参数。
+2. **「同路径历史能否跨大小写命中」——能。** 证据：`path_match_is_case_insensitive`（条目 `c:\temp\a.txt`、历史 `C:\Temp\A.txt`，返回 1 条），底层 `WHERE target = ?1 COLLATE NOCASE`。
+3. **「筛选变化后是否清空选中、重置页码」——是。** 证据：`onChangePreset` / `onChangeSessions` / `selectAllSessions` / `clearSessions` 均 `setSelected(new Set())` + `load(1, ...)`；`SafeBox.test.tsx` 的「筛选变化后清空已选（批量按钮回到 0）」与「点 24 小时带 fromTs 且重置到第 1 页」两条用例覆盖；翻页也会清空选中。

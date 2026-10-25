@@ -73,3 +73,42 @@ pub fn list_audit_log(
     }
     Ok(out)
 }
+
+/// task-051：按 target（路径）查该路径的审计历史，`ts DESC, id DESC`，最多 `limit` 条。
+///
+/// - 路径比较用 `COLLATE NOCASE`：Windows 路径大小写不敏感，本应用写入走
+///   normalize（盘符大写），但历史数据 / 手工写入可能大小写不一致；
+/// - `limit` 内部 clamp 到 [1, 100]，防调用方传 99999；
+/// - 无匹配返回空 vec（不是 Err）。
+pub fn list_by_target(
+    conn: &rusqlite::Connection,
+    target: &str,
+    limit: i64,
+) -> Result<Vec<AuditLogEntry>, String> {
+    let limit = limit.clamp(1, 100);
+
+    let sql = "SELECT id, action, target, detail, ts, result \
+               FROM audit_log \
+               WHERE target = ?1 COLLATE NOCASE \
+               ORDER BY ts DESC, id DESC \
+               LIMIT ?2";
+    let mut stmt = conn.prepare(sql).map_err(|e| format!("prepare: {e}"))?;
+    let rows = stmt
+        .query_map(params![target, limit], |r| {
+            Ok(AuditLogEntry {
+                id: r.get(0)?,
+                event_type: r.get(1)?,
+                path: r.get(2)?,
+                detail: r.get(3)?,
+                created_at: r.get(4)?,
+                result: r.get(5)?,
+            })
+        })
+        .map_err(|e| format!("query_map: {e}"))?;
+
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.map_err(|e| format!("row: {e}"))?);
+    }
+    Ok(out)
+}

@@ -5,7 +5,7 @@
 //! 写库时落到 source_task_id 列。
 
 use engine::db::conn::open;
-use engine::execute::safe_box::{list_paged, list_sessions};
+use engine::execute::safe_box::{list_paged, list_sessions, SafeBoxFilter};
 
 fn setup() -> (tempfile::TempDir, rusqlite::Connection) {
     let dir = tempfile::tempdir().unwrap();
@@ -53,7 +53,7 @@ fn seed_two_sessions(conn: &rusqlite::Connection) {
 fn list_paged_no_session_returns_all() {
     let (_dir, conn) = setup();
     seed_two_sessions(&conn);
-    let p = list_paged(&conn, 1, 100, None).unwrap();
+    let p = list_paged(&conn, 1, 100, &SafeBoxFilter::default()).unwrap();
     assert_eq!(p.items.len(), 5);
     assert_eq!(p.total, 5);
 }
@@ -62,7 +62,11 @@ fn list_paged_no_session_returns_all() {
 fn list_paged_filter_by_session() {
     let (_dir, conn) = setup();
     seed_two_sessions(&conn);
-    let p = list_paged(&conn, 1, 100, Some(1)).unwrap();
+    let filter = SafeBoxFilter {
+        session_ids: vec![1],
+        ..Default::default()
+    };
+    let p = list_paged(&conn, 1, 100, &filter).unwrap();
     assert_eq!(p.items.len(), 3);
     assert_eq!(p.total, 3);
     // 所有行都应是 session 1 来源。
@@ -75,7 +79,11 @@ fn list_paged_filter_by_session() {
 fn list_paged_filter_no_match() {
     let (_dir, conn) = setup();
     seed_two_sessions(&conn);
-    let p = list_paged(&conn, 1, 100, Some(999)).unwrap();
+    let filter = SafeBoxFilter {
+        session_ids: vec![999],
+        ..Default::default()
+    };
+    let p = list_paged(&conn, 1, 100, &filter).unwrap();
     assert_eq!(p.items.len(), 0);
     assert_eq!(p.total, 0);
 }
