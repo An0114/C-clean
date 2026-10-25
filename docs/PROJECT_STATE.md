@@ -250,6 +250,10 @@
   - **L3 GUI 仍阻塞（第三档）**：dev 与安装版均复现「WebView2 子进程 3s 时 4 个 → 6s 时 0 个」，窗口留白、CDP 9222 不监听、Crashpad 每次启动新增 `.dmp`；追加 `--disable-gpu` / `--remote-debugging-port=9222` 无效。补偿：E17/E18/E19 + 从安装目录直接执行 bundled `scan_temp.ps1`（exit 0、1339 items）成功。**未取得截图/Console，未伪造**。
   - **缺陷**：本次测试 **0 条需修复缺陷**，未开 bugfix 子分支，未改任何既有断言（无 skip/xfail）。
   - **CI**：run **40090971932**（head `e7171c4`）`conclusion=success`，第 8 步「Tauri 资源映射契约」success。
+2026-10-25：task-049 关闭体验文案小改（bugfix/task-049-close-experience-copy，从 main 拉出，不含 task-051）——落实 049b 评审 §8 遗留观察项 #1/#2：
+  - `app/src/pages/Items.tsx`：① 关闭占用进程 `window.confirm` 补「注意：同一控制台内的相关进程可能一并关闭」（RmShutdown 会话级连带关闭风险提示）；② mixed fail-closed（同批含受保护进程→后端整批不关，closed=0 且 refused 非空）时结果条 headline 补「已关闭 0 个进程：因存在受保护进程，本次未关闭任何进程，仍失败 N 项」，避免用户误以为点了没反应。
+  - `Items.test.tsx`：confirm 用例补「同一控制台」断言；新增 mixed fail-closed（closed=[]+refused+仍失败）用例断言新解释文案。
+  自验：`pnpm vitest run Items.test.tsx` 7/7 通过；`pnpm lint` 干净。按用户指示本轮不开 PR、不触发 CI；待后续随发版流程统一在有活动桌面机器补 GUI 真机冒烟。
 
 2026-10-25：task-051 完成——**保险箱时间区间筛选 / 多 session 组合 / 审计历史联表 + 前端闭环**（`feature/task-051-safebox-filter-history`，状态 `testing`，**未合 main**）：
   - **后端引擎**（`engine/src/execute/safe_box.rs`）：新增 `SafeBoxFilter { session_ids: Vec<i64>, from_ts: Option<i64>, to_ts: Option<i64> }` + `normalized()`（去重保序、`<=0` 视为未设置）+ `is_empty_range()`；`list_paged` 由 `match session_id` 两套硬编码 SQL 重构为**动态 WHERE 拼接 + 顺序绑定参数**（`status='in_box'` 恒在，`source_task_id IN (?,?,…)` 按需拼占位符，`quarantined_at >= / <=` 按需拼），`items` / `COUNT(*)` / `COALESCE(SUM(size_bytes),0)` **共用同一 `where_clause` 与 `filter_params`**，保证 `total` / `totalBytes` 与筛选结果严格一致；`from > to` 提前返回空页（`items=[]`、`total=0`、`totalBytes=0`、`page`/`pageSize` 原样回显），不返回 Err。`SafeBoxEntry` 新增 `source_task_id: Option<i64>`（`list_safe_box` 与 `list_paged` 双路径都填），前端「来源」列据此显示 `#N`。新增 `item_history(conn, safe_box_id)`——先按 id 取 `original_path`，再走 `audit_log::query::list_by_target(.., 20)`。

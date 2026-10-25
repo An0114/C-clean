@@ -63,6 +63,29 @@ const RETRY_RESP = {
   },
 };
 
+/** close-experience-copy：mixed fail-closed——有受保护进程，后端整批不关（closed=[]、refused 非空、仍失败）。 */
+const MIXED_FAIL_CLOSED_RESP = {
+  shutdown: {
+    closed: [],
+    refused: [{ pid: 4321, appName: "explorer.exe", reason: "protected process" }],
+  },
+  summary: {
+    results: [
+      {
+        itemId: 1,
+        path: "C:\\Temp\\locked.txt",
+        deleted: false,
+        bytesFreed: 0,
+        error: "文件被占用",
+        lockingProcesses: [{ pid: 4321, appName: "explorer.exe", serviceName: null }],
+      },
+    ],
+    deletedCount: 0,
+    failedCount: 1,
+    bytesFreedTotal: 0,
+  },
+};
+
 function mockInvoke(overrides: Record<string, () => Promise<unknown>> = {}) {
   mockedInvoke.mockImplementation(((cmd: string) => {
     if (overrides[cmd]) return overrides[cmd]();
@@ -163,6 +186,8 @@ describe("confirm 二次确认（C10）", () => {
     expect(text).toContain("即将请求关闭以下进程");
     expect(text).toContain("notepad.exe (PID 1234)");
     expect(text).toContain("未保存的数据可能丢失");
+    // close-experience-copy：提醒同一控制台内相关进程可能一并关闭。
+    expect(text).toContain("同一控制台内的相关进程可能一并关闭");
   });
 
   it("取消后不调用 cleanup_retry_locked", async () => {
@@ -200,6 +225,24 @@ describe("重试结果展示（C11）", () => {
     // 调用参数只带失败项 id。
     const call = mockedInvoke.mock.calls.find(([cmd]) => cmd === "cleanup_retry_locked");
     expect(call?.[1]).toEqual({ itemIds: [1] });
+  });
+
+  it("mixed fail-closed（closed=0 + 受保护进程）时结果条解释未关闭原因", async () => {
+    mockInvoke({ cleanup_retry_locked: () => Promise.resolve(ok(MIXED_FAIL_CLOSED_RESP)) });
+    await renderLoaded();
+    selectFirstRow();
+    fireEvent.click(screen.getByText("清理已选"));
+    await waitFor(() => expect(screen.getByText("关闭占用进程并重试")).toBeInTheDocument());
+
+    vi.mocked(window.confirm).mockReturnValue(true);
+    fireEvent.click(screen.getByText("关闭占用进程并重试"));
+
+    // close-experience-copy：不能只显示「已关闭 0 个进程，仍失败 1 项」，必须解释原因。
+    await waitFor(() =>
+      expect(
+        screen.getByText(/已关闭 0 个进程：因存在受保护进程，本次未关闭任何进程，仍失败 1 项/),
+      ).toBeInTheDocument(),
+    );
   });
 });
 
