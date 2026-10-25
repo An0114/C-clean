@@ -277,7 +277,13 @@ pub async fn safe_box_list(
             return Ok(Envelope::err(INTERNAL));
         }
     };
-    match engine::execute::safe_box::list_paged(&conn, page, page_size, session_id) {
+    // task-051：`list_paged` 改为接收过滤结构；此处先把旧的单 session 入参
+    // 适配成 filter（命令签名升级见同任务的 safe_box_list 改动）。
+    let filter = engine::execute::safe_box::SafeBoxFilter {
+        session_ids: session_id.into_iter().collect(),
+        ..Default::default()
+    };
+    match engine::execute::safe_box::list_paged(&conn, page, page_size, &filter) {
         Ok(r) => Ok(Envelope::ok(r)),
         Err(e) => {
             eprintln!("[safe_box_list] list_paged: {e}");
