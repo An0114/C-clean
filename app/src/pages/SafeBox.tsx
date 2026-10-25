@@ -380,7 +380,9 @@ export default function SafeBox() {
   return (
     <div>
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
-        <button onClick={load} disabled={busy}>
+        {/* 注意：`load` 的第一个形参是 page，直接 `onClick={load}` 会把 click 事件当 page 传下去
+            （event 是 object → 后端 u32 反序列化失败 / 渲染对象崩树），必须包一层空调用。 */}
+        <button onClick={() => void load()} disabled={busy}>
           刷新
         </button>
         <span style={{ fontSize: 13, color: "#374151" }}>
