@@ -5,7 +5,7 @@
 ## 当前目标
 **M2 updater 正式关闭（2026-10-23）**：task-048 真机升级验证通过——已装 v0.1.0 的机器启动应用，顶部 banner 正确弹出「发现新版本 v0.1.1」+ 设置页应用更新卡片同步显示「发现新版本 0.1.1 / 新版本 0.1.1」，updater 从 check → 展示 → 引导下载安装全链路真机闭环。叠加 bugfix/task-035-release-signing 的签名/版本号修复（真实发版 run `39942401586` 产出 `.sig` + `latest.json`，pubkey keyid 一致），M2 里程碑收官。
 
-下一阶段焦点：**task-049 评审轮 2 通过并已合并 main（2026-10-24，merge commit `60e0797`）**——占用进程从「只报告」升级为「可处置」正式落地：护栏按 **PID → 映像文件名**（`QueryFullProcessImageNameW`）判定，与系统语言无关、取不到即 fail-closed；mixed 占用整批不关；`cleanup_retry_locked` + Items 失败明细/一键关闭重试。评审轮 1 的三项否决/阻塞缺陷（本地化绕过 / `closed-refused` 语义失真 / B7 不稳定）全部闭环，评审报告 `docs/reviews/049-review.md`（不通过）与 `docs/reviews/049b-review.md`（通过）。**M1-D 遗留第一项清零**。遗留（已登记第三档，不阻塞合并）：GUI 真机点击/Console 证据仍缺（需活动桌面机器，放行发版前补做）、`RmShutdown` 会连带关闭同 console 兄弟进程、mixed 场景无解释文案、打包资源路径错位（预存在）。下一项：派发 task-050（safe_box 增强：时间范围筛选 / 多选 session / audit_log 联表），并决策 `bugfix/task-050-bundle-resources-path` 是否插队。品牌图标决策：暂时不做，沿用 Tauri 默认占位。
+下一阶段焦点：**task-049 评审轮 2 通过并已合并 main（2026-10-24，merge commit `60e0797`）**——占用进程从「只报告」升级为「可处置」正式落地：护栏按 **PID → 映像文件名**（`QueryFullProcessImageNameW`）判定，与系统语言无关、取不到即 fail-closed；mixed 占用整批不关；`cleanup_retry_locked` + Items 失败明细/一键关闭重试。评审轮 1 的三项否决/阻塞缺陷（本地化绕过 / `closed-refused` 语义失真 / B7 不稳定）全部闭环，评审报告 `docs/reviews/049-review.md`（不通过）与 `docs/reviews/049b-review.md`（通过）。**M1-D 遗留第一项清零**。遗留（已登记第三档，不阻塞合并）：GUI 真机点击/Console 证据仍缺（需活动桌面机器，放行发版前补做）、`RmShutdown` 会连带关闭同 console 兄弟进程、mixed 场景无解释文案、打包资源路径错位（预存在）。下一项：派发 **task-051**（safe_box 增强：时间范围筛选 / 多选 session / audit_log 联表——编号由原 050 顺延，050 已被打包资源路径修复占用）；`bugfix/task-050-bundle-resources-path` 已按「插队优先」完成开发 + 测试轮（2026-10-24，状态 `awaiting_review`，测试报告 `docs/test-reports/050-test-report.md`，CI run 40090971932 绿），待评审。品牌图标决策：暂时不做，沿用 Tauri 默认占位。
 
 ## 最近一次变更
 2026-10-11：完成 PRD / TRD / ARCHITECTURE / AGENTS / 立项决策记录全套长期基线文档，并初始化本状态白板。
@@ -240,6 +240,14 @@
   - **抽查复现**：`cargo test -p engine --lib execute::locking::tests` → **15 passed**；真机假 explorer 用例 1 passed。未重跑全量功能测试（职责分离）。
   - **新发现（不阻塞，已登记）**：`RmShutdown` 连带关闭同 console / 进程组兄弟进程（用户确认范围外的进程可能被波及）→ 建议 `confirm` 补一句 + 后续评估逐进程关闭；mixed 场景「已关闭 0 个进程」无解释文案。
   - **Git**：`git checkout main`（`401f336`）→ `merge --no-ff feature/task-049-rm-shutdown-locking` → merge commit **`60e0797`**；feature 分支已删除（本地 + 远端）；本任务两个 bugfix 子分支复核无残留；PR #11 由该合并提交关闭（GitHub 连接器无 merge 权限，403，故走本地 `--no-ff` + push）。
+2026-10-24：**task-050 测试轮完成（测试 Agent，独立轮次，状态 `testing` → `awaiting_review`）**——报告 `docs/test-reports/050-test-report.md`，分支 `bugfix/task-050-bundle-resources-path` @ `e7171c4`（本地 = origin `0 0`，hotfix 语义无 feature 分支）：
+  - **L1/L2 全绿**：`cargo test --workspace` **197 passed / 8 ignored / 0 failed**（engine 188+8 不回退，app `paths::` 新增 9）；vitest **34**；契约测试 **6/6**；fmt / clippy / lint / build 全 0（`176.39 kB │ gzip 56.25 kB` 与基线一致）。
+  - **守卫有效性变异测试**：把 `tauri.conf.json` 临时改回 7 条数组式 → 契约测试 **6 条红 5 条**，`git checkout` 还原后 6/6 绿、工作区干净。
+  - **L4 打包安装（本轮补齐开发轮两项缺口）**：`tauri build` exit 0（NSIS 4.01 MiB + MSI 5.81 MiB，含 `.sig`）；NSIS `/S /D=%TEMP%\cclean-test-050` → **9 文件**、`rules/` + `scripts/` 齐全、`_up_` 不存在；**MSI 抽检已补做**（`msiexec /a` 解包 8 文件、同布局、无 `_up_`）；安装版从诱饵目录启动仍定位 `\\?\<INSTDIR>\scripts`，`%APPDATA%\…\rules` 重建且与安装包 SHA-256 逐字节一致，安装目录 9 文件 **NO_DIFF**，DB 落 `%APPDATA%\…\data\cdiskcleaner.db`。
+  - **负向用例**：删除安装目录副本的 `scripts/` 后启动 → 进程退出并报「找不到同时含 rules/ 与 scripts/ 的资源目录：<绝对路径> 下缺少 scripts/」，证明删除 `.` 兜底后不再静默降级。
+  - **L3 GUI 仍阻塞（第三档）**：dev 与安装版均复现「WebView2 子进程 3s 时 4 个 → 6s 时 0 个」，窗口留白、CDP 9222 不监听、Crashpad 每次启动新增 `.dmp`；追加 `--disable-gpu` / `--remote-debugging-port=9222` 无效。补偿：E17/E18/E19 + 从安装目录直接执行 bundled `scan_temp.ps1`（exit 0、1339 items）成功。**未取得截图/Console，未伪造**。
+  - **缺陷**：本次测试 **0 条需修复缺陷**，未开 bugfix 子分支，未改任何既有断言（无 skip/xfail）。
+  - **CI**：run **40090971932**（head `e7171c4`）`conclusion=success`，第 8 步「Tauri 资源映射契约」success。
 
 ## 已完成事项
 - [x] 项目立项与仓库初始化（commit 67990f5 / 4972f9d）
@@ -292,8 +300,10 @@
 - [x] 039：safe_box 批量恢复——后端 restore_many + Tauri 命令 + 前端绿色批量恢复按钮（复用 task-038 checkbox）
 - [x] 049：占用进程 RmShutdown——后端 `shutdown_locking_processes` + 危险进程护栏 + `cleanup_retry_locked` 命令 + Items 失败明细与「关闭占用进程并重试」（**评审轮 1 不通过 → task-049b 修三项缺陷 → 测试轮 2 通过，状态 `awaiting_review`，待评审重评**；测试轮 1 修 C12 三态互斥 + 补 B7 隔离用例；修复轮改 PID→映像名护栏 + mixed fail-closed + B7 独立 console；测试轮 2 修护栏用例 PID 环境依赖 + `reason` 注释）
 - [x] 048：v0.1.1 真机升级验证收尾——已装 v0.1.0 的机器启动应用，updater banner 正确弹出「发现新版本 v0.1.1」（用户真机验证通过，2026-10-23），**M2 正式关闭**
+- [x] 050：打包资源路径错位修复——`bundle.resources` 数组式改映射式（规则/脚本落到 `<安装目录>/rules`、`/scripts`）+ `AppPaths` 抽 `pick_resource_root`/`build_candidates`（release 不依赖 cwd、缺失显式报错带绝对路径）+ `scripts/tauri-resources.test.mjs` 契约测试接 CI（`bugfix/task-050-bundle-resources-path`，状态 `awaiting_review`，**未合 main**；测试轮 2026-10-24 通过：L1/L2/L4/L5 全绿、0 缺陷、MSI 抽检已补做，GUI 仍第三档待真机，报告 `docs/test-reports/050-test-report.md`）
 
 > 注：040~047 的完成明细未回填本清单（历史遗漏），以「最近一次变更」段与 `tasks/040-*.md`~`tasks/047-*.md` 为准。
+> 编号顺延（2026-10-24）：原定 050 的「safe_box 增强」顺延为 **051**，050 让位给发版阻塞级的打包资源路径缺陷。
 
 ## 已知问题
 - [B 高] ~~task-049 评审不通过（2026-10-24，评审轮 1）——护栏依赖本地化应用名，中文 Windows 下 `explorer.exe` 可被关闭~~ **已由 task-049b 解决（2026-10-24，`199527a`）**：护栏改按 `PID → 映像文件名`（`OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` + `QueryFullProcessImageNameW`）判定，与系统语言无关；取不到映像名一律 **fail-closed**（`reason = unknown process`），保留原友好名匹配作兜底，未往名单里追加任何中文名。证据：真机 `explorer.exe` FileDescription = `Windows 资源管理器`、`dwm.exe` = `桌面窗口管理器`，而映像名为 `explorer.exe`；端到端用例 `shutdown_refuses_protected_image_holder` 实测 `closed=[]`、`refused=[{appName:"explorer.exe", reason:"protected process"}]`。原缺陷记录：`RmGetList` 的 `strAppName` 是本地化 FileDescription，三条名字规则对中文名全不命中；任务书要求的「explorer 拒绝场景真机验证」因 GUI 环境阻塞从未执行。
@@ -301,7 +311,7 @@
 - [B 中] ~~task-049 评审发现（2026-10-24）——B7 用例 `shutdown_only_touches_registered_path` 不稳定~~ **已由 task-049b 解决（2026-10-24，`c34af2c`）**：根因不是环境抖动，而是**两个 holder 共用测试进程的 console**——`RmShutdown` 强杀 A 时连带带走同 console 的 B（实测 `holder_b_exit=1` 且无 done 标记；单跑 2/2 PASS、全量连跑 2/2 FAILED）。给每个 holder 加 `CREATE_NO_WINDOW`（独立 console）后全量连跑 **5/5 全绿**；用例同时补 ready/done 标记与退出码归因，失败可直接区分「自然退出」与「被 RM 波及」。该 console 耦合行为已登记为 `locking.rs` 文件头已知限制 4。
 - [B 中] ~~task-021 仅做「报告」（who_is_locking 结果写 audit_log + 返回前端），未实现 RmShutdown，前端 `cleanup_execute` 返回值被直接丢弃、`ExecResult.lockingProcesses` 没渲染~~ **已由 task-049 解决**（`shutdown_locking_processes` + 护栏 + `cleanup_retry_locked` + Items 失败明细/一键重试）。**并顺带修掉 task-020 的 probe 判断 bug**（`Error::code()` 是 HRESULT，与 `234` 比较恒不等 → 真有占用时直接 Err，占用列表一直是空的）。
 - [B 中] task-049 遗留：① `RmRestart`（关闭后自动重启进程）未做，用户需自行重开；② `RmShutdown` 阻塞最坏 ~30s（目标不响应关闭请求时等 RM 超时），期间前端只有「关闭并重试中…」无进度；③ ~~RM 会话是「按资源」而非「按进程」，同一文件同时被保护进程与普通进程占用时无法只关普通进程（`closed` 不会记保护进程，但 `explorer.exe` 会随会话被请求关闭）~~ **task-049b 已改为 mixed fail-closed：只要有一个进程被拒就整批不关，保护进程不会再被会话连带关闭**；④ GUI 真机截图与 NSIS 安装态冒烟未取得——**测试轮（2026-10-24）已补安装态冒烟（干净目录安装 + 数据目录隔离 + 安装目录零写入），GUI 点击/Console 仍因「本会话无活动桌面、WebView2 渲染进程创建即崩溃」未取得，登记为第三档，补偿为 jsdom 组件用例（C8–C12）+ 后端真实占用进程端到端，需在有活动桌面的机器补做**；⑤ **task-049b 新增**：`RmShutdown` 会连带关闭**同 console / 进程组**里的兄弟进程（实测两个共用 console 的 powershell holder，只对 A 的文件请求关闭，B 也退出），本模块无法控制该粒度，已写入 `locking.rs` 文件头已知限制 4。
-- [B 中] **打包态资源路径错位（2026-10-24 测试轮发现，非 task-049 引入）**：`tauri.conf.json` 的 `bundle.resources` 用 `../../rules/...` 相对路径，NSIS/WiX 按 `$INSTDIR\_up_\_up_\rules` 落盘，而 `AppPaths::from_app` 只查 `resource_dir().join("rules")` → 安装版实测 `[paths] scripts_dir=.\scripts`。影响：全新用户首次启动取不到 bundled 规则 → `load_external_deny` 失败 → `cleanup_execute` / `cleanup_retry_locked` 返回 `INTERNAL`（本机因 `%APPDATA%\com.and0114.cclean\rules` 已存在而未暴露）。引入于 `16b30e2`（debt-cleanup）；修复需改 `tauri.conf.json` 或 `paths.rs`，建议另开任务。
+- [B 中] ~~**打包态资源路径错位（2026-10-24 测试轮发现，非 task-049 引入）**：`tauri.conf.json` 的 `bundle.resources` 用 `../../rules/...` 相对路径，NSIS/WiX 按 `$INSTDIR\_up_\_up_\rules` 落盘，而 `AppPaths::from_app` 只查 `resource_dir().join("rules")` → 安装版实测 `[paths] scripts_dir=.\scripts`。影响：全新用户首次启动取不到 bundled 规则 → `load_external_deny` 失败 → `cleanup_execute` / `cleanup_retry_locked` 返回 `INTERNAL`（本机因 `%APPDATA%\com.and0114.cclean\rules` 已存在而未暴露）。引入于 `16b30e2`（debt-cleanup）；修复需改 `tauri.conf.json` 或 `paths.rs`，建议另开任务。~~ **已由 `bugfix/task-050-bundle-resources-path` 修复（2026-10-24，状态 testing）**：走 A 路线——`bundle.resources` 数组式改**映射式**（7 条，目标 `rules/…`、`scripts/…`），NSIS 装到干净目录后 `<INSTDIR>\rules\` + `<INSTDIR>\scripts\` 齐全、`_up_` 不存在；`paths.rs` 抽 `pick_resource_root`（纯函数）+ `build_candidates`（release 只认 `resource_dir()`，dev 优先 cwd 三级再退 `resource_dir()`），删除 `PathBuf::from(".")` 兜底与 cwd 劫持，资源缺失改为带绝对路径的显式 `Err`；新增 `scripts/tauri-resources.test.mjs` 契约测试并接入 CI（旧数组式配置下 6 条断言红 5 条）。实测：安装版从诱饵目录启动仍定位到安装目录 `scripts`，`%APPDATA%\…\rules` 被重建且与安装包 SHA-256 逐字节一致，安装目录 9 文件零写入。**遗留：GUI「扫描 → 清理」点击因本机 WebView2 渲染进程崩溃未取得（第三档）；MSI 未做安装级布局抽检**。**测试轮复核（2026-10-24）：上述实测结论逐条复现通过，MSI 已补做 `msiexec /a` 抽检（8 文件、`rules/`+`scripts/` 同布局、无 `_up_`）；GUI 缺口仍在（dev 与安装版均「3s 有 4 个 WebView2 子进程 → 6s 归零」，窗口留白、CDP 9222 不监听、Crashpad 每次启动新增 `.dmp`，`--disable-gpu` 无效），登记第三档，需发版前在有活动桌面的机器补做**。
 - [B 低] ~~task-018 list 边界：无分页（保险箱总量 ≤5GB，条目数有限）、无 session 过滤（先返回全部）、无单条 purge 命令、未接前端 React UI~~（~~无分页~~：task-045 已落地 list_paged LIMIT/OFFSET + 前端分页栏；~~无 session 过滤~~：task-046 已落地 session_id 可选参数 + list_sessions + 前端下拉）。真多了再加 时间范围筛选 / 多选 session / audit_log 联表 留 task-047+。
 - [B 低] ~~task-017 restore 边界：不自动建原父目录（ParentMissing 直接报错让用户手动处理）、不支持批量恢复、未加 `restored_at` 审计列（DELETE 行 + audit_log action='restore' 已留痕）。批量恢复与父目录自动 mkdir 留后续。~~ **已由 task-043 解决**（restore_from_safe_box 在父目录缺失时自动 `std::fs::create_dir_all`，mkdir 失败返回「无法创建父目录 <path>: <os error>」；ParentMissing 枚举变体保留但不再返回）。遗留：未加 `restored_at` 审计列。
 - [B 中] task-016 保险箱原子性：`fs::rename` 成功但 `INSERT INTO safe_box` 失败时，文件已在 box 目录但 DB 无行——当前简单报错，不做回滚；跨盘 rename 走 copy+remove 也非原子。补偿：下次 enforce_quota 扫到磁盘上有孤儿文件时会 NotFound 直接标 purged（不会重复占用 quota）。
@@ -320,17 +330,17 @@
 - [B 高] ~~发版 workflow 两个 bug：① 安装包版本号永远 0.1.0，不随 workflow_dispatch 输入变化；② 配了签名私钥却不生成 .sig（多轮改私钥传递方式均无效）。~~ **已由 bugfix/task-035-release-signing 修复（2026-10-23，状态 testing，待 CI 全绿 + 测试/评审复核）**：根因分别是「版本注入无校验、失败静默」与「`tauri.conf.json` 缺 `bundle.createUpdaterArtifacts`（Tauri 2 默认 false，为 false 时 bundler 不读私钥）」；修法与证据见「最近一次变更」。遗留：真机端到端升级验证（装旧版 → 检查更新 → 下载安装 → 重启到新版）需发版后人工跑。~~GitHub Secret `TAURI_SIGNING_PRIVATE_KEY` / `_PASSWORD` 必须与 `plugins.updater.pubkey` 配对（本地 `~/.tauri/cclean.key.pub` 与仓内 pubkey 不是同一对，CI 侧 secret 需用户自查）~~ **已证实配对（2026-10-23）**：v0.1.5 的 `.exe.sig` keyid `52ACA0C8DAA19EB3` 与 `plugins.updater.pubkey` 一致，真实发版 run `39942401586` 全绿、产物含 `.sig` + `latest.json`。
 
 ## 下一步计划
-M2 updater 已关闭（task-048）；**task-049 评审通过并合并 main（merge commit `60e0797`）**，M1-D 遗留第一项清零。下一轮优先级：
+M2 updater 已关闭（task-048）；**task-049 评审通过并合并 main（merge commit `60e0797`）**，M1-D 遗留第一项清零；**task-050（打包资源路径）已开发完成，状态 `testing`，待测试 Agent**。下一轮优先级：
 
-1. **① 派发 task-050：safe_box 增强**——时间范围筛选 / 多选 session / audit_log 联表（`list_paged` 已支持 session_id 与分页，本轮加时间区间与联表视图）。
-2. **② 决策打包资源路径错位**（见「已知问题」）：是否插队开 `bugfix/task-050-bundle-resources-path` 修 `bundle.resources` / `AppPaths` 资源定位（影响全新安装用户首次启动，优先级建议高于 ①）。
+1. **① 派发 task-051：safe_box 增强**——时间范围筛选 / 多选 session / audit_log 联表（`list_paged` 已支持 session_id 与分页，本轮加时间区间与联表视图）。**编号由原 050 顺延**：050 已让位给打包资源路径缺陷（发版阻塞级）。
+2. **② 收口 task-050**（见「已知问题」已关闭项）：测试 Agent 全量回归 + 真机补做 E20（扫描 → 清理 GUI 链路）+ MSI 安装级布局抽检；评审通过后合并 main。
 3. **③ 关闭体验文案小改**（task-049 遗留观察项，约 2 行）：`confirm` 补「同一控制台内的相关进程可能一并关闭」；mixed 场景补「因存在受保护进程，本次未关闭任何进程」。
 4. ④ GUI 真机冒烟补做：task-049 的红条明细 / confirm 文案 / 绿条结果 + Console 0 红错，需在具备活动桌面的机器上执行（**放行发版前必做**）；`RmRestart` 是否要做由产品侧拍板（当前用户需自行重开被关进程）。
 5. ⑤ 发版类小修：`release.yml` 补 `target_commitish: ${{ github.sha }}`（tag 溯源，需再发一版验证）。
 6. ⑥ 更新体验：banner「立即更新」的下载进度反馈 / 差量更新（M3+，非阻塞）。
 
 ## 当前负责人 Agent
-DocsKeeper（文档与状态管家）—— task-049 已评审通过并合并 main，下一手由 DocsKeeper 派发 task-050 / 打包资源路径决策。上一手：Review Lead（提示词 10，评审轮 2 通过并合并）。
+测试 Agent 已完成 task-050 测试轮（2026-10-24）：L1/L2/L4/L5 全绿、0 缺陷、CI run `40090971932` 绿，GUI 缺口按第三档登记；状态 `awaiting_review`，下一手移交 **评审 Agent（提示词 10）**。上一手：DevEngineRust（开发 task-050）。
 
 ## Git 提交记录
 | Commit | 任务 | 说明 |
@@ -626,6 +636,13 @@ DocsKeeper（文档与状态管家）—— task-049 已评审通过并合并 ma
 | （本次） | #task-049 | docs(review): 任务049b评审报告（轮 2，通过） |
 | （本次） | #task-049 | docs(state): 任务049合并main并记录merge commit |
 | **60e0797** | #task-049 | **merge: task-049 占用进程 RmShutdown 与一键关闭重试（--no-ff，评审轮 2 通过）** |
+| 383189f | #task-050 | fix(packaging): bundle.resources 改为映射式，规则与脚本落到安装根目录 |
+| c4149fd | #task-050 | fix(paths): 资源定位不再依赖 cwd，缺失时显式报错并打印绝对路径 |
+| 819566b | #task-050 | test(paths): 补资源候选挑选单测 |
+| 4827377 | #task-050 | test(ci): 新增 Tauri 资源映射契约测试并接入 CI |
+| 73dbbe7 | #task-050 | fix(paths): dev 优先仓库内资源，避免 target/debug 陈旧副本 |
+| （本次） | #task-050 | docs(test): 任务050测试报告 |
+| （本次） | #task-050 | docs(state): 任务050测试通过，状态 awaiting_review |
 
 ---
 变更轨迹：
@@ -725,3 +742,5 @@ DocsKeeper（文档与状态管家）—— task-049 已评审通过并合并 ma
 - 2026-10-24  task-049b 修复轮：护栏改 PID→映像名（`QueryFullProcessImageNameW`）+ 取不到映像名 fail-closed；mixed 占用 fail-closed（存在被拒进程即整批不关）；B7 根因定为 holder 共用 console，改独立 console + ready/done + 退出码归因，连跑 5/5 全绿；护栏单测 10→15、集成新增假 explorer 持锁用例；六门禁 + CI run 40054417543 全绿；`--no-ff` 合回 feature，状态 `testing`，待测试 Agent 全量回归 + 评审重评
 - 2026-10-24  task-049b 测试轮 2 **通过**（`docs/test-reports/049b-test-report.md`）：独立重跑 fmt 0 / clippy 0 / engine 196 条（188+8）/ vitest 34 / build 176.39 kB；真机 `--include-ignored` 合并前后各连跑 5 次共 10 次全绿，假 `explorer.exe` 持锁实测 `closed=[]` + `refused=[protected process]`；NSIS 干净目录安装 exit 0 + 安装目录 9/9 文件零变化；修 2 项第一档（护栏「本地化名」用例 PID 环境依赖 → `a740dea`；`reason` 注释缺 `unknown process` → `448275a`），`--no-ff` 合回 feature `5550f61`，CI 40059150999 绿；GUI 点击/Console 仍因无活动桌面（Crashpad 新增 dmp）登记第三档；状态置 awaiting_review
 - 2026-10-24  task-049  **评审轮 2 通过并合并 main**（`docs/reviews/049b-review.md`）：轮 1 三项否决/阻塞缺陷全部闭环（护栏 PID→映像名 + fail-closed、mixed 整批不关、B7 独立 console 后 10 次连跑全绿）；抽查复现 15 条护栏单测 + 真机假 explorer 用例（`closed=[]`、`refused=[protected process]`）；CI 40060421641 @03b53b4 success；`--no-ff` merge commit **`60e0797`**，feature 与 bugfix 子分支已清理；新登记「`RmShutdown` 连带关闭同 console 兄弟进程」「mixed 无解释文案」两项遗留观察
+- 2026-10-24  task-050  打包资源路径错位修复（`bugfix/task-050-bundle-resources-path`，状态 `testing`，**未合 main**）：走 A 路线——`bundle.resources` 数组式改**映射式**（7 条落到 `<安装目录>/rules`、`/scripts`，`_up_` 消失）；`paths.rs` 抽 `pick_resource_root`（纯函数）+ `build_candidates`（release 只认 `resource_dir()`，dev 优先 cwd 三级再退 `resource_dir()`），删 `PathBuf::from(".")` 兜底，资源缺失改带绝对路径的显式 `Err`；新增 `scripts/tauri-resources.test.mjs`（6 条断言）并接 CI。门禁：fmt/clippy 0、cargo test **197 passed + 8 ignored**（engine 196 不回退，app crate +9）、vitest 34、build 176.39 kB；`tauri build` 出 NSIS 4.00 MiB + MSI 5.81 MiB（含 .sig）；NSIS 干净目录安装后 9 文件布局正确、无 `_up_`、安装目录 SHA-256 **NO_DIFF**；从诱饵目录启动仍定位安装目录 `scripts`，`%APPDATA%\…\rules` 被重建且与安装包逐字节一致；CI **40090245117 / 40090552969 均 success**（含「Tauri 资源映射契约」步骤）。遗留（第三档）：GUI「扫描 → 清理」点击因 WebView2 渲染进程崩溃未取得、MSI 未做安装级布局抽检、dev 日志路径含 `..` 未做词法归一
+- 2026-10-24  task-050  **测试轮通过**（`docs/test-reports/050-test-report.md`，分支 @`e7171c4`）：独立重跑 fmt 0 / clippy 0 / cargo test **197 passed + 8 ignored** / vitest 34 / 契约 6/6 / build 176.39 kB；契约守卫变异测试（改回数组式）6 条红 5 条、还原后 6/6 绿；`tauri build` exit 0（NSIS 4.01 MiB + MSI 5.81 MiB 含 `.sig`），NSIS 干净目录安装 9 文件布局正确、`_up_` 不存在、安装目录 **NO_DIFF**、`%APPDATA%\…\rules` 重建且与安装包逐字节一致、诱饵目录未劫持；**MSI `/a` 抽检补做**（8 文件同布局、无 `_up_`）；负向用例（删 `scripts/`）启动即报带绝对路径的显式错误；从安装目录直接执行 `scan_temp.ps1` exit 0（1339 items）；CI run **40090971932** success。**0 条需修复缺陷、未开 bugfix 子分支**；GUI 仍因 WebView2 渲染进程崩溃（3s 4 个 → 6s 归零、Crashpad 新增 dmp）登记第三档；状态置 `awaiting_review`，待评审 Agent

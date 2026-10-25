@@ -184,3 +184,157 @@ pending
 2. 任务文件末尾追加 `## 实现备注`，至少包含：实际改动文件对账（对照允许范围）、走 A 还是 fallback B 及理由、`pick_resource_root` 的 dev/release 候选差异、单测条数、六道门禁退出码、安装布局清单、`%APPDATA%\...\rules` 重建证据、CI run id、与任务书不符之处（若有）；
 3. 明确回答一句：**「干净机器首次安装 → 首次启动 → 扫描/清理可用」是否成立**，并给出支撑证据编号（A3 / E17 / E18 / E20）；
 4. 更新 `docs/PROJECT_STATE.md`：勾选待办、关闭「打包态资源路径错位」已知问题、把「下一步计划」中的 050 改为 051（safe_box 增强）并写清编号顺延，单独提交 `docs(state)`。
+
+## 实现备注
+
+> 执行角色：DevEngineRust ｜ 执行时间：2026-10-24 ｜ 分支：`bugfix/task-050-bundle-resources-path`（base `7f4d5f6`，未合 main）
+
+### 1. 路线选择：走 A（映射式），未启用 fallback B
+
+`bundle.resources` 已改为映射对象，`pnpm --filter app tauri build` 一次通过（退出码 0），NSIS 安装后资源落在 `<INSTDIR>\rules\` 与 `<INSTDIR>\scripts\`，`<INSTDIR>\_up_` 不存在。A 路线在 Tauri 2（stable）上可用，因此**没有**保留数组式，也没有在 `paths.rs` 里加 `_up_/_up_` 候选根——两条路线只留一条真相。
+
+### 2. 实际改动文件对账（对照「允许修改范围」）
+
+| 文件 | 允许？ | 实际改动 |
+|---|---|---|
+| `app/src-tauri/tauri.conf.json` | 是 | 仅 `bundle.resources` 数组 → 映射对象（7 条），其余字段未动 |
+| `app/src-tauri/src/paths.rs` | 是 | `pick_resource_root` / `build_candidates` / `describe_missing` 抽取；`locate_resource_dir()` 删除；release 不取 cwd；删 `PathBuf::from(".")` 兜底；启动日志；`#[cfg(test)] mod tests` 9 条 |
+| `scripts/tauri-resources.test.mjs` | 是 | 新增，6 条断言 |
+| `.github/workflows/ci.yml` | 是 | 仅在「发版脚本单测」后插入「Tauri 资源映射契约」一步 |
+| `docs/PROJECT_STATE.md` | 是 | 收尾单独 `docs(state)` 提交 |
+| `tasks/050-bundle-resources-path.md` | 是 | 本备注 |
+
+**未触碰**：`commands.rs` / `lib.rs` / `progress.rs` / `app/src-tauri/Cargo.toml` / `app/src/**` / `engine/**` / `elevation/**` / `rules/**` / `scripts/*.ps1` / `scripts/release-lib*.mjs` / `release.yml` / `capabilities/default.json` / `app/package.json` / `Cargo.lock` / `pnpm-lock.yaml`。`git diff --stat 7f4d5f6..HEAD` 只含上表 4 个代码/配置文件（另加 docs、tasks 两个文档）。
+
+### 3. `pick_resource_root` 与候选列表的 dev / release 差异
+
+```rust
+fn pick_resource_root(candidates: &[PathBuf]) -> Option<PathBuf> {
+    candidates.iter().find(|c| c.join("rules").is_dir() && c.join("scripts").is_dir()).cloned()
+}
+```
+
+| 维度 | dev（`debug_assertions`） | release |
+|---|---|---|
+| 候选来源 | cwd、`cwd/..`、`cwd/../..`，**然后** `resource_dir()` | **只有** `resource_dir()` |
+| 是否碰 cwd | 是（`#[cfg(debug_assertions)] let dev_cwd = current_dir().ok()`） | 否（`#[cfg(not)] let dev_cwd: Option<PathBuf> = None`，代码上一眼可见） |
+| 顺序理由 | 优先仓库内资源：`tauri dev` 会把 resources 复制到 `target/debug/`，若优先用它，改 `scripts/*.ps1` 后 dev 仍读陈旧副本；`cargo run` 直跑时 `target/debug` 无资源，`resource_dir()` 作兜底 | 只认安装目录，避免「从任意含 rules/ + scripts/ 的目录启动安装版」劫持资源 |
+| 找不到时 | `Err(describe_missing(..))`，消息含每个候选的**绝对路径**与缺失项 | 同左 |
+
+判定用 `is_dir()` 而非 `exists()`：同名普通文件不算资源目录（单测覆盖）。
+
+### 4. 单测条数
+
+- `app/src-tauri/src/paths.rs`：**9 条**（任务书要求 ≥4）
+  1. 只有 `rules/` → `None`
+  2. 只有 `scripts/` → `None`
+  3. 两者都有 → 命中该候选
+  4. 候选全空 → `None`（含「同名普通文件不算目录」）
+  5. 多候选 → 跳过不完整候选，命中第一个完整候选
+  6. `build_candidates(Some(res), None)` → 只有 1 条（release 语义）
+  7. `build_candidates` dev 顺序 = cwd 三级 + resource_dir
+  8. `describe_missing` 含绝对路径 + 只报真正缺失项
+  9. `describe_missing(&[])` 说明「release 不回退当前工作目录」
+- `scripts/tauri-resources.test.mjs`：**6 条**（对象形态 / 7 条精确映射 / 目标前缀 / 无 `..` 与 `_up_` / 无通配符 / 源文件真实存在）
+- 全部用 `std::env::temp_dir()` + `Drop` 守卫自造结构，**未新增任何依赖**（`tempfile` 未引入），不依赖真实 cwd / 真实安装目录。
+
+### 5. 六道门禁（本地，2026-10-24）
+
+| 门禁 | 命令 | 退出码 | 结果 |
+|---|---|---|---|
+| 1 | `cargo fmt --all -- --check` | 0 | 无 diff |
+| 2 | `cargo clippy --workspace --all-targets -- -D warnings` | 0 | 无 warning |
+| 3 | `cargo test --workspace` | 0 | **197 passed + 8 ignored**（engine 188+8 不回退，app crate 新增 9） |
+| 4 | `pnpm --filter app lint` | 0 | eslint 无输出（`--max-warnings 10` 未触发） |
+| 5 | `pnpm --filter app test` | 0 | **34 passed**（基线 34） |
+| 6 | `pnpm --filter app build` | 0 | `index-VkBRTSbR.js 176.39 kB │ gzip 56.25 kB`（基线一致） |
+| 附 | `node --test scripts/tauri-resources.test.mjs` | 0 | 6 pass / 0 fail |
+
+### 6. 出包与安装布局（A3 / D16）
+
+设 `TAURI_SIGNING_PRIVATE_KEY=$TEMP/cclean-smoke-050.key`（一次性临时密钥，未入库）后 `pnpm --filter app tauri build` 退出码 **0**：
+
+```
+bundle/nsis/C-DiskCleaner_0.1.0_x64-setup.exe  4.00 MiB (+ .sig)
+bundle/msi/C-DiskCleaner_0.1.0_x64_en-US.msi   5.81 MiB (+ .sig)
+```
+
+NSIS `/S /D=%TEMP%\cclean-smoke-050` 静默安装（installer_exit=0）后安装目录**恰好 9 个文件**：
+
+```
+cdisk-cleaner.exe
+uninstall.exe
+rules\cache_rules.json
+rules\rules_meta.json
+scripts\scan_browser_cache.ps1
+scripts\scan_dev_cache.ps1
+scripts\scan_prefetch.ps1
+scripts\scan_temp.ps1
+scripts\scan_windows_update.ps1
+```
+
+- `<INSTDIR>\_up_` → **不存在**（`_up_exists=False`）
+- 7 个 payload 逐条 `Test-Path` 全 `True`
+- **MSI 抽检未做**：MSI 与 NSIS 由同一次 `tauri build`、同一份 `bundle.resources` 生成，本轮只对 NSIS 做了安装级断言（见第 12 节第 2 条）。
+
+### 7. `%APPDATA%\com.and0114.cclean\rules` 重建证据（E18）
+
+1. `Move-Item %APPDATA%\com.and0114.cclean\rules → rules.bak-task050`（`rules_exists=False`）；
+2. 从**诱饵目录** `%TEMP%\cclean-decoy`（内含假 `rules/cache_rules.json` = `{"decoy":true}` 与假 `scripts/scan_temp.ps1`）作为 cwd 启动安装版；
+3. stderr 抓到：
+
+```
+[paths] data_root=C:\Users\An\AppData\Roaming\com.and0114.cclean rules_dir=...\rules
+        scripts_dir=\\?\C:\Users\An\AppData\Local\Temp\cclean-smoke-050\scripts box_dir=...\safe_box
+```
+
+`scripts_dir` 指向**安装目录**而非诱饵 cwd → release 不依赖 cwd 得到实测证明（缺陷态此处是 `.\scripts`）。
+
+4. `rules` 目录被重新创建：`cache_rules.json 614 bytes` + `rules_meta.json 261 bytes`，内容为真规则库（`"version": "1.0.0"`，**不含** `decoy`）；
+5. 与安装包 bundled 规则 SHA-256 逐字节一致：`cache_rules.json EA473D9820BE = EA473D9820BE`、`rules_meta.json 849C3648B31C = 849C3648B31C`。
+
+### 8. E19 安装目录零写入
+
+启动安装版前后，安装目录 9 个文件 SHA-256 全量对比：**NO_DIFF**（file_count 9 → 9）。
+
+### 9. E17 dev 日志
+
+```
+[paths] data_root=C:\Users\An\AppData\Roaming\com.and0114.cclean rules_dir=...\rules
+        scripts_dir=D:\GitHub\C-clean\app\src-tauri\../..\scripts box_dir=...\safe_box
+```
+
+绝对路径，不再是 `.\scripts`。`target/debug/{rules,scripts}` 也各含 2 + 5 个文件（Tauri dev 复制 resources 的结果），说明映射式在 dev 同样生效。
+
+### 10. 守卫有效性自证（C12）
+
+把 `tauri.conf.json` 临时改回数组式后跑契约测试：**6 条里 5 条红**，报错原文含
+`bundle.resources 必须是 {源: 目标} 对象；数组式会保留原目录结构并生成 _up_ 前缀`、
+`0 → ../../rules/cache_rules.json：目标不得含 ..`、`资源源文件不存在：...\app\src-tauri\0`。
+恢复映射式后 6/6 全绿。
+
+### 11. CI
+
+- run `40090245117`（`4827377`）：`conclusion=success`，含「Tauri 资源映射契约」步骤通过；
+- run `40090552969`（`73dbbe7`，含 dev 候选顺序修正）：结果见 `docs/PROJECT_STATE.md`「最近一次变更」；
+- PR：<https://github.com/An0114/C-clean/pull/15>（**draft**，仅用于触发 CI，不作合并入口）。
+
+### 12. 与任务书不符之处 / 需评审知悉
+
+1. **多一个提交**：任务书列 5 个提交，实际 6 个代码/测试提交 + 1 个 docs 提交。多出的是 `73dbbe7 fix(paths): dev 优先仓库内资源，避免 target/debug 陈旧副本`——E17 实测发现若 `resource_dir()` 优先，dev 会读 `target/debug/` 的陈旧 ps1 副本（改脚本不生效），故把 dev 候选顺序调成「cwd 三级 → resource_dir」。release 行为不受影响。
+2. **MSI 未做安装级抽检**：A3 要求「NSIS 必做、MSI 抽检」。本轮只装了 NSIS；MSI 仅确认产物存在（5.81 MiB + .sig），未做安装后布局断言。风险低（同一份 `bundle.resources`、同一次构建），但未取得证据，如实登记。
+3. **E17 路径含 `..` 未做词法归一**：dev 日志为 `D:\GitHub\C-clean\app\src-tauri\../..\scripts`（绝对但未折叠）。`std::path::absolute` 需 Rust 1.79，而 `Cargo.toml` 声明 `rust-version = "1.77"` 且不在允许改动范围，故不做归一。路径可用（shell 侧实测接受该形态）。
+4. **E20 GUI 未取得（第三档）**：见第 13 节。
+5. **`scripts_dir` 带 `\\?\` 前缀**（release 下 `resource_dir()` 的原样输出）。已实测用该前缀执行 .ps1 返回 `VERBATIM_OK exit=0`，故未剥离前缀。
+
+### 13. E20 实测现象（第三档登记，未伪造）
+
+- 安装版进程可启动并存活：`t=2s..12s alive`（`tasklist` PID 45728，Session `Console`）；
+- 但 WebView2 渲染进程崩溃，`%LOCALAPPDATA%\com.and0114.cclean\EBWebView\Crashpad\reports\` 每次启动后新增 `.dmp`：`19:25:20` / `19:25:58` / `19:28:13`（各约 6.7 MB）；
+- 主进程随后自行退出，取不到窗口句柄，**「扫描 → 清理」GUI 点击未能执行**；
+- 补偿证据：E17（绝对路径定位）+ E18（bundled 规则被正确定位并复制，SHA-256 与安装包一致）+ E19（安装目录零写入）+ 代码走查（`commands.rs:78` 是 `paths.scripts_dir` 的唯一消费者 `orch.run_all(...)`；`commands.rs:37` 的 `load_external_deny(&paths.rules_dir)` 读 APPDATA 副本）。
+- 需在有活动桌面的机器上补做 E20（发版前必做）。
+
+### 14. 结论
+
+**「干净机器首次安装 → 首次启动 → 扫描/清理可用」在文件系统与资源定位层面成立**（A3 布局 9/9 正确、无 `_up_`；E17 绝对路径；E18 规则库被定位并复制且与安装包逐字节一致；E19 安装目录零写入），**但 GUI 端到端点击（E20）因本机 WebView2 渲染进程崩溃未取得，该链路按第三档待真机补验**。

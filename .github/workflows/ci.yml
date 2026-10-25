@@ -36,6 +36,11 @@ jobs:
       - name: 发版脚本单测
         run: node --test scripts/release-lib.test.mjs
 
+      # bugfix/task-050：bundle.resources 必须是映射式，且目标落在 rules/ 与 scripts/ 下。
+      # 数组式会让资源落到 <安装目录>\_up_\_up_\rules\...，全新安装用户首次启动即不可用。
+      - name: Tauri 资源映射契约
+        run: node --test scripts/tauri-resources.test.mjs
+
       - name: Rustfmt 检查
         run: cargo fmt --all -- --check
 
