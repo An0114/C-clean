@@ -19,6 +19,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use rusqlite::params;
 use rusqlite::Connection;
 
+use crate::audit_log::query::AuditLogEntry;
 use crate::execute::delete::Deleter;
 use crate::execute::normalize::NormalizedPath;
 
@@ -324,6 +325,8 @@ pub struct SafeBoxEntry {
     pub size_bytes: u64,
     /// 移入时间（unix 秒），对应 schema 真实列 `quarantined_at`。
     pub quarantined_at: i64,
+    /// task-051：来源清理批次（`safe_box.source_task_id`），NULL = 历史遗留/未关联。
+    pub source_task_id: Option<i64>,
 }
 
 /// task-051：保险箱列表过滤条件。
@@ -399,7 +402,7 @@ pub struct SafeBoxPage {
 pub fn list_safe_box(conn: &Connection) -> Result<SafeBoxListResp, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, original_path, size_bytes, quarantined_at
+            "SELECT id, original_path, size_bytes, quarantined_at, source_task_id
              FROM safe_box WHERE status='in_box'
              ORDER BY quarantined_at DESC",
         )
@@ -412,6 +415,7 @@ pub fn list_safe_box(conn: &Connection) -> Result<SafeBoxListResp, String> {
                 original_path: r.get(1)?,
                 size_bytes: r.get::<_, i64>(2).map(|v| v as u64)?,
                 quarantined_at: r.get(3)?,
+                source_task_id: r.get(4)?,
             })
         })
         .map_err(|e| format!("query_map list_safe_box: {e}"))?
@@ -508,7 +512,7 @@ pub fn list_paged(
         .map_err(|e| format!("sum safe_box: {e}"))?;
 
     let items_sql = format!(
-        "SELECT id, original_path, size_bytes, quarantined_at
+        "SELECT id, original_path, size_bytes, quarantined_at, source_task_id
          FROM safe_box
          {where_clause}
          ORDER BY id DESC
@@ -530,6 +534,7 @@ pub fn list_paged(
                 original_path: r.get(1)?,
                 size_bytes: r.get::<_, i64>(2).map(|v| v as u64)?,
                 quarantined_at: r.get(3)?,
+                source_task_id: r.get(4)?,
             })
         })
         .map_err(|e| format!("query_map list_paged: {e}"))?;
@@ -586,6 +591,24 @@ pub fn list_sessions(conn: &Connection) -> Result<Vec<SessionSummary>, String> {
         .map_err(|e| format!("collect list_sessions: {e}"))?;
 
     Ok(rows)
+}
+
+/// task-051：按 safe_box id 查该条目**原路径**的审计历史（只读）。
+///
+/// - 先取 `original_path`，再按路径查 `audit_log`（大小写不敏感，见
+///   [`crate::audit_log::query::list_by_target`]）；
+/// - 条目不存在 → `Err("safe_box item not found: id=...")`；
+/// - 只返回最近 20 条（`ts DESC, id DESC`）；无历史返回空 vec（不 Err）。
+pub fn item_history(conn: &Connection, safe_box_id: i64) -> Result<Vec<AuditLogEntry>, String> {
+    let original_path: String = conn
+        .query_row(
+            "SELECT original_path FROM safe_box WHERE id=?1",
+            [safe_box_id],
+            |r| r.get(0),
+        )
+        .map_err(|_| format!("safe_box item not found: id={safe_box_id}"))?;
+
+    crate::audit_log::query::list_by_target(conn, &original_path, 20)
 }
 
 // ===================== task-037: purge =====================
