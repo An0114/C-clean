@@ -206,6 +206,30 @@ describe("多选 session（D17）", () => {
   });
 });
 
+describe("刷新按钮（D20）", () => {
+  it("刷新时 page 仍是数字，且沿用当前筛选条件（不重置筛选）", async () => {
+    await renderLoaded();
+
+    // 先切到「24 小时」，让筛选条件非默认。
+    fireEvent.click(screen.getByText("24 小时"));
+    await waitFor(() => expect(lastListArgs()?.fromTs).toBeGreaterThan(0));
+    const presetFromTs = lastListArgs()?.fromTs as number;
+
+    mockedInvoke.mockClear();
+    fireEvent.click(screen.getByText("刷新"));
+    await waitFor(() => expect(lastListArgs()).toBeDefined());
+
+    const args = lastListArgs();
+    // 回归点：`onClick={load}` 会把 click 事件当 page 传进来（typeof object），
+    // 后端 u32 反序列化失败 → 页面「加载失败」；mock 场景下会直接渲染对象崩树。
+    expect(typeof args?.page).toBe("number");
+    expect(args?.page).toBe(1);
+    // 刷新不得悄悄重置筛选：fromTs 仍在（允许跨秒误差）。
+    expect(typeof args?.fromTs).toBe("number");
+    expect(Math.abs((args?.fromTs as number) - presetFromTs)).toBeLessThan(5);
+  });
+});
+
 describe("审计历史展开（D19）", () => {
   it("点「历史」调 safe_box_item_history 并中文化渲染动作", async () => {
     await renderLoaded();
