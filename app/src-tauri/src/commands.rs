@@ -258,16 +258,20 @@ pub async fn safe_box_restore(
     }
 }
 
-/// `safe_box.list`：分页列出当前保险箱里未剔除条目（task-045）。
+/// `safe_box.list`：分页列出当前保险箱里未剔除条目（task-045 / task-051）。
 ///
 /// - `page` 从 1 起；`page_size` 后端 clamp 到 [1,200]；
-/// - `session_id` 可选：按 safe_box.source_task_id 等值过滤（task-046）；
-/// - 返回 `SafeBoxPage { items, total, page, pageSize, totalBytes }`。
+/// - `session_ids` 可选：按 safe_box.source_task_id 组合过滤（空/缺省 = 全部）；
+/// - `from_ts` / `to_ts` 可选：按 quarantined_at 的闭区间过滤（Unix 秒，<=0 视为未设置）；
+/// - 返回 `SafeBoxPage { items, total, page, pageSize, totalBytes }`，
+///   其中 `total` / `totalBytes` 与筛选条件一致。
 #[tauri::command]
 pub async fn safe_box_list(
     page: u32,
     page_size: u32,
-    session_id: Option<i64>,
+    session_ids: Option<Vec<i64>>,
+    from_ts: Option<i64>,
+    to_ts: Option<i64>,
     paths: tauri::State<'_, AppPaths>,
 ) -> Result<Envelope<engine::execute::safe_box::SafeBoxPage>, String> {
     let conn = match engine::db::conn::open(&paths.data_root) {
@@ -277,16 +281,41 @@ pub async fn safe_box_list(
             return Ok(Envelope::err(INTERNAL));
         }
     };
-    // task-051：`list_paged` 改为接收过滤结构；此处先把旧的单 session 入参
-    // 适配成 filter（命令签名升级见同任务的 safe_box_list 改动）。
     let filter = engine::execute::safe_box::SafeBoxFilter {
-        session_ids: session_id.into_iter().collect(),
-        ..Default::default()
+        session_ids: session_ids.unwrap_or_default(),
+        from_ts,
+        to_ts,
     };
     match engine::execute::safe_box::list_paged(&conn, page, page_size, &filter) {
         Ok(r) => Ok(Envelope::ok(r)),
         Err(e) => {
             eprintln!("[safe_box_list] list_paged: {e}");
+            Ok(Envelope::err(INTERNAL))
+        }
+    }
+}
+
+/// `safe_box.item_history`：按 safe_box id 查该条目原路径的审计历史（task-051，只读）。
+///
+/// - 入参 `safe_box_id`（前端 camelCase `safeBoxId`）；
+/// - 返回 `AuditLogEntry[]`（camelCase：eventType/path/detail/createdAt/result）；
+/// - 条目不存在 → `INTERNAL`（engine 侧 `safe_box item not found`）。
+#[tauri::command]
+pub async fn safe_box_item_history(
+    safe_box_id: i64,
+    paths: tauri::State<'_, AppPaths>,
+) -> Result<Envelope<Vec<engine::audit_log::AuditLogEntry>>, String> {
+    let conn = match engine::db::conn::open(&paths.data_root) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[safe_box_item_history] open db: {e}");
+            return Ok(Envelope::err(INTERNAL));
+        }
+    };
+    match engine::execute::safe_box::item_history(&conn, safe_box_id) {
+        Ok(r) => Ok(Envelope::ok(r)),
+        Err(e) => {
+            eprintln!("[safe_box_item_history] item_history: {e}");
             Ok(Envelope::err(INTERNAL))
         }
     }
