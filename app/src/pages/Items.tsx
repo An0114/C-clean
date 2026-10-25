@@ -250,7 +250,7 @@ export default function Items() {
     const procs = dedupeProcs(locked.flatMap((f) => f.lockingProcesses));
     const list = procs.map(formatProc).join("\n");
     const confirmed = window.confirm(
-      `即将请求关闭以下进程：\n${list}\n\n未保存的数据可能丢失，关闭后会自动重试删除。是否继续？`,
+      `即将请求关闭以下进程：\n${list}\n\n未保存的数据可能丢失，关闭后会自动重试删除。\n注意：同一控制台内的相关进程可能一并关闭。是否继续？`,
     );
     // 取消：直接返回，不调命令，按钮保持可点。
     if (!confirmed) return;
@@ -262,12 +262,18 @@ export default function Items() {
       });
       const failures = resp.summary.results.filter((r) => !r.deleted);
       const closedCount = resp.shutdown.closed.length;
+      // close-experience-copy：mixed fail-closed（同批含受保护进程 → 后端整批不关）时
+      // closed=0 且 refused 非空，需在结果条里解释「一个都没关」，否则用户只看到
+      // 「已关闭 0 个进程，仍失败 N 项」会误以为点了没反应。
+      const protectedBlocking = closedCount === 0 && resp.shutdown.refused.length > 0;
       setResult({
         tone: failures.length === 0 ? "ok" : "fail",
         headline:
           failures.length === 0
             ? `已关闭 ${closedCount} 个进程，重试成功 ${resp.summary.deletedCount} 项`
-            : `已关闭 ${closedCount} 个进程，仍失败 ${failures.length} 项`,
+            : protectedBlocking
+              ? `已关闭 0 个进程：因存在受保护进程，本次未关闭任何进程，仍失败 ${failures.length} 项`
+              : `已关闭 ${closedCount} 个进程，仍失败 ${failures.length} 项`,
         failures,
         refused: resp.shutdown.refused,
       });
