@@ -9,6 +9,10 @@
 
 **task-051 已评审通过并合并 main（2026-10-25，merge commit `e6ab561`）**——保险箱从「只能按单 session 分页看」升级为「时间区间 + 多 session 组合筛选 + 条目审计历史」，task-018 的 list 边界三项全部清零。评审报告 `docs/reviews/051-review.md`（通过）：16 提交全部规范原子、26 条验收全覆盖（25 条实测 + F25 按任务书预设路径降级）、动态 SQL 注入面逐条走查无风险、抽查复现 3 条（引擎 12 条 + 前端 12 条全绿）。**放行条件（未闭环）**：GUI 真机走查连续第 4 轮被本机 WebView2 崩溃阻塞，须与 task-050 的 E20 合并为同一次发版前真机走查（含 Console 零红）。
 
+**③ 关闭体验文案小改已合并 main（2026-10-25，merge commit `801af22`）**——`confirm` 补「同一控制台内的相关进程可能一并关闭」、mixed fail-closed 补「因存在受保护进程，本次未关闭任何进程」；`Items.test.tsx` 7/7 通过、`pnpm lint` 干净。**task-049 遗留观察项 #1/#2 清零**。
+
+**真机 GUI 走查已执行（2026-10-25，用户在有活动桌面的机器上手动走查，首次取得真实 GUI 点击与 Console 证据）——结论：门禁不通过**。报告 `docs/test-reports/gui-walkthrough-2026-10-25.md`。E20「扫描 → 清理」不返 `INTERNAL`、清理成功、历史落库、清理链路 Console 零红**均成立**；但新暴露 **P1 三项**：G1 扫描进度条 `percent` 恒 0（`scan/runner.rs:121` 硬编码，编排层从未换算）；G2 清理列表前端硬编码 `limit: 100` + 后端 `size_bytes DESC` 无分页，**小文件被截断**（「被锁文件没出现在列表」的真因，非扫描漏扫）；G3 保险箱 `source_task_id` 恒 NULL（`commands.rs:149/227` 传 `None`）→ Session 多选空白 + 来源列全 `—`，**task-051 一半能力真机失效**。另 **P2 两项**：G4 仪表盘「清理轮次」恒 0（`executor.rs:82` `session_id` 写死 NULL + `COUNT(DISTINCT)` 忽略 NULL）；G5「清理成功释放 0 B」（文件已被外部删除 → `bytes_before=0` + NotFound 幂等 `Ok`）。G6 设置页 `rules_check_update` 首调 `ipc.localhost` 红错为**已知问题真机复现，非回归**。**下一项：派发 task-052 修复 G1–G5 后复验，方可发版。**
+
 ## 最近一次变更
 2026-10-11：完成 PRD / TRD / ARCHITECTURE / AGENTS / 立项决策记录全套长期基线文档，并初始化本状态白板。
 2026-10-11：task-001 完成——落地 app/engine/elevation/rules/scripts 五大目录骨架、Cargo workspace + pnpm workspace 双工作区，Tauri 2 最小空窗口（标题「C-Disk Cleaner」）端到端跑通，Cargo.lock 已入库。
@@ -275,6 +279,18 @@
   - **L3 / GUI（第三档，连续第 4 轮）**：dev 与安装版窗口壳均正常（`title='C-Disk Cleaner'`、`hwnd` 有值、`responding=True`），但 WebView2 子进程 `0 → 4(t=6s) → 0(t=9s)`；dev 启动即新增 6.4 MB `.dmp`；CDP 9222 在带 `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222` 时**瞬时可用**（t=1.5s → HTTP 200 / 460 B），但 attach 后 `Runtime.evaluate` 超时、target 停在 `about:blank`，截图无法完成。**新增补偿手段（本轮首次使用）**：Edge `--headless=new` 真 Chromium 加载 Vite dev server + 真实 `SafeBox.tsx`（stub `__TAURI_INTERNALS__.invoke`）→ 2 张截图（时间预设高亮 / 历史展开行 / 来源列 / 分页栏）、DOM dump、7 条 IPC 实参（含 `fromTs:1792819931`、`sessionIds:[9001,9002]`、`safeBoxId:71`）、**Console 0 错误**。**未伪造任何截图或日志。**
   - **CI**：`ci.yml` 只对 `push: main` 与 `pull_request` 触发，单独 push bugfix 分支不触发；故按「合并后由 draft PR #16 触发」执行，CI 覆盖最终合并态——run **40168680216**（`7bfc130`，21 步全绿）+ run **40168310323**（`c1a1af6`，合并态纯代码）均 `success`。
 
+2026-10-25：③ 关闭体验文案小改**已合并 main**（`bugfix/task-049-close-experience-copy` → `--no-ff` **merge commit `801af22`**，分支已删）——落实 049b 评审 §8 遗留观察项 #1/#2（`confirm` 补「同一控制台内的相关进程可能一并关闭」；mixed fail-closed 补「已关闭 0 个进程：因存在受保护进程…仍失败 N 项」）。自验 `Items.test.tsx` 7/7 + `lint` 干净；按用户指示未开 PR / 未单独触发 CI。
+
+2026-10-25：**真机 GUI 走查执行完毕（发版前硬门禁 ②，结论：不通过）**——用户在有活动桌面的机器上手动走查 dev 窗口 + 安装态，**首次取得真实 GUI 点击与 Console 证据**（前四轮均被本机 WebView2 渲染进程崩溃阻塞）。报告 **`docs/test-reports/gui-walkthrough-2026-10-25.md`**（含逐项结果表 + 6 条问题的代码级根因 + 修复建议 + 验收点）：
+  - **通过项**：E20「扫描 → 清理」**不返 `INTERNAL`**（清理成功 1 项 / 释放 430 B）、清理列表有数据（100 项 / 2.8 GB）、历史落库（`permanent_delete` + `bytes_freed/err/item_id`）、清理链路 Console **零红**；task-049 ④ 红条明细正常（`blocked by L3: L3BrowserProfile`、`权限不足` + 「关闭占用进程并重试」按钮）、confirm 文案正常、Console 零红；保险箱时间预设与行内历史展开正常、汇总 73 项 / 921.9 MB 正确。
+  - **G1【P1】扫描进度条恒 0%**：路径与计数在动、进度条不动。根因 `engine/src/scan/runner.rs:118-124` 每条 item `percent: 0` 硬编码（注释称「后续编排脚本跑完再换算」），而 `scan/orchestrator.rs` **从未做该换算**（全文件无 `emit`/`percent`）；前端 `Dashboard.tsx:116-119` 直接取 `percent` 渲染宽度。建议：编排层按脚本序号 / 脚本总数给基线百分比。
+  - **G2【P1】清理列表固定 100 条截断 —— 「被锁文件没出现在列表」的真因（非扫描漏扫）**：前端 `Items.tsx:176` 硬编码 `limit: 100`、无 offset / 无总数；后端 `execute/list_pending.rs:39-42` 为 `ORDER BY size_bytes DESC LIMIT/OFFSET`。现场「已选 100 项，共 2.8 GB」即撞满上限，新上锁的小文件（几十 KB～几 MB）必然排在 100 名后。影响：task-049 的占用处置对小文件**完全不可达**。建议：补分页 / 返回 `total`，排序改 `size_bytes DESC, id DESC` 保证翻页稳定。
+  - **G3【P1】保险箱 `source_task_id` 恒 NULL → Session 多选空白 + 来源列全 `—`**：`app/src-tauri/src/commands.rs:149`（`cleanup_execute`）与 `:227`（`cleanup_retry_locked`）构造 `SafeBoxDeleter::new(&paths.box_dir, &conn, **None**)`，`safe_box.rs:198-200` 原样写入 → `list_sessions`（`safe_box.rs:573-577` `WHERE source_task_id IS NOT NULL`）恒空集。**task-051 的 26 条验收全绿却漏掉此点，因为用例直接构造 DB 行、绕过了真实写入路径**——「读路径」测试替代不了「写路径」接线检查。建议：把 `execute_items` 已拿到的 `last_insert_rowid()`（`executor.rs:79-93`）经 deleter 工厂闭包传入。
+  - **G4【P2】仪表盘「清理轮次」恒 0**：成功 78 / 失败 32 / 921.9 MB 正常，轮次恒 0。根因 `executor.rs:79-82` `INSERT INTO cleanup_task (session_id, …) VALUES (NULL, …)` 写死 NULL，而 `audit_log/stats.rs` 口径为 `COUNT(DISTINCT session_id)`（SQL 忽略 NULL）。建议：补写 `session_id`，或按「批次」语义改 `COUNT(*)`（**需产品侧拍板**）。
+  - **G5【P2】「清理成功，释放 0 B」**：`executor.rs:176-179` `fs::metadata(...).unwrap_or(0)` 取不到大小（文件已被系统 / 其他程序删掉）→ `bytes_before=0`，而 `SafeBoxDeleter::delete_file`（`safe_box.rs:122-127`）对 `NotFound` 幂等 `Ok(())` → 成功 + 0 B。`%TEMP%` 下极常见。建议：结果区分「已不存在」与「已清理」，前端单列一行、不计入释放量，也不记为失败。
+  - **G6【P3】设置页首调 `rules_check_update` 红错**：`POST http://ipc.localhost/rules_check_update net::ERR_CONNECTION_REFUSED` + `IPC custom protocol failed…`（`invoke.ts:27` ← `Settings.tsx:87/104`），功能经 postMessage 回退可用。**与「已知问题」task-039 条目同源，本轮真机复现确认，非回归**。门禁口径需明确：排除该已知项后零红，或单开 `bugfix/task-039-settings-ipc-redconsole`。
+  - **未覆盖**：安装态（NSIS / MSI 装完）下同样五项未逐项复跑（本轮以 dev 窗口为主）；`RmRestart` 仍未做；`RmShutdown` 最坏 ~30s 期间前端无进度。
+
 ## 已完成事项
 - [x] 项目立项与仓库初始化（commit 67990f5 / 4972f9d）
 - [x] 固化立项阶段 8 项关键决策：Tauri 无 Plan B / Cargo.lock 入库 / 保险箱 5GB FIFO / 规则库 GitHub Raw+SHA-256 / 不买 EV 签名 / 仅 Windows / 按业务模块 A~F 切分 / PROJECT_STATE 由 M0 当天首写（commit c0bdf05）
@@ -334,6 +350,12 @@
 > 编号顺延（2026-10-24）：原定 050 的「safe_box 增强」顺延为 **051**，050 让位给发版阻塞级的打包资源路径缺陷。
 
 ## 已知问题
+- [B 高] **G1 扫描进度条恒 0%（2026-10-25 真机走查，非本轮引入）**：`engine/src/scan/runner.rs:121` 每条 item `percent: 0` 硬编码，`scan/orchestrator.rs` 未做「脚本跑完再换算百分比」的承诺换算，前端 `Dashboard.tsx:116-119` 直接渲染 → 进度条永远空、路径与计数正常。影响：长扫描看起来卡死。修法：编排层按脚本序号/总数给基线百分比。详见 `docs/test-reports/gui-walkthrough-2026-10-25.md` §G1。
+- [B 高] **G2 清理列表固定 100 条截断（2026-10-25 真机走查）**：`app/src/pages/Items.tsx:176` 硬编码 `limit: 100`、无 offset / 无总数；`engine/src/execute/list_pending.rs:39-42` `ORDER BY size_bytes DESC LIMIT/OFFSET`。真机表现「已选 100 项，共 2.8 GB」，新上锁的小文件被截断在 100 名之外 → **用户误判为「扫描不到被锁文件」，实为列表截断**，task-049 的占用处置对小文件不可达。修法：Items 补分页（复用 History/SafeBox 模式）或返回 `total`，排序加 `id DESC` 稳定翻页。
+- [B 高] **G3 保险箱 `source_task_id` 恒 NULL → Session 多选空白 + 来源列全 `—`（2026-10-25 真机走查）**：`app/src-tauri/src/commands.rs:149`/`:227` 构造 `SafeBoxDeleter::new(&paths.box_dir, &conn, None)`，第三参写死 `None`；`safe_box.rs:198-200` 原样入库 → `list_sessions`（`safe_box.rs:573-577` `WHERE source_task_id IS NOT NULL`）恒空集。**task-051 的 26 条验收全绿仍漏掉此点：用例直接构造 DB 行，未覆盖真实写入路径。** 修法：`execute_items` 的 `last_insert_rowid()` 经 deleter 工厂闭包传入。**发版阻塞项。**
+- [B 中] **G4 仪表盘「清理轮次」恒 0（2026-10-25 真机走查）**：`engine/src/execute/executor.rs:79-82` `INSERT INTO cleanup_task (session_id, …) VALUES (NULL, …)` 写死 NULL，`audit_log/stats.rs` 口径 `COUNT(DISTINCT session_id)` 忽略 NULL → 恒 0；同时 `cleanup_stats(session_id=Some(_))` 过滤分支永远查不到数据。修法：补写 `session_id`，或按「批次」语义改 `COUNT(*)`（**需产品拍板**）。
+- [B 中] **G5「清理成功，释放 0 B」（2026-10-25 真机走查）**：`executor.rs:176-179` `fs::metadata(...).unwrap_or(0)`（文件在扫描后已被系统/其他程序删掉）→ `bytes_before=0`，而 `SafeBoxDeleter::delete_file`（`safe_box.rs:122-127`）对 `NotFound` 幂等 `Ok(())` → 成功 + 0 B。`%TEMP%` 下极常见。修法：结果区分「已不存在」与「已清理」，前端单列且不计入释放量、不记为失败。
+- [B 中] task-039 评审运行时冒烟发现（**非本任务引入**，设置页属 task-022/031 范围）：每次文档加载后**首次**进入「设置」tab 调用 `rules_check_update` 会打印 2 条红色 console error（source=network，`http://ipc.localhost/rules_check_update`，ERR_CONNECTION_REFUSED）+ 2 条 Tauri「IPC custom protocol failed, will use postMessage」warning；同条件点历史/清理/仪表盘 IPC 均 0 红错，同文档内再次进设置页也不再复现。功能经 postMessage 回退仍可用。建议 `bugfix/task-039-settings-ipc-redconsole` 排查 Tauri 2.x ipc.localhost 首调与 `useCustomProtocol` 回退策略。**2026-10-25 真机 GUI 走查复现确认（G6）：现象与调用栈完全一致（`invoke.ts:27` ← `Settings.tsx:87/104`），非回归；发版门禁「Console 零红」需明确按「排除本已知项」判定，或单独立项修掉。**
 - [B 高] ~~task-049 评审不通过（2026-10-24，评审轮 1）——护栏依赖本地化应用名，中文 Windows 下 `explorer.exe` 可被关闭~~ **已由 task-049b 解决（2026-10-24，`199527a`）**：护栏改按 `PID → 映像文件名`（`OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` + `QueryFullProcessImageNameW`）判定，与系统语言无关；取不到映像名一律 **fail-closed**（`reason = unknown process`），保留原友好名匹配作兜底，未往名单里追加任何中文名。证据：真机 `explorer.exe` FileDescription = `Windows 资源管理器`、`dwm.exe` = `桌面窗口管理器`，而映像名为 `explorer.exe`；端到端用例 `shutdown_refuses_protected_image_holder` 实测 `closed=[]`、`refused=[{appName:"explorer.exe", reason:"protected process"}]`。原缺陷记录：`RmGetList` 的 `strAppName` 是本地化 FileDescription，三条名字规则对中文名全不命中；任务书要求的「explorer 拒绝场景真机验证」因 GUI 环境阻塞从未执行。
 - [B 中] ~~task-049 评审发现（2026-10-24）——`closed`/`refused` 上报与会话级关闭事实不一致~~ **已由 task-049b 解决（2026-10-24）**：`shutdown_locking_processes` 增加 `apply_mixed_fail_closed` 收口——只要枚举出的占用进程里有任何一个被护栏拒绝，**整批都不调 `RmShutdown`**（`closed = []`，`refused` 为护栏判定原样结果），前端黄条「以下进程受保护未关闭」在 mixed 场景下变成事实。代价：mixed 占用时点「重试」不关任何进程（用户仍能在失败明细里看到全部占用方，不静默）。单测 `mixed_batch_is_fail_closed` 覆盖。
 - [B 中] ~~task-049 评审发现（2026-10-24）——B7 用例 `shutdown_only_touches_registered_path` 不稳定~~ **已由 task-049b 解决（2026-10-24，`c34af2c`）**：根因不是环境抖动，而是**两个 holder 共用测试进程的 console**——`RmShutdown` 强杀 A 时连带带走同 console 的 B（实测 `holder_b_exit=1` 且无 done 标记；单跑 2/2 PASS、全量连跑 2/2 FAILED）。给每个 holder 加 `CREATE_NO_WINDOW`（独立 console）后全量连跑 **5/5 全绿**；用例同时补 ready/done 标记与退出码归因，失败可直接区分「自然退出」与「被 RM 波及」。该 console 耦合行为已登记为 `locking.rs` 文件头已知限制 4。
@@ -358,17 +380,21 @@
 - [B 高] ~~发版 workflow 两个 bug：① 安装包版本号永远 0.1.0，不随 workflow_dispatch 输入变化；② 配了签名私钥却不生成 .sig（多轮改私钥传递方式均无效）。~~ **已由 bugfix/task-035-release-signing 修复（2026-10-23，状态 testing，待 CI 全绿 + 测试/评审复核）**：根因分别是「版本注入无校验、失败静默」与「`tauri.conf.json` 缺 `bundle.createUpdaterArtifacts`（Tauri 2 默认 false，为 false 时 bundler 不读私钥）」；修法与证据见「最近一次变更」。遗留：真机端到端升级验证（装旧版 → 检查更新 → 下载安装 → 重启到新版）需发版后人工跑。~~GitHub Secret `TAURI_SIGNING_PRIVATE_KEY` / `_PASSWORD` 必须与 `plugins.updater.pubkey` 配对（本地 `~/.tauri/cclean.key.pub` 与仓内 pubkey 不是同一对，CI 侧 secret 需用户自查）~~ **已证实配对（2026-10-23）**：v0.1.5 的 `.exe.sig` keyid `52ACA0C8DAA19EB3` 与 `plugins.updater.pubkey` 一致，真实发版 run `39942401586` 全绿、产物含 `.sig` + `latest.json`。
 
 ## 下一步计划
-M2 updater 已关闭（task-048）；**task-049 评审通过并合并 main（merge commit `60e0797`）**，M1-D 遗留第一项清零；**task-050（打包资源路径）2026-10-25 评审通过并合并 main（merge commit `cadb286`），分支已删**；**task-051（safe_box 增强）2026-10-25 评审通过并合并 main（merge commit `e6ab561`），feature 与 bugfix 子分支均已删**。下一轮优先级：
+M2 updater 已关闭（task-048）；**task-049 / 050 / 051 均已评审通过并合并 main（`60e0797` / `cadb286` / `e6ab561`）**，③ 关闭体验文案小改也已合并（`801af22`）。**发版前硬门禁 ② 真机 GUI 走查已于 2026-10-25 执行完毕，结论：不通过**（报告 `docs/test-reports/gui-walkthrough-2026-10-25.md`），产出 6 条问题（P1×3 / P2×2 / P3×1）。下一轮优先级：
 
 1. ~~**① 派发 task-051：safe_box 增强**~~ **已完成开发 → 测试轮 → 评审通过并合并 main（merge commit `e6ab561`）**：26 条验收全覆盖、抽查复现 3 条全绿、动态 SQL 注入面走查无风险。评审报告 `docs/reviews/051-review.md`。
-2. **② 发版前硬门禁：真机 GUI 走查（一次覆盖两项）**——① task-050 的 E20「扫描 → 清理」不返 `INTERNAL`；② task-051 的保险箱四交互（时间预设 / 多 session / 来源列 / 历史展开）+ DevTools Console 零红。需活动桌面机器，**未闭环前不建议发版**。
-3. **③ 关闭体验文案小改**（task-049 遗留观察项，约 2 行）：`confirm` 补「同一控制台内的相关进程可能一并关闭」；mixed 场景补「因存在受保护进程，本次未关闭任何进程」。（**当前推进项**，唯一不依赖真机、可立即交付的小改）
-4. ④ GUI 真机冒烟补做：task-049 的红条明细 / confirm 文案 / 绿条结果 + Console 0 红错，需在具备活动桌面的机器上执行（**放行发版前必做**）；`RmRestart` 是否要做由产品侧拍板（当前用户需自行重开被关进程）。
-5. ⑤ 发版类小修：`release.yml` 补 `target_commitish: ${{ github.sha }}`（tag 溯源，需再发一版验证）。
-6. ⑥ 更新体验：banner「立即更新」的下载进度反馈 / 差量更新（M3+，非阻塞）。
+2. ~~**② 发版前硬门禁：真机 GUI 走查（一次覆盖两项）**~~ **已执行（2026-10-25，首次取得真实 GUI 点击与 Console 证据）→ 结论不通过**：E20「扫描 → 清理」不返 `INTERNAL`、清理成功、历史落库、清理链路 Console 零红**均成立**；但暴露 G1 进度条恒 0 / G2 清理列表 100 条截断 / G3 保险箱 `source_task_id` 恒 NULL（P1×3）+ G4 清理轮次恒 0 / G5 释放 0 B（P2×2）+ G6 设置页 IPC 红错（P3，已知项复现）。报告 `docs/test-reports/gui-walkthrough-2026-10-25.md`。
+3. ~~**③ 关闭体验文案小改**~~ **已完成并合并 main（merge commit `801af22`）**：`confirm` 补「同一控制台内的相关进程可能一并关闭」、mixed 场景补「因存在受保护进程，本次未关闭任何进程」；`Items.test.tsx` 7/7 + `lint` 干净。task-049 遗留观察项 #1/#2 清零。
+4. **④ 派发 task-052：GUI 走查缺陷修复（G1–G5）**（**当前推进项**，发版阻塞）：
+   - **批次 A（P1，必须）**：G1 `ScanOrchestrator` 补脚本级百分比换算（或 runner 给出可单调递增的近似值）；G2 `Items` 补分页 / 总数 + 排序加 `id DESC` 稳定翻页；G3 `execute_items` 的 `last_insert_rowid()` 经 deleter 工厂闭包传入 `SafeBoxDeleter::new(..., Some(task_id))`（两处调用点同步）。
+   - **批次 B（P2）**：G4 补写 `cleanup_task.session_id` 或改 `COUNT(*)` 口径（**需产品侧拍板**）；G5 结果区分「已不存在」与「已清理」，前端单列且不计释放量。
+   - **验收硬要求**：G3 必须有一条**真实端到端**用例（点清理 → 查 `safe_box.source_task_id` 非 NULL → 查 UI 出现 `#N` 与 `session #N (M 条)`），不允许再只构造 DB 行；G2 必须造 >100 条含小文件的 session 验证第 2 页可见。
+5. **⑤ 修复后复验走查**：task-052 合并后重跑本次同一份走查清单（含安装态 NSIS / MSI 各一遍），门禁口径明确为「排除 G6 已知项后 Console 零红」或先修掉 G6；复验通过方可发版。
+6. **⑥ 发版类小修**：`release.yml` 补 `target_commitish: ${{ github.sha }}`（tag 溯源，需再发一版验证）。
+7. **⑦ 更新体验**：banner「立即更新」的下载进度反馈 / 差量更新（M3+，非阻塞）。`RmRestart`（关闭后自动重启被关进程）仍待产品侧拍板。
 
 ## 当前负责人 Agent
-**DocsKeeper（文档与状态管家）**——task-051 已评审通过并合并 main（merge commit `e6ab561`），下一手由 DocsKeeper 推进下一步计划 ③（关闭体验文案小改）+ 安排发版前真机 GUI 走查。上一手：Review Lead（提示词 10，评审通过并合并）。
+**DocsKeeper（文档与状态管家）**——已完成 ③ 合并确认 + **真机 GUI 走查结果回填**（`docs/PROJECT_STATE.md` + 新建 `docs/test-reports/gui-walkthrough-2026-10-25.md`），下一步由 DocsKeeper 派发 **task-052（GUI 走查缺陷修复 G1–G5）**。上一手：Review Lead（提示词 10，task-051 评审通过并合并）。
 
 ## Git 提交记录
 | Commit | 任务 | 说明 |
@@ -694,6 +720,8 @@ M2 updater 已关闭（task-048）；**task-049 评审通过并合并 main（mer
 | **e6ab561** | #task-051 | **merge: task-051 保险箱时间筛选与审计联表（--no-ff，评审通过）** |
 | 5a2b643 | #task-051 | docs(review): 任务051评审报告 |
 | （本次） | #task-051 | docs(state): 任务051合并main并记录merge commit |
+| **801af22** | #task-049 | **merge: 关闭体验文案小改（confirm 补「同一控制台内的相关进程可能一并关闭」+ mixed fail-closed 解释文案，--no-ff）** |
+| （本次） | #docs | docs(state): 回填真机 GUI 走查结果（G1–G6 根因与优先级）+ 新建 `docs/test-reports/gui-walkthrough-2026-10-25.md` |
 
 ---
 变更轨迹：
@@ -799,3 +827,5 @@ M2 updater 已关闭（task-048）；**task-049 评审通过并合并 main（mer
 - 2026-10-25  task-051  开发完成（`feature/task-051-safebox-filter-history`，状态 `testing`，**未合 main**）：`SafeBoxFilter{session_ids, from_ts, to_ts}` + `list_paged` 动态 WHERE（`items`/`COUNT`/`SUM` 共用同一 WHERE，`total`/`totalBytes` 与筛选严格一致，`from>to` 返空页不报错）；`SafeBoxEntry.source_task_id` 双路径填充；新增 `item_history` + `audit_log::query::list_by_target`（`COLLATE NOCASE`）；IPC `safe_box_list` 参数升级 + `safe_box_item_history` 注册；前端时间预设 4 档 + 多选 session + 来源列 + 行内历史懒加载，筛选变化统一 `page=1`/清空 selected/收起历史。门禁：fmt 0 / clippy 0 / **cargo test 220 passed + 8 ignored** / vitest **45**（7 files）/ build **179.93 kB │ gzip 57.31 kB** / 契约 6/6；`tauri build` exit 0（NSIS 4.01 MiB + MSI 5.82 MiB，含 `.sig`），MSI per-user 安装后 9 项布局正确、`_up_` 不存在。新增 23 条用例（engine 18 + jsdom 11，含签名同步）。**与任务书不符 2 项**：NSIS `perMachine` 需 UAC 无法静默安装（本机 `is_admin=False`），改 MSI per-user 验证；`cargo clippy` 末尾 Windows 增量目录锁清理告警（退出码 0，非 lint）。GUI 仍因 WebView2 渲染进程崩溃未取得（第三轮，新增 3 个 `.dmp`、CDP 10061 拒绝），登记第三档。**CI**：draft PR **#16** → run **40163134926**（`3d00901`）+ run **40163528523**（`b217b61`）连续两轮 `conclusion=success`，21 步全绿
 - 2026-10-25  task-051  **测试轮通过**（`docs/test-reports/051-test-report.md`，分支 @`c1a1af6`）：独立重跑 fmt 0 / clippy 0 / cargo **220 passed + 8 ignored** / vitest **46**（7 files）/ 契约 6/6 / build **179.94 kB**；变异测试 2 组（`>=`→`>` 3 红、COUNT 丢 WHERE 5 红，还原 18/18 绿）；**修 1 项缺陷**——刷新按钮 `onClick={load}` 把 click 事件当 `page`（`main` 自 task-045 预存在）→ `bugfix/task-051-refresh-click-arg`（`ef054aa`+`05d5475`）→ merge `c1a1af6`；`tauri build` exit 0（NSIS 4.01 MiB + MSI 5.82 MiB 含 `.sig`），**NSIS 干净目录安装 exit 0**（9 项布局、无 `_up_`、安装目录 NO_DIFF、规则落 `%APPDATA%` 且逐字节一致、诱饵未劫持）；GUI 连续第 4 轮被 WebView2 崩溃阻塞（第三档），新增 Edge headless 真 Chromium 渲染补偿（2 截图 + 7 条 IPC 实参 + Console 0 错）；CI 由 PR #16 触发（run **40168680216** @ `7bfc130` + 40168310323 @ `c1a1af6`，均 success）；状态置 `awaiting_review`
 - 2026-10-25  task-051  **评审通过并合并 main**（`docs/reviews/051-review.md`）：输入核验三项齐全（报告 / CI run 40168680216 @7bfc130 + 40168310323 @c1a1af6 均 success / commit 7bfc130，本地=origin `0 0`）；16 个提交全部 `type(scope): … (#task-051)`、bugfix 子分支 `bugfix/task-051-refresh-click-arg` 已合回并清理（本地+远端无残留）、零敏感文件、14 文件全在允许表内、lock 文件空 diff；26 条验收全覆盖（25 条实测 + F25 按任务书预设路径降级第三档）；抽查复现 3 条（`safe_box_item_history` 6/6、`safe_box_time_range` 6/6、`SafeBox.test.tsx` 12/12）；动态 SQL 只拼占位符、值全绑定，OWASP A03 注入面走查无风险；`--no-ff` merge commit **`e6ab561`**（parents `5c91d3d` + `d020022`），feature 分支已删除（本地 + 远端）。**放行条件**：GUI 真机走查（与 task-050 的 E20 合并为同一次）须发版前完成。评审新登记 6 项不阻塞观察（P3：`item_history` 错误映射过宽、`COLLATE NOCASE` 索引失效、`main` 上 `5c91d3d ".."` 不规范提交；P4：`normalized()` O(n²)、react-refresh 2 warning、3 个碎片 docs(state) 提交）
+- 2026-10-25  task-049  ③ 关闭体验文案小改合并 main（`--no-ff` **`801af22`**）：`confirm` 补「同一控制台内的相关进程可能一并关闭」、mixed fail-closed 补「因存在受保护进程，本次未关闭任何进程」；`Items.test.tsx` 7/7 + `lint` 干净；按用户指示未开 PR / 未单独触发 CI
+- 2026-10-25  **真机 GUI 走查执行完毕（发版门禁 ②）→ 结论不通过**（报告 `docs/test-reports/gui-walkthrough-2026-10-25.md`）：首次取得真实 GUI 点击与 Console 证据；通过项——E20 扫描→清理不返 `INTERNAL`（成功 1 项 / 430 B）、清理列表 100 项、历史落库、清理链路 Console 零红、④ 红条明细 + confirm 文案正常、保险箱时间预设与历史展开正常；**P1×3**：G1 扫描进度条 `percent` 恒 0（`scan/runner.rs:121` 硬编码，编排层未换算）、G2 清理列表前端 `limit: 100` 无分页导致小文件被截断（「被锁文件没出现」的真因）、G3 保险箱 `source_task_id` 恒 NULL（`commands.rs:149/227` 传 `None`）致 Session 多选空白 + 来源列全 `—`（task-051 一半能力真机失效，26 条验收漏「写路径」）；**P2×2**：G4 清理轮次恒 0（`executor.rs:82` `session_id` 写 NULL + `COUNT(DISTINCT)` 忽略 NULL）、G5 清理成功释放 0 B（文件已被外部删除 → `bytes_before=0` + NotFound 幂等 `Ok`）；**P3×1**：G6 设置页 `rules_check_update` 首调 `ipc.localhost` 红错（task-039 已知项真机复现，非回归）。下一步派发 **task-052** 修 G1–G5 后复验
