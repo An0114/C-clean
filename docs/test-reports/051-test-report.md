@@ -11,7 +11,7 @@
 | dev（本地启动） | `pnpm tauri dev`；Windows 11；Node 24.14 / pnpm 11.9.0 / rust stable（`rust-toolchain.toml`）；vite 5.4.11 @ `localhost:5173` | 是 | **部分通过**：进程/`[paths]`/前端产物正常；**窗口渲染被本机 WebView2 崩溃阻塞**（第 4 轮复现，见 §6 第三档） |
 | 浏览器引擎复核（补偿） | Edge `--headless=new`（Chromium）+ Vite dev server，`window.__TAURI_INTERNALS__.invoke` 打桩，加载真实 `SafeBox.tsx` | 是 | 通过（真浏览器渲染 + 真实交互，Console 0 错误） |
 | 打包安装（干净目录） | `pnpm --filter app tauri build`（临时密钥 `%TEMP%\cclean-smoke-051.key`）→ NSIS `/S /D=%TEMP%\cclean-smoke-051` | 是 | 通过（9 文件布局、安装目录零写入、数据落用户目录） |
-| CI | workflow `ci`，run **40168310323**（HEAD `c1a1af6`） | 是 | 见 §7（结论以该 run 为准） |
+| CI | workflow `ci`：run **40168680216**（HEAD `7bfc130`，测试轮全部提交）+ run **40168310323**（`c1a1af6`，合并态纯代码） | 是 | 均 `success`（21 步全绿） |
 
 > 说明：任务书 F26 写的是 NSIS 安装。开发轮因 `is_admin=False` 被 UAC 拦住改用 MSI per-user；**本轮 NSIS `/S /D=` 直接成功**（exit 0，无 `consent.exe` 残留），故按任务书原路径完成安装级验证。
 
@@ -149,8 +149,8 @@
 ## 7. 测试结论
 
 - 结论：**通过**
-- feature 分支最新 commit：`c1a1af6`（merge `--no-ff` bugfix/task-051-refresh-click-arg；本地 = origin 待推送后一致）
-- CI 运行号与结论：workflow `ci`，run **40168310323**（HEAD `c1a1af6`）；另附开发轮代码态 `40163901414`（`ad404df`）success 作为对照
+- feature 分支最新 commit：`7bfc130`（merge `--no-ff` `c1a1af6` + 测试报告 `58ce7ba` + 状态 `7bfc130`；本地 = origin `0 0`）
+- CI 运行号与结论：workflow `ci`，run **40168680216**（HEAD `7bfc130`）`conclusion=success`；run **40168310323**（`c1a1af6`，合并态纯代码）`success`；开发轮代码态 `40163901414`（`ad404df`）`success` 作对照
 - 是否可进入评审：**是**
 - 移交说明：交评审 Agent（提示词 10）。请重点复核三处：
   1. **本轮唯一代码改动**（`SafeBox.tsx` 单行 + 注释）是否属于第一档合理修复——该缺陷在 `main` 上已存在（task-045 起），本轮因落在 D20 验收范围内而就地修复；
