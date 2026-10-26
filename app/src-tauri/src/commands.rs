@@ -145,11 +145,15 @@ pub async fn cleanup_execute(
         &item_ids,
         &conn,
         &external_deny,
-        |_item_id| -> Box<dyn engine::execute::delete::Deleter + '_> {
+        // task-052 G3：把本次 cleanup_task.id 传下去，SafeBoxDeleter 才能写
+        // safe_box.source_task_id（原写死 None → 该列恒 NULL，前端 Session 下拉/来源列全空）。
+        // task_id < 0 表示 cleanup_task 插入失败，此时仍落 NULL，不写脏值。
+        |_item_id, task_id| -> Box<dyn engine::execute::delete::Deleter + '_> {
+            let source = if task_id >= 0 { Some(task_id) } else { None };
             Box::new(engine::execute::safe_box::SafeBoxDeleter::new(
                 &paths.box_dir,
                 &conn,
-                None,
+                source,
             ))
         },
     );
@@ -223,11 +227,13 @@ pub async fn cleanup_retry_locked(
         &item_ids,
         &conn,
         &external_deny,
-        |_item_id| -> Box<dyn engine::execute::delete::Deleter + '_> {
+        // task-052 G3：与 cleanup_execute 保持一致，把本次 cleanup_task.id 传给 deleter。
+        |_item_id, task_id| -> Box<dyn engine::execute::delete::Deleter + '_> {
+            let source = if task_id >= 0 { Some(task_id) } else { None };
             Box::new(engine::execute::safe_box::SafeBoxDeleter::new(
                 &paths.box_dir,
                 &conn,
-                None,
+                source,
             ))
         },
     );

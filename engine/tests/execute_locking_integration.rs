@@ -52,7 +52,7 @@ fn execute_items_unlocked_file_no_locking_processes() {
     std::fs::write(&p, b"hi").unwrap();
     let id = insert_item(&conn, sid, p.to_str().unwrap());
 
-    let summary = execute_items(&[id], &conn, &[], |_id| Box::new(FsDeleter));
+    let summary = execute_items(&[id], &conn, &[], |_id, _task_id| Box::new(FsDeleter));
     assert_eq!(summary.deleted_count, 1);
     assert!(summary.results[0].locking_processes.is_empty());
 }
@@ -65,7 +65,7 @@ fn execute_items_permission_denied_skips_who_is_locking() {
     let id = insert_item(&conn, sid, p.to_str().unwrap());
 
     // Mock deleter 抛 PERMISSION_DENIED 前缀错误——不应触发 who_is_locking。
-    let summary = execute_items(&[id], &conn, &[], |_id| {
+    let summary = execute_items(&[id], &conn, &[], |_id, _task_id| {
         Box::new(MockDeleter {
             err: Some("PERMISSION_DENIED: mock".into()),
         })
@@ -101,7 +101,7 @@ fn execute_items_locked_file_reports_processes() {
         .expect("spawn notepad");
     std::thread::sleep(std::time::Duration::from_secs(2));
 
-    let summary = execute_items(&[id], &conn, &[], |_id| Box::new(FsDeleter));
+    let summary = execute_items(&[id], &conn, &[], |_id, _task_id| Box::new(FsDeleter));
     println!("summary: {summary:?}");
     assert_eq!(summary.failed_count, 1);
     assert!(!summary.results[0].locking_processes.is_empty());

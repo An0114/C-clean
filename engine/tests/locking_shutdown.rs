@@ -193,7 +193,7 @@ fn execute_retry_after_shutdown_deletes_locked_file() {
     std::thread::sleep(std::time::Duration::from_secs(4));
 
     // 第一次删除：必然失败，且要报出占用进程。
-    let first = execute_items(&[item_id], &conn, &[], |_id| {
+    let first = execute_items(&[item_id], &conn, &[], |_id, _task_id| {
         Box::new(SafeBoxDeleter::new(&box_dir, &conn, None))
     });
     println!("first: {first:?}");
@@ -210,7 +210,7 @@ fn execute_retry_after_shutdown_deletes_locked_file() {
 
     // 重试删除（RmShutdown 返回后句柄可能还没释放，给一点收尾时间）。
     std::thread::sleep(std::time::Duration::from_secs(2));
-    let second = execute_items(&[item_id], &conn, &[], |_id| {
+    let second = execute_items(&[item_id], &conn, &[], |_id, _task_id| {
         Box::new(SafeBoxDeleter::new(&box_dir, &conn, None))
     });
     println!("second: {second:?}");

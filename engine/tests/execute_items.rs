@@ -43,7 +43,7 @@ fn execute_items_deletes_real_files() {
         .map(|p| insert_item(&conn, sid, p.to_str().unwrap()))
         .collect();
 
-    let summary = execute_items(&ids, &conn, &[], |_id| Box::new(FsDeleter));
+    let summary = execute_items(&ids, &conn, &[], |_id, _task_id| Box::new(FsDeleter));
     assert_eq!(summary.deleted_count, 3);
     assert!(!f1.exists() && !f2.exists() && !f3.exists());
 
@@ -67,7 +67,7 @@ fn execute_items_blocked_by_l3() {
     // 命中内置 L3：Desktop 下的文件。
     let id = insert_item(&conn, sid, r"C:\Users\alice\Desktop\secret.docx");
 
-    let summary = execute_items(&[id], &conn, &[], |_id| Box::new(FsDeleter));
+    let summary = execute_items(&[id], &conn, &[], |_id, _task_id| Box::new(FsDeleter));
     assert_eq!(summary.deleted_count, 0);
     assert_eq!(summary.failed_count, 1);
     assert!(summary.results[0].error.as_deref().unwrap().contains("L3"));
@@ -97,7 +97,9 @@ fn execute_items_skips_missing_id() {
     std::fs::write(&f1, vec![0u8; 10]).unwrap();
     let id_real = insert_item(&conn, sid, f1.to_str().unwrap());
 
-    let summary = execute_items(&[id_real, 999999], &conn, &[], |_id| Box::new(FsDeleter));
+    let summary = execute_items(&[id_real, 999999], &conn, &[], |_id, _task_id| {
+        Box::new(FsDeleter)
+    });
     assert_eq!(summary.deleted_count, 1);
     // 第二条是 not found，不算 fail（skip）
     let skipped: Vec<_> = summary
@@ -116,10 +118,10 @@ fn execute_items_idempotent_on_already_deleted() {
     std::fs::write(&f1, vec![0u8; 10]).unwrap();
     let id = insert_item(&conn, sid, f1.to_str().unwrap());
 
-    let s1 = execute_items(&[id], &conn, &[], |_id| Box::new(FsDeleter));
+    let s1 = execute_items(&[id], &conn, &[], |_id, _task_id| Box::new(FsDeleter));
     assert_eq!(s1.deleted_count, 1);
     // 第二次删：文件已不存在 → FsDeleter 返回 Ok(()) 幂等
-    let s2 = execute_items(&[id], &conn, &[], |_id| Box::new(FsDeleter));
+    let s2 = execute_items(&[id], &conn, &[], |_id, _task_id| Box::new(FsDeleter));
     assert_eq!(s2.deleted_count, 1);
     // 两次都写了 success audit
     let n_success: i64 = conn

@@ -41,7 +41,6 @@ pub struct ExecuteSummary {
     pub failed_count: u64,
     pub bytes_freed_total: u64,
 }
-
 /// 一次 execute_items 调用的聚合（写 cleanup_task 用）。
 struct BatchSummary {
     freed_bytes: i64,
@@ -56,6 +55,11 @@ struct BatchSummary {
 /// - NotFound（DB 里没有这个 id）→ skip，不写 audit_log（任务书要求「不影响其他 item」）；
 /// - L3 命中 → audit_log result='denied'，denial_reason 填具体原因；
 /// - deleter 失败 → audit_log result='fail'，detail 带错误文案。
+///
+/// task-052 G3：工厂闭包签名从 `FnMut(item_id)` 改为 `FnMut(item_id, task_id)`。
+/// `task_id` 是本次调用刚写入的 `cleanup_task.id`（写失败时为 `-1`），
+/// 供 `SafeBoxDeleter` 落 `safe_box.source_task_id` —— 否则该列恒 NULL，
+/// 前端保险箱的 Session 下拉与「来源」列永远是空的。
 pub fn execute_items<'a, F>(
     item_ids: &[i64],
     conn: &Connection,
@@ -63,7 +67,7 @@ pub fn execute_items<'a, F>(
     mut deleter_factory: F,
 ) -> ExecuteSummary
 where
-    F: FnMut(i64) -> Box<dyn Deleter + 'a>,
+    F: FnMut(i64, i64) -> Box<dyn Deleter + 'a>,
 {
     let mut results = Vec::with_capacity(item_ids.len());
     let mut summary = BatchSummary {
@@ -173,7 +177,9 @@ where
         let bytes_before = std::fs::metadata(np.normalized())
             .map(|m| m.len())
             .unwrap_or(0);
-        let deleter = deleter_factory(id);
+        // task-052 G3：把本次 cleanup_task.id 交给工厂，SafeBoxDeleter 据此写 source_task_id。
+        // task_id < 0 表示 INSERT cleanup_task 失败，此时传 -1 让上层落 NULL（不写脏值）。
+        let deleter = deleter_factory(id, task_id);
         match deleter.delete_file(&np) {
             Ok(()) => {
                 summary.success += 1;
