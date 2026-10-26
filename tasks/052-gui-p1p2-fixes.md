@@ -9,7 +9,7 @@
 
 ## 状态字段
 
-pending
+testing
 
 ## 任务目标
 
