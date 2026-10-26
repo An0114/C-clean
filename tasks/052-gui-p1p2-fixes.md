@@ -237,3 +237,209 @@ DevAgent 交付物（后续执行结果）：
 4. 本任务文档本身**由 DocsKeeper 在派发时**单独提交一次：
    `docs(task): 新增任务052-GUI 走查 P1+P2 修复 (#task-052)`，
    该提交只含 `tasks/052-gui-p1p2-fixes.md` 一个文件，落在 `feature/task-052-gui-p1p2-fixes` 分支最前端。
+
+## 实现备注
+
+> 开发轮交付记录（DevFullstackRustReact，2026-10-25）。**按新流程：开发轮不跑 CI、不做 GUI 走查与安装态冒烟**，这三项移交测试 Agent（见 §10）。
+
+### 1. 实际改动文件清单
+
+| 文件 | 改动性质 |
+|---|---|
+| `engine/src/scan/orchestrator.rs` | G1：脚本槽位百分比 + 槽位边界事件 + 收尾 100 |
+| `engine/src/scan/runner.rs` | G1：`with_percent_span` + `interpolate_percent` 纯函数 + 5 条单测 |
+| `engine/src/execute/list_pending.rs` | G2：`list_pending_items` → `list_pending_page` + `PendingPage` + 稳定排序 |
+| `engine/src/execute/executor.rs` | G3：工厂签名加 `task_id`；G5：`already_gone` 聚合 + audit detail |
+| `engine/src/execute/safe_box.rs` | G5：`delete_file -> Result<bool, String>` |
+| `engine/src/execute/delete.rs` | G5：**trait 签名**（白名单外，见 §9） |
+| `engine/src/execute/fs_deleter.rs` | G5：`FsDeleter` 同步新签名（白名单外，见 §9） |
+| `engine/src/audit_log/stats.rs` | G4：`COUNT(DISTINCT session_id)` → `COUNT(*)` |
+| `app/src-tauri/src/commands.rs` | G2 命令 shape；G3 两处调用点 `Some(task_id)` |
+| `app/src/pages/Items.tsx` | G2 分页栏；G5 结果条文案 + 失败项过滤 |
+| `app/src/pages/Items.test.tsx` | G2 3 条 + G5 3 条 jsdom 用例 |
+| `engine/tests/scan_progress_percent.rs` | 新增（G1 集成 4 条） |
+| `engine/tests/list_pending_items.rs` | 改写为分页签名（6 条，含跳行回归） |
+| `engine/tests/execute_writes_source_task_id.rs` | 新增（G3 真实写入路径 5 条） |
+| `engine/tests/audit_log_stats.rs` | G4 口径迁移（6 条） |
+| `engine/tests/already_gone.rs` | 新增（G5 7 条） |
+| `engine/tests/execute_items.rs` | `execute_items_idempotent_on_already_deleted` 按新语义改写 |
+| `engine/tests/execute_locking_integration.rs` / `locking_shutdown.rs` | 闭包 arity + `MockDeleter` 签名同步 |
+| `docs/PROJECT_STATE.md` | 收尾状态同步（单独 docs 提交） |
+
+### 2. G1 百分比换算最终算法
+
+**槽位划分**（`ScanOrchestrator::run_all`，`total = SCRIPTS.len() = 5`）：
+
+```
+from_i = i * 100 / total
+to_i   = (i + 1) * 100 / total
+```
+
+→ 依次为 `[0,20] [20,40] [40,60] [60,80] [80,100]`。
+
+**槽内插值**（`engine::scan::runner::interpolate_percent`）：
+
+```
+if from >= to:  return from                       // 退化区间不动
+span   = to - from
+ratio  = n / (n + K)        // K = INTERP_HALF_POINT = 50.0
+percent = round(from + span * ratio)  clamp 到 [from, to]
+```
+
+**为什么不用线性 `n / total`**：ps1 的 NDJSON 协议只吐 `item` / `done` 两类事件，`done` 里的 `total_items` 要等脚本跑完才知道，运行期拿不到「本脚本总数」，线性插值无从谈起。`n/(n+K)` 单调递增、有上界 1、天然「前快后慢」，符合用户对扫描进度的直觉；取 `K=50` 是因为实测单脚本条目数在 6（windows_update）~ 154（temp）之间，50 让前几十条就有可见推进，又不会在条目极多时早早顶到上界。
+
+**边界事件**：脚本跑完（`Ok`）后编排器补一条 `percent = to`、`current_path = <脚本名>` 的进度，把进度条从插值渐近值精确推到槽位上界；全部脚本结束后补一条 `percent = 100`、`current_path = "done"`。
+
+**负向保护**：5 个脚本全失败时**不 emit 100** —— 否则前端会先显示「扫描完成」再弹错误条，语义自相矛盾。用例 `all_failed_does_not_emit_100` 守住。
+
+**兼容性**：`ScanRunner::new` 默认 `percent_span = (0,0)`，不经编排器直接跑单脚本时 `percent` 仍恒 0（保持 task-012 起的旧行为），用例 `runner_without_span_keeps_percent_zero` 守住。前端 `Dashboard.tsx` 零改动。
+
+### 3. G2 page_size 默认值与 clamp 上限
+
+| 项 | 值 | 说明 |
+|---|---|---|
+| `DEFAULT_PAGE_SIZE` | **100** | 与走查前前端硬编码的 `limit: 100` 一致，避免默认行为突变 |
+| `MAX_PAGE_SIZE` | **500** | 超过按 500 算，避免一次拉爆内存 / 卡死渲染 |
+| `page` | 从 1 起，`page.max(1)` | `page = 0` 视为第 1 页 |
+| `page_size = 0` | 按 1 算 | 保证至少返回 1 条，不返回「空页但 total > 0」的怪状态 |
+
+**排序**：`ORDER BY size_bytes DESC, id DESC`。补 `id DESC` 是本次关键——原 SQL 只按 `size_bytes DESC` 排，同 size 行的相对顺序在 SQLite 里**未定义**，换 `LIMIT/OFFSET` 时可能给出不同顺序，导致翻页跳行/重复。回归用例 `list_paging_does_not_skip_equal_sizes`（6 条同 size、`page_size=2` 翻 3 页）断言 id 集合完整、无重无漏。
+
+**total 一致性**：`COUNT(*)` 与 `items` 查询共用同一过滤条件 `(?1 IS NULL OR session_id = ?1)`，保证「共 N 条」与可翻页范围一致。
+
+### 4. G3 端到端真实写入证据
+
+**测试**（`engine/tests/execute_writes_source_task_id.rs`，5 条，全部 `cargo test` passed）：
+
+| 用例 | 断言要点 |
+|---|---|
+| `execute_items_writes_source_task_id` | 造真实文件 + `cleanup_item` 行 → 跑 `execute_items`（真实走白名单 → `SafeBoxDeleter` → 移入保险箱 → 写行）→ `SELECT source_task_id FROM safe_box ORDER BY id DESC LIMIT 1` **非 NULL** 且 **等于本次 `cleanup_task.id`**；同时断言文件真的进箱（`status='in_box'` 1 条） |
+| `list_sessions_sees_executed_batch` | 同上跑一遍后 `list_sessions()` 返回 **1 条**（原 bug 下恒为空集） |
+| `factory_receives_positive_task_id` | 用 `Cell` 捕获工厂实参，断言 `task_id > 0`（不是调用方硬塞的常量） |
+| `batch_shares_one_source_task_id` | 3 条同批 → `COUNT(DISTINCT source_task_id) = 1` 且 `COUNT(*) WHERE source_task_id IS NULL = 0` |
+| `deleter_with_none_writes_null` | **对照用例**：显式传 `None` 确实落 NULL，证明该列的写入路径受 deleter 参数控制，与正向用例互为佐证 |
+
+**设计要点**：这些用例**刻意不构造 `safe_box` 行**——task-051 的 26 条用例全是「先构造 DB 行 → 再读」的读路径测试，`source_task_id` 是测试自己写进去的，所以写路径写死 `None` 一条都没照到。本文件从「造真实文件 + 真实执行」出发，任何一步回退到写死 `None` 立即红。
+
+**真机证据（GUI 来源列 `#N` / Session 下拉 `session #N (M 条)`）**：按新流程移交测试 Agent，见 §10。
+
+### 5. G4 COUNT(*) 口径迁移前后对比
+
+| 场景（`cleanup_task` 行） | 迁移前 `COUNT(DISTINCT session_id)` | 迁移后 `COUNT(*)` |
+|---|---|---|
+| 空表 | 0 | 0 |
+| 3 行，`session_id` 全为 `1` | 1 | **3** |
+| 2 行，`session_id` 全为 **NULL**（`execute_items` 的真实写入形态） | **0** ← 走查 G4 的 bug | **2** |
+| 3 行：2 行 `session_id=1` + 1 行 NULL | 1 | **3** |
+| `session_id=Some(1)` 过滤 + 2 行 sid=1 | 1 | 2 |
+
+**为什么改 `COUNT(*)` 而不是补写 `session_id`**：走查报告推荐方案，且「轮次」语义本就是「清理批次」——一次 `execute_items` 写一行 `cleanup_task`，`COUNT(*)` 直接对应。补 `session_id` 会引入「跨 session 聚合」「session 粒度与批次粒度混淆」两个额外问题，收益不抵成本。**不改 `cleanup_task` schema**（任务书第 13 条）。
+
+### 6. G5 `ExecResult` / `AlreadyGone` 字段最终定义
+
+```rust
+// 单条结果
+pub struct ExecResult {
+    pub item_id: i64,
+    pub path: String,
+    pub deleted: bool,        // 真删/真移走 = true
+    pub already_gone: bool,   // 删除前就不存在 = true（新增）
+    pub bytes_freed: u64,     // 已不存在恒为 0
+    pub error: Option<String>,
+    pub locking_processes: Vec<LockingProcess>,
+}
+
+// 汇总
+pub struct ExecuteSummary {
+    pub results: Vec<ExecResult>,
+    pub deleted_count: u64,        // 真删数
+    pub failed_count: u64,         // 失败数（**排除** already_gone）
+    pub already_gone_count: u64,   // 已不存在数（新增）
+    pub bytes_freed_total: u64,    // 只累加真删的字节
+}
+```
+
+**三态互斥**（`deleted` / `already_gone` / `error`）：
+
+| 状态 | deleted | already_gone | error | 计入 |
+|---|---|---|---|---|
+| 真删 | true | false | None | `deleted_count` + `bytes_freed_total` |
+| 已不存在 | false | **true** | None | 仅 `already_gone_count` |
+| 失败 | false | false | Some | 仅 `failed_count` |
+
+**trait 签名**：`Deleter::delete_file(&self, p) -> Result<bool, String>`（`true` = 本次真删/真移走，`false` = NotFound 幂等）。`delete_dir` 保持 `Result<(), String>` 不变（本任务不涉及目录）。
+
+**审计**：`audit_log.detail` 新增 `already_gone` 字段（`result='success'` 下区分「真删了 N 字节」与「本来就不存在」），用例 `audit_log_records_already_gone_flag` 守住。
+
+**前端**：失败明细过滤条件由 `!r.deleted` 改 `!r.deleted && !r.alreadyGone`；结果条文案两档：
+- `alreadyGoneCount == 0` → 「已清理 N 项，释放 X MB」
+- `alreadyGoneCount > 0` → 「已清理 N 项，释放 X MB；M 项已不存在（未计入释放量）」
+
+### 7. `cargo test --workspace` 通过输出
+
+```
+cargo test --workspace  →  245 passed / 0 failed / 8 ignored
+```
+
+本任务新增 29 条：
+
+| 单元 | 新增用例数 | 文件 |
+|---|---|---|
+| G1 | 4 集成 + 5 单测 | `scan_progress_percent.rs` / `scan/runner.rs` |
+| G2 后端 | 6 | `list_pending_items.rs`（改写 + 新增 clamp / 跳行回归） |
+| G3 | 5 | `execute_writes_source_task_id.rs` |
+| G4 | 6（2 条新增 + 4 条改写） | `audit_log_stats.rs` |
+| G5 | 7 | `already_gone.rs` |
+| G2/G5 前端 | 3 + 3 | `Items.test.tsx` |
+
+**无 skip / xfail**。唯一按新语义改写的是 `execute_items_idempotent_on_already_deleted`（第二次删已不存在的文件：原断言 `deleted_count=1`，现改为 `deleted_count=0` / `already_gone_count=1` / `failed_count=0` / `bytes_freed_total=0`）——这是 G5 要求的行为变更，不是放宽断言。
+
+### 8. `pnpm build` 输出（无 error）
+
+```
+vite v5.4.11 building for production...
+✓ 44 modules transformed.
+dist/index.html                  0.34 kB │ gzip:  0.25 kB
+dist/assets/index-DAhs__dE.js  180.85 kB │ gzip: 57.76 kB
+✓ built in 4.46s
+```
+
+`pnpm lint`：0 error，2 warning（`SafeBox.tsx` 的 `react-refresh/only-export-components`，task-051 遗留，本任务未新增）。
+
+### 9. 与任务文档不符的偏差
+
+**唯一一项，且是任务书内部矛盾**：任务书「允许修改范围」白名单只列了 `safe_box.rs`，但第 14 条要求「`SafeBoxDeleter::delete_file` 返回值从 `Result<(), String>` 改为 `Result<bool, String>`」——而 `Deleter` **trait 定义在 `engine/src/execute/delete.rs`**、`FsDeleter` 实现在 `engine/src/execute/fs_deleter.rs`。只改 `safe_box.rs` 会直接编译失败（`E0053: method delete_file has an incompatible type for trait`）。
+
+处理：按最小改动同步这两处（trait 签名 + `NoopDeleter` + `FsDeleter` 返回值），并在 `PROJECT_STATE.md` 的已知问题/变更轨迹中标注。**建议后续任务书把 `delete.rs` / `fs_deleter.rs` 补进白名单模板**——凡是改 `Deleter` 契约的任务都会踩到。
+
+其余 5 个修复单元的实现与任务书要求逐条一致，无偏差。
+
+### 10. 流程变更（重要）
+
+按用户 2026-10-25 / 2026-10-26 两次明确交代：
+
+| 项 | 旧流程（任务书第 189–197 行） | 新流程（实际执行） |
+|---|---|---|
+| 真机冒烟（G1–G5 五条） | 必做、不可裁剪 | **移交测试 Agent** |
+| 打包安装冒烟（NSIS 复跑五条） | 必做、不可裁剪 | **移交测试 Agent** |
+| CI（开 PR 触发五道闸） | 必做 | **开发轮不跑**，测试轮拉 PR 跑 |
+| `tauri build` 出包 | 必做 | 必做（**已做**，见下） |
+
+**本任务实际完成的打包验证**：`tauri build` exit 0，产出
+`target/release/bundle/nsis/C-DiskCleaner_0.1.0_x64-setup.exe`（**4.02 MiB**）+
+`target/release/bundle/msi/C-DiskCleaner_0.1.0_x64_en-US.msi`（**5.83 MiB**），
+均含 `.sig`（本地需 `TAURI_SIGNING_PRIVATE_KEY` 环境变量，首次未设导致 exit 1，补上后 exit 0）。
+**安装态布局与 G1–G5 复跑未做**，移交测试 Agent。
+
+### 11. 遗留问题
+
+- **G6 设置页 IPC 红错**：按任务书明确不做，留 task-053。已知项，不阻塞发版。
+- **`RmShutdown` / `RmRestart`**：立项决策不做，未触碰。
+- **`interpolate_percent` 的 `K=50` 是经验值**：若后续某个脚本条目数极大（>10 万），槽内进度会显得偏慢；当前 5 个脚本实测 6~154 条，无此问题。若将来新增重脚本，可考虑按 `done` 事件的 `total_items` 回填更精确的分母（需协议先支持「预估总数」）。
+- **`scan_progress_percent.rs` 全部 `#![cfg(windows)]`**：依赖 `powershell.exe` 跑假 ps1，与既有 `scan_orchestrator.rs` 同模式；非 Windows 平台这些用例不计入。
+
+### 三句话结论
+
+1. **G1–G5 五项全部修复**，且 G3 补上了 task-051 缺失的「真实写入路径」回归——这是本轮最有价值的一条：读路径测试再多也照不到写路径接线。
+2. **门禁全绿**（245+8 / vitest 53 / build 180.85 kB），`tauri build` 出包并签名成功；唯一越界是 `delete.rs` / `fs_deleter.rs`（G5 改 trait 签名的必然结果，任务书白名单有缺口）。
+3. **GUI 走查、安装态冒烟、CI 三项按新流程移交测试 Agent**，开发轮不越权代做，也不伪造证据。
