@@ -17,6 +17,10 @@
 //   cleanup_retry_locked（后端 RmShutdown + 护栏过滤 + 复用 execute_items 重删）；
 // - 字段全部 camelCase（后端 #[serde(rename_all = "camelCase")]），历史已多次踩
 //   snake_case 坑，这里显式对齐。
+//
+// task-052 G2：列表分页。原实现硬编码 `limit: 100`，第 101 条之后的条目（例如
+// %TEMP% 里被锁住的小文件）在 UI 上根本找不到 —— 走查 G2 缺陷。现在改为
+// `{ page, pageSize }` 分页入参 + 底部翻页栏，翻页时清空勾选（避免跨页误删）。
 
 import { useCallback, useEffect, useState } from "react";
 import { formatBytes } from "../utils/formatBytes";
@@ -37,6 +41,17 @@ interface PendingItem {
   moduleCode: string;
   sessionId: number;
 }
+
+/** task-052 G2：engine::execute::list_pending::PendingPage 的 JSON shape。 */
+interface PendingPage {
+  items: PendingItem[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
+/** 每页条数（与后端 DEFAULT_PAGE_SIZE 对齐）。 */
+const PAGE_SIZE = 100;
 
 /** task-049：engine::execute::locking::LockingProcess 的 JSON shape。 */
 interface LockingProcess {
@@ -161,6 +176,10 @@ export default function Items() {
   const [msg, setMsg] = useState<string>("");
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [cleaning, setCleaning] = useState(false);
+  // task-052 G2：分页态。
+  const [page, setPage] = useState(1);
+  const [pageSize] = useState(PAGE_SIZE);
+  const [total, setTotal] = useState(0);
   // task-049：重试态（关闭占用进程 + 重删）。与 cleaning/previewing 互斥。
   const [retrying, setRetrying] = useState(false);
   const [result, setResult] = useState<ResultState | null>(null);
@@ -168,25 +187,61 @@ export default function Items() {
   const [previewing, setPreviewing] = useState(false);
   const [preview, setPreview] = useState<Preview | null>(null);
 
-  const load = useCallback(async () => {
-    setStatus("loading");
-    setMsg("");
-    // C8：列表重拉后旧预览可能已过期，先清掉。
-    setPreview(null);
-    try {
-      const list = await api<PendingItem[]>("cleanup_list_pending", { limit: 100 });
-      setRows(list);
-      setStatus("ok");
-    } catch (e) {
-      setRows([]);
-      setMsg(String(e));
-      setStatus("error");
-    }
-  }, []);
+  /**
+   * 拉取指定页。
+   *
+   * `p`/`ps` 显式传入而不是读闭包里的 state：翻页按钮刚 `setPage` 时
+   * state 还没更新，直接读会拿到旧页码（翻页不动的经典坑）。
+   */
+  const load = useCallback(
+    async (p: number = page, ps: number = pageSize) => {
+      setStatus("loading");
+      setMsg("");
+      // C8：列表重拉后旧预览可能已过期，先清掉。
+      setPreview(null);
+      try {
+        const resp = await api<PendingPage>("cleanup_list_pending", {
+          page: p,
+          pageSize: ps,
+        });
+        setRows(resp.items);
+        setTotal(resp.total);
+        setPage(resp.page);
+        setStatus("ok");
+      } catch (e) {
+        setRows([]);
+        setTotal(0);
+        setMsg(String(e));
+        setStatus("error");
+      }
+    },
+    [page, pageSize],
+  );
 
   useEffect(() => {
-    load();
-  }, [load]);
+    void load(1, pageSize);
+    // 首次挂载只拉第一页；后续翻页走 gotoPage。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /**
+   * 翻页：越界直接忽略；翻页时清空勾选。
+   *
+   * 不清空的话，用户在 A 页勾了几项、翻到 B 页又勾几项，点「清理已选」会一次性
+   * 删掉两个页面的条目 —— 用户看不到 A 页的勾选状态，属于隐性误操作。
+   */
+  const gotoPage = useCallback(
+    (next: number) => {
+      const maxPage = Math.max(1, Math.ceil(total / pageSize));
+      const target = Math.min(Math.max(1, next), maxPage);
+      if (target === page) return;
+      setSelected(new Set());
+      setPreview(null);
+      setResult(null);
+      void load(target, pageSize);
+    },
+    [page, pageSize, total, load],
+  );
 
   const toggle = (id: number) => {
     // C8：勾选集合一变，旧预览就失效。
@@ -324,7 +379,7 @@ export default function Items() {
   return (
     <div>
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
-        <button onClick={load} disabled={busy}>
+        <button onClick={() => void load(page, pageSize)} disabled={busy}>
           刷新
         </button>
         <span style={{ fontSize: 13, color: "#374151" }}>
@@ -536,6 +591,34 @@ export default function Items() {
             ))}
           </tbody>
         </table>
+      )}
+
+      {/* task-052 G2：分页栏（样式对齐 SafeBox 的翻页栏）。 */}
+      {status === "ok" && (
+        <div
+          style={{
+            marginTop: 16,
+            display: "flex",
+            justifyContent: "center",
+            alignItems: "center",
+            gap: 12,
+            fontSize: 13,
+            color: "#374151",
+          }}
+        >
+          <button onClick={() => gotoPage(page - 1)} disabled={page <= 1 || status === "loading"}>
+            上一页
+          </button>
+          <span>
+            第 {page} / {Math.max(1, Math.ceil(total / pageSize))} 页（共 {total} 条）
+          </span>
+          <button
+            onClick={() => gotoPage(page + 1)}
+            disabled={page * pageSize >= total || status === "loading"}
+          >
+            下一页
+          </button>
+        </div>
       )}
     </div>
   );

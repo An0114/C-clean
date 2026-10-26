@@ -23,6 +23,10 @@ const ROWS = [
 /** 信封成功包装（与 engine::ipc::Envelope 对齐）。 */
 const ok = (data: unknown) => ({ code: 0, message: "ok", data });
 
+/** task-052 G2：cleanup_list_pending 的分页响应 shape（PendingPage）。 */
+const pageOf = (items: unknown[], total: number, page = 1, pageSize = 100) =>
+  ok({ items, total, page, pageSize });
+
 /** cleanup_execute：1 项失败，占用进程 notepad.exe。 */
 const SUMMARY_FAILED = {
   results: [
@@ -89,7 +93,7 @@ const MIXED_FAIL_CLOSED_RESP = {
 function mockInvoke(overrides: Record<string, () => Promise<unknown>> = {}) {
   mockedInvoke.mockImplementation(((cmd: string) => {
     if (overrides[cmd]) return overrides[cmd]();
-    if (cmd === "cleanup_list_pending") return Promise.resolve(ok(ROWS));
+    if (cmd === "cleanup_list_pending") return Promise.resolve(pageOf(ROWS, ROWS.length));
     if (cmd === "cleanup_execute") return Promise.resolve(ok(SUMMARY_FAILED));
     if (cmd === "cleanup_retry_locked") return Promise.resolve(ok(RETRY_RESP));
     return Promise.resolve(ok(null));
@@ -275,5 +279,92 @@ describe("三态互斥（C12）", () => {
     await waitFor(() =>
       expect(screen.getByText("关闭占用进程并重试")).toBeEnabled(),
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// task-052 G2：清理列表分页（走查缺陷——原硬编码 limit:100，第 101 条之后不可见）
+// ---------------------------------------------------------------------------
+describe("清理列表分页（G2）", () => {
+  /** 造第 n 页的假数据：每页 size 递减，便于区分页。 */
+  const makeRows = (page: number, count: number) =>
+    Array.from({ length: count }, (_, i) => ({
+      id: (page - 1) * 100 + i + 1,
+      path: `C:\\Temp\\p${page}_${i}.tmp`,
+      sizeBytes: 1000 - i,
+      moduleCode: "A",
+      sessionId: 1,
+    }));
+
+  it("首屏按 {page:1, pageSize:100} 请求，并展示总数与页码", async () => {
+    await renderLoaded();
+
+    const call = mockedInvoke.mock.calls.find(([cmd]) => cmd === "cleanup_list_pending");
+    expect(call?.[1]).toEqual({ page: 1, pageSize: 100 });
+
+    expect(screen.getByText(/第 1 \/ 1 页（共 1 条）/)).toBeInTheDocument();
+  });
+
+  it("总数 > pageSize 时出现两页，下一页请求 page=2 且清空已选", async () => {
+    // 150 条：第 1 页 100 条、第 2 页 50 条。
+    mockInvoke({
+      cleanup_list_pending: () => {
+        // 第几次调用就是第几页（首屏 1 次 + 翻页 1 次）。
+        const n = mockedInvoke.mock.calls.filter(
+          ([cmd]) => cmd === "cleanup_list_pending",
+        ).length;
+        return Promise.resolve(
+          n === 1
+            ? pageOf(makeRows(1, 100), 150, 1, 100)
+            : pageOf(makeRows(2, 50), 150, 2, 100),
+        );
+      },
+    });
+
+    render(<Items />);
+    await waitFor(() => expect(screen.getByText(/第 1 \/ 2 页（共 150 条）/)).toBeInTheDocument());
+
+    // 第 1 页勾选 1 项。
+    selectFirstRow();
+    expect(screen.getByText(/已选 1 项/)).toBeInTheDocument();
+
+    // 上一页在第 1 页必须禁用。
+    expect(screen.getByText("上一页")).toBeDisabled();
+
+    fireEvent.click(screen.getByText("下一页"));
+
+    await waitFor(() => expect(screen.getByText(/第 2 \/ 2 页（共 150 条）/)).toBeInTheDocument());
+
+    // 翻页清空勾选：否则会跨页误删用户看不见的条目。
+    expect(screen.getByText(/已选 0 项/)).toBeInTheDocument();
+
+    // 第 2 页确实换了数据。
+    await waitFor(() => expect(screen.getByText(/p2_0\.tmp/)).toBeInTheDocument());
+
+    // 第 2 页时下一页必须禁用（page*pageSize >= total）。
+    expect(screen.getByText("下一页")).toBeDisabled();
+  });
+
+  it("翻页请求带上真实页码（不读闭包旧 state）", async () => {
+    mockInvoke({
+      cleanup_list_pending: () => {
+        const n = mockedInvoke.mock.calls.filter(
+          ([cmd]) => cmd === "cleanup_list_pending",
+        ).length;
+        return Promise.resolve(
+          n === 1 ? pageOf(makeRows(1, 100), 150, 1, 100) : pageOf(makeRows(2, 50), 150, 2, 100),
+        );
+      },
+    });
+
+    render(<Items />);
+    await waitFor(() => expect(screen.getByText(/第 1 \/ 2 页/)).toBeInTheDocument());
+
+    fireEvent.click(screen.getByText("下一页"));
+    await waitFor(() => expect(screen.getByText(/第 2 \/ 2 页/)).toBeInTheDocument());
+
+    const calls = mockedInvoke.mock.calls.filter(([cmd]) => cmd === "cleanup_list_pending");
+    expect(calls[0][1]).toEqual({ page: 1, pageSize: 100 });
+    expect(calls[1][1]).toEqual({ page: 2, pageSize: 100 });
   });
 });
