@@ -283,6 +283,119 @@ describe("三态互斥（C12）", () => {
 });
 
 // ---------------------------------------------------------------------------
+// task-052 G5：区分「真删了」与「本来就不存在」（走查缺陷——「已清理 1 项，释放 0 B」）
+// ---------------------------------------------------------------------------
+describe("已不存在 vs 已清理（G5）", () => {
+  it("alreadyGoneCount > 0 时文案补「M 项已不存在（未计入释放量）」", async () => {
+    mockInvoke({
+      cleanup_execute: () =>
+        Promise.resolve(
+          ok({
+            results: [
+              {
+                itemId: 1,
+                path: "C:\\Temp\\locked.txt",
+                deleted: true,
+                alreadyGone: false,
+                bytesFreed: 12,
+                error: null,
+                lockingProcesses: [],
+              },
+              {
+                itemId: 2,
+                path: "C:\\Temp\\vanished.txt",
+                deleted: false,
+                alreadyGone: true,
+                bytesFreed: 0,
+                error: null,
+                lockingProcesses: [],
+              },
+            ],
+            deletedCount: 1,
+            failedCount: 0,
+            alreadyGoneCount: 1,
+            bytesFreedTotal: 12,
+          }),
+        ),
+    });
+
+    await renderLoaded();
+    selectFirstRow();
+    fireEvent.click(screen.getByText("清理已选"));
+
+    await waitFor(() =>
+      expect(screen.getByText(/已清理 1 项，释放 12 B；1 项已不存在（未计入释放量）/)).toBeInTheDocument(),
+    );
+  });
+
+  it("alreadyGoneCount == 0 时保持原文案（不出现「已不存在」）", async () => {
+    mockInvoke({
+      cleanup_execute: () =>
+        Promise.resolve(
+          ok({
+            results: [
+              {
+                itemId: 1,
+                path: "C:\\Temp\\locked.txt",
+                deleted: true,
+                alreadyGone: false,
+                bytesFreed: 12,
+                error: null,
+                lockingProcesses: [],
+              },
+            ],
+            deletedCount: 1,
+            failedCount: 0,
+            alreadyGoneCount: 0,
+            bytesFreedTotal: 12,
+          }),
+        ),
+    });
+
+    await renderLoaded();
+    selectFirstRow();
+    fireEvent.click(screen.getByText("清理已选"));
+
+    await waitFor(() => expect(screen.getByText(/已清理 1 项，释放 12 B/)).toBeInTheDocument());
+    expect(document.body.textContent ?? "").not.toContain("已不存在");
+  });
+
+  it("已不存在的条目不得渲染成失败明细", async () => {
+    mockInvoke({
+      cleanup_execute: () =>
+        Promise.resolve(
+          ok({
+            results: [
+              {
+                itemId: 1,
+                path: "C:\\Temp\\vanished.txt",
+                deleted: false,
+                alreadyGone: true,
+                bytesFreed: 0,
+                error: null,
+                lockingProcesses: [],
+              },
+            ],
+            deletedCount: 0,
+            failedCount: 0,
+            alreadyGoneCount: 1,
+            bytesFreedTotal: 0,
+          }),
+        ),
+    });
+
+    await renderLoaded();
+    selectFirstRow();
+    fireEvent.click(screen.getByText("清理已选"));
+
+    await waitFor(() => expect(screen.getByText(/1 项已不存在/)).toBeInTheDocument());
+    // 没有失败项 → 不应出现「未知原因」这种假失败行，也不该出现重试按钮。
+    expect(document.body.textContent ?? "").not.toContain("未知原因");
+    expect(screen.queryByText("关闭占用进程并重试")).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // task-052 G2：清理列表分页（走查缺陷——原硬编码 limit:100，第 101 条之后不可见）
 // ---------------------------------------------------------------------------
 describe("清理列表分页（G2）", () => {

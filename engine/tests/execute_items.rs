@@ -120,10 +120,15 @@ fn execute_items_idempotent_on_already_deleted() {
 
     let s1 = execute_items(&[id], &conn, &[], |_id, _task_id| Box::new(FsDeleter));
     assert_eq!(s1.deleted_count, 1);
-    // 第二次删：文件已不存在 → FsDeleter 返回 Ok(()) 幂等
+    // 第二次删：文件已不存在 → FsDeleter 返回 Ok(false)，幂等但仍算「成功语义」。
+    // task-052 G5：不再计入 deleted_count（那是「真删了」的计数），改记 already_gone_count，
+    // 也不算失败 —— 这正是修掉「已清理 1 项，释放 0 B」的关键。
     let s2 = execute_items(&[id], &conn, &[], |_id, _task_id| Box::new(FsDeleter));
-    assert_eq!(s2.deleted_count, 1);
-    // 两次都写了 success audit
+    assert_eq!(s2.deleted_count, 0);
+    assert_eq!(s2.already_gone_count, 1);
+    assert_eq!(s2.failed_count, 0);
+    assert_eq!(s2.bytes_freed_total, 0);
+    // 两次都写了 success audit（幂等仍是成功语义，不是 fail）
     let n_success: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM audit_log WHERE result='success'",

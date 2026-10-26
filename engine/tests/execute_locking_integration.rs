@@ -34,9 +34,10 @@ struct MockDeleter {
     err: Option<String>,
 }
 impl Deleter for MockDeleter {
-    fn delete_file(&self, _p: &engine::execute::normalize::NormalizedPath) -> Result<(), String> {
+    fn delete_file(&self, _p: &engine::execute::normalize::NormalizedPath) -> Result<bool, String> {
         match &self.err {
-            None => Ok(()),
+            // task-052 G5：Ok(true) = 真删了。
+            None => Ok(true),
             Some(e) => Err(e.clone()),
         }
     }

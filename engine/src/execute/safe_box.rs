@@ -5,7 +5,7 @@
 //! - 实际 `safe_box` 表字段为：id / original_path / safe_rel_path / size_bytes /
 //!   quarantined_at / expires_at / status / source_task_id（不是任务书说的
 //!   session_id / item_id / box_path / moved_at / purged_at）。
-//! - `Deleter` trait 签名为 `delete_file(&NormalizedPath) -> Result<(), String>`
+//! - `Deleter` trait 签名为 `delete_file(&NormalizedPath) -> Result<bool, String>`
 //!   （task-003 定型），不是 `&str -> Result<u64, String>`；bytes_freed 由 executor
 //!   在调 delete_file 之前用 `fs::metadata` 取。
 //! - 容量常量用 `AtomicU64`，测试时通过 `set_quota_for_test()` 覆盖，
@@ -124,12 +124,16 @@ impl<'conn> SafeBoxDeleter<'conn> {
 }
 
 impl<'conn> Deleter for SafeBoxDeleter<'conn> {
-    fn delete_file(&self, p: &NormalizedPath) -> Result<(), String> {
+    /// 移入保险箱。
+    ///
+    /// task-052 G5：返回 `Ok(true)` = 真的移走了；`Ok(false)` = 源文件在移入前
+    /// 就已不存在（NotFound 幂等），本次没有产生任何释放量。
+    fn delete_file(&self, p: &NormalizedPath) -> Result<bool, String> {
         let src = p.normalized();
         let src_path = Path::new(src);
         let meta = match fs::metadata(src_path) {
             Ok(m) => m,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
             Err(e) => return Err(format!("stat {src}: {e}")),
         };
         let size = meta.len();
@@ -181,7 +185,7 @@ impl<'conn> Deleter for SafeBoxDeleter<'conn> {
                     crate::execute::error_kind::DeleteFailureKind::PermissionDenied => {
                         Err(format!("PERMISSION_DENIED: {src}"))
                     }
-                    crate::execute::error_kind::DeleteFailureKind::NotFound => Ok(()),
+                    crate::execute::error_kind::DeleteFailureKind::NotFound => Ok(false),
                     crate::execute::error_kind::DeleteFailureKind::Unknown => {
                         Err(format!("rename {src} -> {:?}: {e}", box_path))
                     }
@@ -201,7 +205,8 @@ impl<'conn> Deleter for SafeBoxDeleter<'conn> {
             )
             .map_err(|e| format!("insert safe_box row: {e}"))?;
 
-        Ok(())
+        // 5 步全过 = 文件真的从原位置移走了。
+        Ok(true)
     }
 
     fn delete_dir(&self, p: &NormalizedPath) -> Result<(), String> {

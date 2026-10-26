@@ -76,6 +76,8 @@ interface ExecResult {
   itemId: number;
   path: string;
   deleted: boolean;
+  /** task-052 G5：删除前就已不存在（既不算成功释放、也不算失败）。 */
+  alreadyGone: boolean;
   bytesFreed: number;
   error: string | null;
   lockingProcesses: LockingProcess[];
@@ -86,6 +88,8 @@ interface ExecuteSummary {
   results: ExecResult[];
   deletedCount: number;
   failedCount: number;
+  /** task-052 G5：本次「已不存在」的条目数（不计入 bytesFreedTotal）。 */
+  alreadyGoneCount: number;
   bytesFreedTotal: number;
 }
 
@@ -271,13 +275,22 @@ export default function Items() {
       const ids = Array.from(selected);
       // task-049 C8：接住返回值，失败项要展示原因与占用进程（此前直接丢弃）。
       const summary = await api<ExecuteSummary>("cleanup_execute", { itemIds: ids });
-      const failures = summary.results.filter((r) => !r.deleted);
+      // task-052 G5：已不存在（alreadyGone）既不算成功释放、也不算失败，
+      // 必须从失败明细里排除，否则会渲染出一堆「— 未知原因」的假失败行。
+      const failures = summary.results.filter((r) => !r.deleted && !r.alreadyGone);
+      const gone = summary.alreadyGoneCount ?? 0;
+      // 走查 G5 的原始症状是「已清理 1 项，释放 0 B」：真删了 0 字节却报成功。
+      // 现在把「已不存在」单独说出来，用户能看懂为什么释放量比预期小。
+      const okHeadline =
+        `已清理 ${summary.deletedCount} 项，释放 ${formatBytes(summary.bytesFreedTotal)}` +
+        (gone > 0 ? `；${gone} 项已不存在（未计入释放量）` : "");
       setResult({
         tone: failures.length === 0 ? "ok" : "fail",
         headline:
           failures.length === 0
-            ? `已清理 ${summary.deletedCount} 项，释放 ${formatBytes(summary.bytesFreedTotal)}`
-            : `清理完成：成功 ${summary.deletedCount} 项 / 失败 ${summary.failedCount} 项`,
+            ? okHeadline
+            : `清理完成：成功 ${summary.deletedCount} 项 / 失败 ${summary.failedCount} 项` +
+              (gone > 0 ? ` / 已不存在 ${gone} 项` : ""),
         failures,
         refused: [],
       });
@@ -315,7 +328,8 @@ export default function Items() {
       const resp = await api<RetryLockedResp>("cleanup_retry_locked", {
         itemIds: locked.map((f) => f.itemId),
       });
-      const failures = resp.summary.results.filter((r) => !r.deleted);
+      // task-052 G5：重试路径同样排除「已不存在」，否则会显示假失败。
+      const failures = resp.summary.results.filter((r) => !r.deleted && !r.alreadyGone);
       const closedCount = resp.shutdown.closed.length;
       // close-experience-copy：mixed fail-closed（同批含受保护进程 → 后端整批不关）时
       // closed=0 且 refused 非空，需在结果条里解释「一个都没关」，否则用户只看到
