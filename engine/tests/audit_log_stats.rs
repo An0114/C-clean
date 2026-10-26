@@ -55,7 +55,8 @@ fn stats_counts_success_failed() {
     assert_eq!(s.total_bytes_freed, 600);
     assert_eq!(s.success_count, 3);
     assert_eq!(s.failed_count, 2);
-    assert_eq!(s.session_count, 1);
+    // task-052 G4：session_count 口径改为 cleanup_task 行数 → 3 行 = 3 轮。
+    assert_eq!(s.session_count, 3);
 }
 
 #[test]
@@ -74,7 +75,7 @@ fn stats_filters_by_session() {
 }
 
 #[test]
-fn stats_distinct_session_count() {
+fn stats_session_count_equals_task_rows() {
     let dir = tempfile::tempdir().unwrap();
     let conn = open(dir.path()).unwrap();
     for sid in [1, 2, 3] {
@@ -86,4 +87,49 @@ fn stats_distinct_session_count() {
     let s = cleanup_stats(&conn, None).unwrap();
     assert_eq!(s.session_count, 3);
     assert_eq!(s.total_bytes_freed, 60);
+}
+
+/// 插入一行 `session_id = NULL` 的 cleanup_task（复刻 `execute_items` 的真实写入）。
+fn insert_task_null_session(conn: &rusqlite::Connection, freed_bytes: i64) {
+    conn.execute(
+        "INSERT INTO cleanup_task (session_id, started_at, finished_at,
+             disk_before_bytes, disk_after_bytes, freed_bytes,
+             success_count, fail_count, skip_count, dry_run_snapshot, safebox_enabled)
+         VALUES (NULL, 0, 0, 0, 0, ?1, 1, 0, 0, '{}', 0)",
+        rusqlite::params![freed_bytes],
+    )
+    .unwrap();
+}
+
+/// task-052 G4 回归（核心）：`execute_items` 写 cleanup_task 时 `session_id` 恒为 NULL，
+/// 旧的 `COUNT(DISTINCT session_id)` 会忽略 NULL → 前端「清理轮次」恒 0（走查 G4）。
+/// 改成 `COUNT(*)` 后，两行 NULL session 的批次必须算 2 轮。
+#[test]
+fn stats_counts_null_session_tasks() {
+    let dir = tempfile::tempdir().unwrap();
+    let conn = open(dir.path()).unwrap();
+    insert_task_null_session(&conn, 100);
+    insert_task_null_session(&conn, 250);
+
+    let s = cleanup_stats(&conn, None).unwrap();
+    assert_eq!(
+        s.session_count, 2,
+        "两行 NULL session 的 cleanup_task 必须算 2 轮"
+    );
+    assert_eq!(s.total_bytes_freed, 350);
+    assert_eq!(s.success_count, 2);
+}
+
+/// task-052 G4：混合 NULL 与非 NULL session 时，轮次 = 行数（不是非 NULL 去重数）。
+#[test]
+fn stats_counts_mixed_null_and_non_null() {
+    let dir = tempfile::tempdir().unwrap();
+    let conn = open(dir.path()).unwrap();
+    ensure_session(&conn, 1);
+    insert_task(&conn, 1, 10, 1, 0);
+    insert_task(&conn, 1, 20, 1, 0);
+    insert_task_null_session(&conn, 30);
+
+    let s = cleanup_stats(&conn, None).unwrap();
+    assert_eq!(s.session_count, 3);
 }

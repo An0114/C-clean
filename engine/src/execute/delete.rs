@@ -8,7 +8,14 @@ use super::whitelist::{self, DenialReason};
 /// 本任务只提供 [`NoopDeleter`]（测试用，不碰磁盘）。
 pub trait Deleter {
     /// 删除一个已通过白名单的文件。
-    fn delete_file(&self, p: &NormalizedPath) -> Result<(), String>;
+    ///
+    /// **返回值语义（task-052 G5）**：`Ok(true)` = 本次**真的**删掉/移走了文件；
+    /// `Ok(false)` = 文件在删除前已不存在（NotFound 幂等），本次**什么都没删**。
+    ///
+    /// 为什么需要区分：扫描与清理之间存在时间窗，文件可能已被系统或其他程序删掉。
+    /// 旧签名只返回 `Ok(())`，调用方无法分辨「真删了」和「本来就没有」，于是把
+    /// 0 字节计入释放量，前端出现「已清理 1 项，释放 0 B」的荒谬文案（走查 G5）。
+    fn delete_file(&self, p: &NormalizedPath) -> Result<bool, String>;
     /// 删除一个已通过白名单的目录。
     fn delete_dir(&self, p: &NormalizedPath) -> Result<(), String>;
 }
@@ -27,10 +34,14 @@ impl NoopDeleter {
 }
 
 impl Deleter for NoopDeleter {
-    fn delete_file(&self, p: &NormalizedPath) -> Result<(), String> {
+    fn delete_file(&self, p: &NormalizedPath) -> Result<bool, String> {
         self.recorded
             .lock()
-            .map(|mut g| g.push(p.normalized().to_string()))
+            .map(|mut g| {
+                g.push(p.normalized().to_string());
+                // Noop 不碰磁盘，一律当作「真删了」。
+                true
+            })
             .map_err(|e| e.to_string())
     }
 

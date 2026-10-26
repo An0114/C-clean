@@ -24,8 +24,12 @@ pub struct ExecResult {
     pub item_id: i64,
     pub path: String,
     pub deleted: bool,
+    /// task-052 G5：删除前文件就已不存在（NotFound 幂等）。
+    /// 既不算成功释放、也不算失败 —— 前端单独统计，文案为「M 项已不存在」。
+    #[serde(default)]
+    pub already_gone: bool,
     pub bytes_freed: u64,
-    /// 失败原因；成功为 None。
+    /// 失败原因；成功（含已不存在）为 None。
     pub error: Option<String>,
     /// task-021：FILE_IN_USE 时填占用进程列表；其他场景为空 Vec。
     #[serde(default)]
@@ -39,6 +43,9 @@ pub struct ExecuteSummary {
     pub results: Vec<ExecResult>,
     pub deleted_count: u64,
     pub failed_count: u64,
+    /// task-052 G5：本次「已不存在」的条目数（不计入 bytes_freed，也不算失败）。
+    #[serde(default)]
+    pub already_gone_count: u64,
     pub bytes_freed_total: u64,
 }
 
@@ -48,6 +55,8 @@ struct BatchSummary {
     success: u32,
     fail: u32,
     skip: u32,
+    /// task-052 G5：已不存在计数（只进返回值，不写 cleanup_task —— schema 无此列）。
+    already_gone: u32,
 }
 
 /// 编排：对每个 id 先 SELECT path，再过一次白名单（防 dryRun 到 execute 之间路径被改），
@@ -56,6 +65,11 @@ struct BatchSummary {
 /// - NotFound（DB 里没有这个 id）→ skip，不写 audit_log（任务书要求「不影响其他 item」）；
 /// - L3 命中 → audit_log result='denied'，denial_reason 填具体原因；
 /// - deleter 失败 → audit_log result='fail'，detail 带错误文案。
+///
+/// task-052 G3：工厂闭包签名从 `FnMut(item_id)` 改为 `FnMut(item_id, task_id)`。
+/// `task_id` 是本次调用刚写入的 `cleanup_task.id`（写失败时为 `-1`），
+/// 供 `SafeBoxDeleter` 落 `safe_box.source_task_id` —— 否则该列恒 NULL，
+/// 前端保险箱的 Session 下拉与「来源」列永远是空的。
 pub fn execute_items<'a, F>(
     item_ids: &[i64],
     conn: &Connection,
@@ -63,7 +77,7 @@ pub fn execute_items<'a, F>(
     mut deleter_factory: F,
 ) -> ExecuteSummary
 where
-    F: FnMut(i64) -> Box<dyn Deleter + 'a>,
+    F: FnMut(i64, i64) -> Box<dyn Deleter + 'a>,
 {
     let mut results = Vec::with_capacity(item_ids.len());
     let mut summary = BatchSummary {
@@ -71,6 +85,7 @@ where
         success: 0,
         fail: 0,
         skip: 0,
+        already_gone: 0,
     };
     let now = now_unix();
 
@@ -105,6 +120,7 @@ where
                         item_id: id,
                         path: String::new(),
                         deleted: false,
+                        already_gone: false,
                         bytes_freed: 0,
                         error: Some("not found".into()),
                         locking_processes: Vec::new(),
@@ -120,11 +136,12 @@ where
             Ok(np) => np,
             Err(_) => {
                 summary.fail += 1;
-                write_audit(conn, now, &path, id, 0, "denied", "PathTraversal");
+                write_audit(conn, now, &path, id, 0, "denied", "PathTraversal", false);
                 results.push(ExecResult {
                     item_id: id,
                     path,
                     deleted: false,
+                    already_gone: false,
                     bytes_freed: 0,
                     error: Some("blocked by L3: PathTraversal".into()),
                     locking_processes: Vec::new(),
@@ -142,11 +159,12 @@ where
             Err(e) => {
                 summary.fail += 1;
                 let reason = format!("ResolveFailed({e})");
-                write_audit(conn, now, &path, id, 0, "denied", &reason);
+                write_audit(conn, now, &path, id, 0, "denied", &reason, false);
                 results.push(ExecResult {
                     item_id: id,
                     path,
                     deleted: false,
+                    already_gone: false,
                     bytes_freed: 0,
                     error: Some(format!("blocked by L3: {reason}")),
                     locking_processes: Vec::new(),
@@ -157,11 +175,12 @@ where
         if let Err(reason) = classify_with_external(&classify_target, external_deny) {
             let reason_str = format!("{reason:?}");
             summary.fail += 1;
-            write_audit(conn, now, &path, id, 0, "denied", &reason_str);
+            write_audit(conn, now, &path, id, 0, "denied", &reason_str, false);
             results.push(ExecResult {
                 item_id: id,
                 path,
                 deleted: false,
+                already_gone: false,
                 bytes_freed: 0,
                 error: Some(format!("blocked by L3: {reason_str}")),
                 locking_processes: Vec::new(),
@@ -173,17 +192,36 @@ where
         let bytes_before = std::fs::metadata(np.normalized())
             .map(|m| m.len())
             .unwrap_or(0);
-        let deleter = deleter_factory(id);
+        // task-052 G3：把本次 cleanup_task.id 交给工厂，SafeBoxDeleter 据此写 source_task_id。
+        // task_id < 0 表示 INSERT cleanup_task 失败，此时传 -1 让上层落 NULL（不写脏值）。
+        let deleter = deleter_factory(id, task_id);
         match deleter.delete_file(&np) {
-            Ok(()) => {
+            // 真删 / 真移走：计入释放量。
+            Ok(true) => {
                 summary.success += 1;
                 summary.freed_bytes += bytes_before as i64;
-                write_audit(conn, now, &path, id, bytes_before, "success", "");
+                write_audit(conn, now, &path, id, bytes_before, "success", "", false);
                 results.push(ExecResult {
                     item_id: id,
                     path,
                     deleted: true,
+                    already_gone: false,
                     bytes_freed: bytes_before,
+                    error: None,
+                    locking_processes: Vec::new(),
+                });
+            }
+            // task-052 G5：文件在扫描后、清理前已被系统/其他程序删掉。
+            // 幂等成功，但**没有**产生任何释放量 —— 单列计数，不算失败。
+            Ok(false) => {
+                summary.already_gone += 1;
+                write_audit(conn, now, &path, id, 0, "success", "", true);
+                results.push(ExecResult {
+                    item_id: id,
+                    path,
+                    deleted: false,
+                    already_gone: true,
+                    bytes_freed: 0,
                     error: None,
                     locking_processes: Vec::new(),
                 });
@@ -214,11 +252,12 @@ where
                 } else {
                     (e.clone(), Vec::new())
                 };
-                write_audit(conn, now, &path, id, bytes_before, "fail", &detail);
+                write_audit(conn, now, &path, id, bytes_before, "fail", &detail, false);
                 results.push(ExecResult {
                     item_id: id,
                     path,
                     deleted: false,
+                    already_gone: false,
                     bytes_freed: 0,
                     error: Some(e),
                     locking_processes: locking,
@@ -245,13 +284,19 @@ where
     }
 
     let deleted_count = results.iter().filter(|r| r.deleted).count() as u64;
-    let failed_count = results.iter().filter(|r| !r.deleted).count() as u64;
+    // task-052 G5：failed_count 必须排除「已不存在」，否则前端会把幂等跳过算成失败。
+    let failed_count = results
+        .iter()
+        .filter(|r| !r.deleted && !r.already_gone)
+        .count() as u64;
+    let already_gone_count = results.iter().filter(|r| r.already_gone).count() as u64;
     let bytes_freed_total: u64 = results.iter().map(|r| r.bytes_freed).sum();
 
     ExecuteSummary {
         results,
         deleted_count,
         failed_count,
+        already_gone_count,
         bytes_freed_total,
     }
 }
@@ -263,6 +308,14 @@ fn now_unix() -> i64 {
         .unwrap_or(0)
 }
 
+/// 写一条 audit_log。
+///
+/// task-052 G5：新增 `already_gone` 参数，写进 detail JSON 便于事后取证
+/// （同一 result='success' 下区分「真删了 N 字节」和「本来就不存在」）。
+///
+/// 参数虽多但都是审计行的扁平字段，包成结构体反而增加 6 个调用点的噪音；
+/// 与 `delete.rs::push_rejected` 的处理保持一致，显式 allow。
+#[allow(clippy::too_many_arguments)]
 fn write_audit(
     conn: &Connection,
     ts: i64,
@@ -271,10 +324,12 @@ fn write_audit(
     bytes: u64,
     result: &str,
     denial_or_err: &str,
+    already_gone: bool,
 ) {
     let detail = serde_json::json!({
         "item_id": item_id,
         "bytes_freed": bytes,
+        "already_gone": already_gone,
         "err": if result == "fail" { Some(denial_or_err) } else { None },
     })
     .to_string();

@@ -13,7 +13,7 @@ use std::path::Path;
 use engine::audit_log::{
     cleanup_stats, list_audit_log, AuditLogEntry, AuditLogFilter, CleanupStats,
 };
-use engine::execute::list_pending::{list_pending_items, PendingItem};
+use engine::execute::list_pending::{list_pending_page, PendingPage, DEFAULT_PAGE_SIZE};
 use engine::ipc::commands::dry_run::{handle_dry_run, DryRunReq, DryRunResp};
 use engine::ipc::envelope::Envelope;
 use engine::ipc::error_codes::{INTERNAL, RULE_CHECKSUM_MISMATCH, RULE_NETWORK_ERROR};
@@ -145,11 +145,15 @@ pub async fn cleanup_execute(
         &item_ids,
         &conn,
         &external_deny,
-        |_item_id| -> Box<dyn engine::execute::delete::Deleter + '_> {
+        // task-052 G3：把本次 cleanup_task.id 传下去，SafeBoxDeleter 才能写
+        // safe_box.source_task_id（原写死 None → 该列恒 NULL，前端 Session 下拉/来源列全空）。
+        // task_id < 0 表示 cleanup_task 插入失败，此时仍落 NULL，不写脏值。
+        |_item_id, task_id| -> Box<dyn engine::execute::delete::Deleter + '_> {
+            let source = if task_id >= 0 { Some(task_id) } else { None };
             Box::new(engine::execute::safe_box::SafeBoxDeleter::new(
                 &paths.box_dir,
                 &conn,
-                None,
+                source,
             ))
         },
     );
@@ -223,11 +227,13 @@ pub async fn cleanup_retry_locked(
         &item_ids,
         &conn,
         &external_deny,
-        |_item_id| -> Box<dyn engine::execute::delete::Deleter + '_> {
+        // task-052 G3：与 cleanup_execute 保持一致，把本次 cleanup_task.id 传给 deleter。
+        |_item_id, task_id| -> Box<dyn engine::execute::delete::Deleter + '_> {
+            let source = if task_id >= 0 { Some(task_id) } else { None };
             Box::new(engine::execute::safe_box::SafeBoxDeleter::new(
                 &paths.box_dir,
                 &conn,
-                None,
+                source,
             ))
         },
     );
@@ -570,14 +576,18 @@ pub async fn audit_log_stats(
     }
 }
 
-/// `cleanup.listPending`：列出 cleanup_item 表中所有待清理项（size 倒序）。
+/// `cleanup.listPending`：分页列出 cleanup_item 表中所有待清理项（size 倒序）。
+///
+/// task-052 G2：入参由 `limit/offset` 改为 `page/page_size`，返回
+/// `PendingPage { items, total, page, pageSize }`。原前端硬编码 `limit: 100`
+/// 导致第 101 条之后的条目在 UI 上不可见（走查 G2 缺陷）。
 #[tauri::command]
 pub async fn cleanup_list_pending(
     session_id: Option<i64>,
-    limit: Option<i64>,
-    offset: Option<i64>,
+    page: Option<u32>,
+    page_size: Option<u32>,
     paths: tauri::State<'_, AppPaths>,
-) -> Result<Envelope<Vec<PendingItem>>, String> {
+) -> Result<Envelope<PendingPage>, String> {
     let conn = match engine::db::conn::open(&paths.data_root) {
         Ok(c) => c,
         Err(e) => {
@@ -585,7 +595,12 @@ pub async fn cleanup_list_pending(
             return Ok(Envelope::err(INTERNAL));
         }
     };
-    match list_pending_items(&conn, session_id, limit.unwrap_or(100), offset.unwrap_or(0)) {
+    match list_pending_page(
+        &conn,
+        session_id,
+        page.unwrap_or(1),
+        page_size.unwrap_or(DEFAULT_PAGE_SIZE),
+    ) {
         Ok(v) => Ok(Envelope::ok(v)),
         Err(e) => {
             eprintln!("[cleanup_list_pending] list: {e}");
