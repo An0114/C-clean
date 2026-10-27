@@ -457,7 +457,7 @@ M2 updater 已关闭（task-048）；**task-049 / 050 / 051 / 052 均已评审�
 7. **⑦ v0.1.6 发版后**：由**用户**执行 `docs/release/v0.1.6-upgrade-verification.md`（装 v0.1.5 → 检查更新 → 装 v0.1.6 → 重启 → 确认版本 → 功能回归）；由**测试 Agent**跑 `docs/test-reports/gui-walkthrough-round3-checklist.md`（NSIS/MSI 各一遍）。两者全绿后进入 **M3**（banner 下载进度反馈 / 差量更新）。`RmRestart`（关闭后自动重启被关进程）仍待产品侧拍板。
 
 ## 当前负责人 Agent
-**测试 Agent（提示词 9）**——`feature/task-054-release-prep-v016` 开发轮已完成、状态 `testing`，待测试轮：独立重跑全部门禁 + 开 PR 触发 CI + 按 `docs/test-reports/gui-walkthrough-round3-checklist.md` 跑 NSIS/MSI 双列 27 条。**发版动作（`workflow_dispatch` version=0.1.6）由用户手动执行**，发布后由用户按 `docs/release/v0.1.6-upgrade-verification.md` 跑升级闭环。上一手：DevFullstackRustReact（task-054 开发）。再上一手：Review Lead（task-053 评审通过并合并 `351704f`）。
+**评审 Agent（提示词 10）**——`feature/task-054-release-prep-v016`（@`3315fc8`）测试轮通过、状态 `awaiting_review`，报告 `docs/test-reports/054-test-report.md`：L1/L2 全绿零回归、L4 MSI 负载/资源布局/数据隔离通过，0 缺陷。待办：① 提示词 B 建 draft PR 触发 Windows CI 五道闸轮询；② 评审 Agent 复审判定是否合 main。发版动作（`workflow_dispatch` version=0.1.6）与升级闭环手册仍由用户手动执行。上一手：测试 Agent（task-054 测试轮）。再上一手：DevFullstackRustReact（task-054 开发）。
 
 ## Git 提交记录
 | Commit | 任务 | 说明 |
@@ -924,3 +924,4 @@ M2 updater 已关闭（task-048）；**task-049 / 050 / 051 / 052 均已评审�
 - 2026-10-27  task-053  进度条尾部冲刷（G7）+ 历史来源文案（G8）：`ProgressEmitter::emit_force` 逃生口（`ThrottledEmitter` 转发 + 重置窗口、`Box<dyn>` 透传）、编排层收尾强制发送、前端「收到 100 立刻退订 / 200ms 兜底」+ resolve 后置满；新增**走真实 `ThrottledEmitter`** 的尾部回归 5 条并做反向验证（改回 `emit` 即红，停在 80，与真机一致）；保险箱 NULL 来源改「历史（无来源）」+ 筛选框说明。门禁 check/clippy/fmt 0、cargo test 250+8、vitest 54、build 181.51 kB。**开发轮按新流程不跑 CI、不做真机/安装态冒烟**，状态 `testing` 移交测试 Agent
 
 - 2026-10-27  task-054  v0.1.6 发版准备（release 溯源 + 版本号 + CHANGELOG + 复验清单 + 升级手册）：`release.yml` 补 `target_commitish: ${{ github.sha }}`；版本号 `0.1.0` → `0.1.6`（四处 + `Cargo.lock`），`tauri build` 产出 `C-DiskCleaner_0.1.6_x64-setup.exe`（4.01 MiB）+ `.msi`（5.83 MiB）+ 成对 `.sig`；新建 `CHANGELOG.md`（v0.1.6 三段，自本版启用不回溯）、第三轮走查清单（27 条 NSIS/MSI 双列，含 Console 口径「排除 G6 后零红」）、升级闭环手册（6 步 + 卡点速查）；`.gitignore` 加 `!docs/release/` 修误伤。门禁 check/clippy/fmt 0、cargo test 250+8、vitest 54、build 181.51 kB。**开发轮不跑 CI、不做安装态冒烟**，发版由用户手动 workflow_dispatch，NSIS/MSI 双跑移交测试 Agent
+- 2026-10-27  task-054  **测试轮通过**（`docs/test-reports/054-test-report.md`，分支 @`3315fc8`）：独立重跑 fmt/check/clippy/test（exit 0，250 passed + 8 ignored 零回归）/ lint 0 error / vitest 54（7 files）/ build 181.51 kB；契约核验版本号四处 `0.1.6`、`release.yml:148` `target_commitish: ${{ github.sha }}`、三份交付物齐全；L4 MSI `/a` 管理映像抽取 exit 0（exe 16.3 MB + rules 2 文件 + 5 个 scan ps1、无 `_up_`），从抽取目录直启 exe 安装目录 NO_DIFF、DB 落 `%APPDATA%`；**0 缺陷、未开 bugfix 子分支**。第三档登记：NSIS 真实安装因 UAC 被用户取消未执行、GUI 27 条点击仍被 WebView2 渲染不 paint 阻塞（历史已知项）、CI 五道闸待提示词 B 建 draft PR 轮询。状态置 `awaiting_review`，移交评审 Agent
