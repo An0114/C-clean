@@ -137,7 +137,12 @@ fn emit_force_bypasses_throttle_window() {
     // force 不受窗口约束。
     throttled.emit_force(&progress(100));
 
-    let got: Vec<u8> = throttled.inner().snapshot().iter().map(|e| e.percent).collect();
+    let got: Vec<u8> = throttled
+        .inner()
+        .snapshot()
+        .iter()
+        .map(|e| e.percent)
+        .collect();
     assert_eq!(
         got,
         vec![10, 100],
@@ -156,7 +161,12 @@ fn emit_force_resets_throttle_window() {
     // 若窗口没被重置，这条会因为「距上次普通 emit 很久」而立刻发出。
     throttled.emit(&progress(99));
 
-    let got: Vec<u8> = throttled.inner().snapshot().iter().map(|e| e.percent).collect();
+    let got: Vec<u8> = throttled
+        .inner()
+        .snapshot()
+        .iter()
+        .map(|e| e.percent)
+        .collect();
     assert_eq!(got, vec![100], "force 后窗口未重置，实际 {got:?}");
 }
 
@@ -204,6 +214,11 @@ fn throttled_emit_still_drops_within_window() {
     }
 
     let got = throttled.inner().snapshot();
-    assert_eq!(got.len(), 1, "20 条同窗口事件只应放过第 1 条，实际 {}", got.len());
+    assert_eq!(
+        got.len(),
+        1,
+        "20 条同窗口事件只应放过第 1 条，实际 {}",
+        got.len()
+    );
     assert_eq!(got[0].percent, 0);
 }
