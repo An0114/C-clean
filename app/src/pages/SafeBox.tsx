@@ -1,6 +1,7 @@
 // task-030：保险箱 UI——safe_box_list 表格 + 单条「恢复」按钮。
 // task-045/046：分页 + 单 session 过滤。
 // task-051：时间预设筛选 / 多选 session / 「来源」列 / 行内审计历史展开。
+// task-053 G8：来源列 NULL 渲染为「历史（无来源）」淡灰文案 + 筛选框旁说明。
 //
 // 与任务书偏差（按 engine 真实 shape 对齐）：
 // - list 响应是 { items, total, page, pageSize, totalBytes }（task-045 起）；
@@ -484,6 +485,10 @@ export default function SafeBox() {
             ? "（未选 = 全部 session）"
             : `已选 ${sessionIds.length} 个 session`}
         </span>
+        {/* task-053 G8：把「筛不到老条目」这件事说清楚，避免被当成修复失效。 */}
+        <span style={{ fontSize: 11, color: "#9ca3af", paddingTop: 6 }}>
+          早于 v0.1.6 的条目无来源信息
+        </span>
       </div>
 
       {result && (
@@ -533,7 +538,7 @@ export default function SafeBox() {
               <th style={thStyle}>原路径</th>
               <th style={{ ...thStyle, width: 100 }}>大小</th>
               <th style={{ ...thStyle, width: 160 }}>移入时间</th>
-              <th style={{ ...thStyle, width: 90 }}>来源</th>
+              <th style={{ ...thStyle, width: 120 }}>来源</th>
               <th style={{ ...thStyle, width: 190 }}>操作</th>
             </tr>
           </thead>
@@ -555,7 +560,19 @@ export default function SafeBox() {
                   <td style={tdStyle}>{formatBytes(r.sizeBytes)}</td>
                   <td style={tdStyle}>{formatTs(r.quarantinedAt)}</td>
                   <td style={tdStyle}>
-                    {r.sourceTaskId == null ? "—" : `#${r.sourceTaskId}`}
+                    {/* task-053 G8：source_task_id 一旦写成 NULL 就无法回填（信息当时即丢失），
+                        task-052 之前入箱的条目会永远没有来源。原先渲染成「—」与「真的没有值」
+                        无从分辨，用户会误判成「修了还是全 —」。改为显式文案 + 淡灰。 */}
+                    {r.sourceTaskId == null ? (
+                      <span
+                        style={{ color: "#9ca3af", fontSize: 12 }}
+                        title="该条目入箱时间早于来源功能上线（v0.1.6），当时未记录来源批次，无法追溯"
+                      >
+                        历史（无来源）
+                      </span>
+                    ) : (
+                      `#${r.sourceTaskId}`
+                    )}
                   </td>
                   <td style={tdStyle}>
                     <div style={{ display: "flex", gap: 6 }}>

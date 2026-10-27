@@ -128,13 +128,21 @@ describe("首屏加载（D16/D21）", () => {
     expect(mockedInvoke.mock.calls.some(([c]) => c === "safe_box_list_sessions")).toBe(true);
   });
 
-  it("表格渲染「来源」列：#N 与 — 两种形态", async () => {
+  it("表格渲染「来源」列：#N 与「历史（无来源）」两种形态", async () => {
     await renderLoaded();
 
     expect(screen.getByText("来源")).toBeInTheDocument();
     expect(screen.getByText("#7")).toBeInTheDocument();
-    // sourceTaskId=null 的行显示破折号。
-    expect(screen.getAllByText("—").length).toBeGreaterThanOrEqual(1);
+    // task-053 G8：sourceTaskId=null 不再显示破折号，改为显式文案（可被 Session 筛选区分）。
+    expect(screen.getByText("历史（无来源）")).toBeInTheDocument();
+    // 破折号不应再出现在来源列（历史展开行的详情列才用 —）。
+    expect(screen.queryByText("—")).not.toBeInTheDocument();
+  });
+
+  it("筛选框旁有「早于 v0.1.6」说明文案（G8）", async () => {
+    await renderLoaded();
+
+    expect(screen.getByText("早于 v0.1.6 的条目无来源信息")).toBeInTheDocument();
   });
 });
 
