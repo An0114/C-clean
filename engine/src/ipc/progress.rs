@@ -2,6 +2,11 @@
 //!
 //! 本任务只定义 trait、payload 与节流逻辑；真实 Tauri AppHandle emit
 //! 实现留到后续任务注入。
+//!
+//! task-053 G7：`ThrottledEmitter` 是**丢弃式**节流（窗口内事件直接丢、无
+//! trailing 补偿）。丢弃对高频中间进度无害，但对「丢了就语义错误」的收尾
+//! 事件是致命的——扫描最后一条 `percent = 100` 常与上一条 item 事件同毫秒
+//! 级，必被吞。故 trait 增加 [`ProgressEmitter::emit_force`] 作为逃生口。
 
 use std::sync::Mutex;
 use std::time::Instant;
@@ -26,7 +31,19 @@ pub struct ScanProgress {
 /// 进度发送器抽象：真实实现用 Tauri AppHandle emit，测试用内存实现。
 pub trait ProgressEmitter: Send + Sync + 'static {
     /// 发送一条进度（实现方必须非阻塞、不 panic）。
+    ///
+    /// 允许被节流/去抖实现丢弃——常规高频进度走这里。
     fn emit(&self, payload: &ScanProgress);
+
+    /// 强制发送一条进度：**必须真正到达订阅方**，不允许被节流/去抖丢弃。
+    ///
+    /// 用于收尾这类「丢了就语义错误」的事件（task-053 G7：扫描结束的
+    /// `percent = 100` 一旦被 100ms 节流吞掉，进度条就永远差一截）。
+    ///
+    /// 默认实现直接转发给 [`emit`](Self::emit)——本身不节流的实现无需覆写。
+    fn emit_force(&self, payload: &ScanProgress) {
+        self.emit(payload);
+    }
 }
 
 /// 吞掉所有 emit 的空实现（默认）。
@@ -59,9 +76,16 @@ impl ProgressEmitter for VecEmitter {
 }
 
 /// trait 对象透传实现（让 `Box<dyn ProgressEmitter>` 也能当 emitter 用）。
+///
+/// `emit_force` 必须一并透传：漏掉就会退化成默认实现 → 调 `emit` → 被内层
+/// `ThrottledEmitter` 节流吞掉，等于白加了这个方法（task-053 G7.1 回归点）。
 impl ProgressEmitter for Box<dyn ProgressEmitter> {
     fn emit(&self, payload: &ScanProgress) {
         self.as_ref().emit(payload);
+    }
+
+    fn emit_force(&self, payload: &ScanProgress) {
+        self.as_ref().emit_force(payload);
     }
 }
 
@@ -116,5 +140,18 @@ impl<E: ProgressEmitter> ProgressEmitter for ThrottledEmitter<E> {
             }
             self.inner.emit(payload);
         }
+    }
+
+    /// task-053 G7.1：绕过节流直接转发，并把窗口起点重置为「此刻」。
+    ///
+    /// 重置窗口是为了**保住节流上限**：若不重置，紧随 force 之后的普通 emit
+    /// 会因为「距上次普通 emit 已超 100ms」而立刻再发一条，导致 100ms 窗口内
+    /// 出现两次推送。重置后 force 事件本身充当本窗口的唯一次推送。
+    fn emit_force(&self, payload: &ScanProgress) {
+        // 先落时间戳再发送：`if let` 块结束即释放锁，inner.emit 不持锁。
+        if let Ok(mut guard) = self.last.lock() {
+            *guard = Some(Instant::now());
+        }
+        self.inner.emit(payload);
     }
 }
