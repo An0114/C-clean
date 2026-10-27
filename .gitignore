@@ -46,6 +46,9 @@ src-tauri/target/
 src-tauri/gen/
 src-tauri/icons/*.bak
 release/
+# task-054：上面的 `release/` 会连文档目录 docs/release/ 一起忽略（发版手册要入库），
+# 这里负向重新包含该目录；注意必须放在 `release/` 之后才能生效。
+!docs/release/
 bundles/
 *.msi
 *.exe
