@@ -335,6 +335,18 @@
   - **与任务书不符 2 项**：① 白名单写 `engine/src/scan/runner.rs`，但 `ThrottledEmitter` 实际在 `engine/src/ipc/progress.rs`（任务书 §G7.1 自己写「具体实现文件由 DevAgent 定位」），已改该文件；② 白名单漏 `app/src/pages/SafeBox.test.tsx`（改文案后原「来源列显示 —」用例必红），已同步。
   - **按新流程**：开发轮**不跑 CI、不做真机 GUI 走查、不做安装态冒烟**，全部移交测试 Agent。任务书要求的「连扫 3 次停在 100%」真机证据由测试 Agent 在测试轮产出。
 
+2026-10-27：**task-054 开发完成（v0.1.6 发版准备），状态 `testing`**（`feature/task-054-release-prep-v016`）：
+  - **① `release.yml` 补 `target_commitish: ${{ github.sha }}`**（`softprops/action-gh-release` 步骤）。不指定时 GitHub 按默认分支 HEAD 建 tag，若 `workflow_dispatch` 之后 main 又进新 commit，tag 会指向一个**从未构建过**的 commit——源码与产物对不上，updater 溯源和事后排查都失去依据。
+  - **② 版本号 `0.1.0` → `0.1.6`**：`package.json`、`app/package.json`、`app/src-tauri/tauri.conf.json`、`app/src-tauri/Cargo.toml` 四处一致，`Cargo.lock` 由 `cargo check` 自动更新（`cdisk-cleaner` 条目 0.1.0 → 0.1.6）。`tauri build` 实测产出 `C-DiskCleaner_0.1.6_x64-setup.exe`（4.01 MiB）+ `C-DiskCleaner_0.1.6_x64_en-US.msi`（5.83 MiB）+ **成对 `.sig`**（注入 `TAURI_SIGNING_PRIVATE_KEY` 后）。**注意：CI 发版时仍会按 `workflow_dispatch` 输入的 version 覆盖 `tauri.conf.json`（`scripts/release-lib.mjs patch-conf`），仓库基线版本只是本地构建的默认值，两者不冲突。**
+  - **③ 新建 `CHANGELOG.md`**（Keep a Changelog 格式）：v0.1.6 条目分「新增 6 项 / 修复 9 项 / 已知问题 4 项」。**比任务书多补了两条真实变更**——task-049/049b 的「占用进程可处置」（RmShutdown + 映像名护栏 + 一键重试）与 task-050 的「安装版取不到内置规则库」（资源路径错位），二者都是 v0.1.5 之后合入、用户可感知的。文件头注明「自 v0.1.6 起启用，更早版本未回溯」。
+  - **④ 新建 `docs/test-reports/gui-walkthrough-round3-checklist.md`**：**27 条**，A~J 十组（安装与启动 / 扫描进度 / 列表分页 / 保险箱来源 / 仪表盘轮次 / 已不存在语义 / 占用关闭 / 自动更新 / Console / 卸载），每条带「NSIS 结果 / MSI 结果 / 证据」三列。门禁口径写在第一节：**「排除 G6 已知项（2 error + 4 warning）后零红错」**，并写明「数据为空 ≠ 功能失效」「必须造数据再验」。末节列出与前两轮的 7 项差异，其中专门标注「G3 只看 `safe_box.source_task_id`，不拿 Items 页 `cleanup_item.session_id` 互证」——这是二轮报告踩过的错。
+  - **⑤ 新建 `docs/release/v0.1.6-upgrade-verification.md`**：前置 5 条 + 6 步（装 v0.1.5 → 确认 banner → 下载安装 → 重启确认版本 → 功能回归 R1–R6 → 回写结果）+ 卡点速查表。**明确标注「本手册由用户在发版后手动执行，DevAgent/测试 Agent 不执行」**。
+  - **⑥ `.gitignore` 修一处误伤**：`release/` 规则本意是 Tauri 构建产物，但会把 `docs/release/` 一起忽略（`git add` 直接报 ignored）。加 `!docs/release/` 负向包含，放在 `release/` 之后才生效；`git check-ignore` 已验证不再命中。
+  - **门禁**：`cargo check --workspace --all-targets` 0 / `cargo clippy --workspace --all-targets -- -D warnings` 0 / `cargo fmt --all -- --check` 0 / **`cargo test --workspace` 250 passed + 0 failed + 8 ignored**（与 task-053 基线一致，本任务不改业务代码）/ `pnpm --filter app lint` 0 error（2 条既有 `react-refresh` warning）/ **vitest 54 passed（7 files）** / `pnpm --filter app build` **181.51 kB │ gzip 58.01 kB** / **`tauri build` exit 0**（两个 bundle + 两个 `.sig`）。
+  - **环境坑（本轮新发现，已记入 memory）**：`pnpm test` 连续多次报 `EPERM: operation not permitted, open 'C:\Users\An\AppData\Local\Temp\...\web\...'`，栈里出现 `node-brokered-fs-shim.cjs`（沙箱 fs 代理）→ 是**沙箱拦系统 Temp 写入**，非代码问题。修法：把 `TMPDIR/TEMP/TMP` 指到工作区内（`target/vitest-tmp`）后 7 files / 54 passed 全绿。另注意 `cargo test --workspace` 后台跑时并行跑 vitest 会加剧该现象。
+  - **与任务书不符 4 项**：① 白名单路径写 `src-tauri/*`，实际在 `app/src-tauri/*`（workspace 布局），`Cargo.lock` 在仓库根；② 白名单未含 `.gitignore`（不改则新手册无法入库）；③ 任务书假设「`pnpm --filter app build` 产物文件名含 0.1.6」——vite build 产物是 `index-*.js`，不含版本号，改用 `tauri build` 验证安装包名；④ 任务书要求「重启后『关于』页显示 v0.1.6」，但**本应用没有「关于」页**（设置页也不显示当前版本），手册改用三条等效验证（已安装应用列表版本 / exe 文件属性产品版本 / 安装目录对比），命中两条即通过。
+  - **按新流程**：开发轮**不跑 CI、不做真机/安装态冒烟**。NSIS/MSI 双跑由测试 Agent 按第三轮清单执行，发版由用户手动 `workflow_dispatch`。
+
 ## 已完成事项
 - [x] 项目立项与仓库初始化（commit 67990f5 / 4972f9d）
 - [x] 固化立项阶段 8 项关键决策：Tauri 无 Plan B / Cargo.lock 入库 / 保险箱 5GB FIFO / 规则库 GitHub Raw+SHA-256 / 不买 EV 签名 / 仅 Windows / 按业务模块 A~F 切分 / PROJECT_STATE 由 M0 当天首写（commit c0bdf05）
@@ -393,6 +405,8 @@
 
 - [x] 053：进度条尾部冲刷 + 保险箱历史来源文案——**G7**（唯一发版阻塞）三处修复：① `ProgressEmitter` 新增 `emit_force`（默认转发 `emit`，`ThrottledEmitter` 覆写为绕过节流并重置窗口，`Box<dyn>` 一并透传防退化）；② `ScanOrchestrator` 收尾 `percent=100` 改走 `emit_force`；③ 前端 `Dashboard.tsx` 收到 100 立刻退订 / 200ms 兜底退订 + resolve 后主动置满进度条；**关键回归** `engine/tests/scan_progress_throttled_tail.rs` 5 条（走真实 `ThrottledEmitter`，断言最后到达 100 且事件数被压低）。**G8** `SafeBox.tsx` 来源列 NULL 渲染「历史（无来源）」淡灰文案 + 筛选框旁「早于 v0.1.6 的条目无来源信息」（`bugfix/task-053-progress-tail-flush`；**开发轮完成，状态 `testing`**；门禁 check/clippy/fmt 0、`cargo test --workspace` 250 passed + 8 ignored、vitest 54、build 181.51 kB；**按新流程开发轮不跑 CI、不做真机/安装态冒烟，移交测试 Agent**）
 
+- [x] 054：v0.1.6 发版准备——**①** `release.yml` 的 `softprops/action-gh-release` 步骤补 `target_commitish: ${{ github.sha }}`（tag 精确指向触发发版的 commit，不再默认指向 main HEAD）；**②** 版本号 `0.1.0` → `0.1.6`（`package.json` / `app/package.json` / `app/src-tauri/tauri.conf.json` / `app/src-tauri/Cargo.toml` 四处 + `Cargo.lock` 自动更新），`tauri build` 产出 `C-DiskCleaner_0.1.6_x64-setup.exe`（4.01 MiB）+ `.msi`（5.83 MiB）+ 成对 `.sig`；**③** 新建 `CHANGELOG.md`（Keep a Changelog 格式，v0.1.6 的「新增/修复/已知问题」三段，自本版起启用不回溯）；**④** 新建 `docs/test-reports/gui-walkthrough-round3-checklist.md`（27 条，NSIS/MSI 双列，含 G1/G2/G3/G4/G5/G7/G8 + 占用关闭 + updater + Console 口径 + 卸载）；**⑤** 新建 `docs/release/v0.1.6-upgrade-verification.md`（6 步升级闭环手册 + 卡点速查）；另修 `.gitignore` 的 `release/` 规则误伤 `docs/release/`（加 `!docs/release/` 负向包含）（`feature/task-054-release-prep-v016`；**开发轮完成，状态 `testing`**；门禁 check/clippy/fmt 0、`cargo test --workspace` 250 passed + 8 ignored、vitest 54、build 181.51 kB、`tauri build` exit 0；**发版动作（workflow_dispatch）由用户手动执行，不在本任务内**）
+
 > 注：040~047 的完成明细未回填本清单（历史遗漏），以「最近一次变更」段与 `tasks/040-*.md`~`tasks/047-*.md` 为准。
 > 编号顺延（2026-10-24）：原定 050 的「safe_box 增强」顺延为 **051**，050 让位给发版阻塞级的打包资源路径缺陷。
 
@@ -439,11 +453,11 @@ M2 updater 已关闭（task-048）；**task-049 / 050 / 051 / 052 均已评审�
    - **G7（P1）✅ 已修**：走 `emit_force()` 路线（非 trailing 补偿）——`ProgressEmitter::emit_force` + `ThrottledEmitter` 覆写（转发 + 重置窗口）+ `Box<dyn>` 透传；编排层收尾 `emit_force_progress(100, "done", …)`；前端「收到 100 立刻退订 / 200ms 兜底」+ resolve 后主动置满。**关键回归** `scan_progress_throttled_tail.rs` 5 条走真实 `ThrottledEmitter`，并做反向验证（改回 `emit` 即红，停在 80）。
    - **G8（P2）✅ 已修**：来源列 NULL →「历史（无来源）」淡灰 + 筛选框旁「早于 v0.1.6 的条目无来源信息」；不改 DB。
    - ~~**G3 复验**~~ **已完成（2026-10-27）**：用户新删除文件入箱实测——「来源」列显示 `#N`、Session 多选框出现 `session #N (M 条)` 并可筛选，**G3 关闭**。
-6. **⑥ 派发 task-054：第三轮复验走查（NSIS / MSI 各一遍）+ `release.yml` 补 `target_commitish` + v0.1.6 发版**：按同一份清单重跑，门禁口径「排除 G6 已知项后 Console 零红」或先修 G6；G7 验收口径为**连扫 3 次每次都停在 100%**；通过后 `release.yml` 补 `target_commitish: ${{ github.sha }}`（tag 溯源）并发 **v0.1.6**。
-7. **⑦ 更新体验**：banner「立即更新」的下载进度反馈 / 差量更新（M3+，非阻塞）。`RmRestart`（关闭后自动重启被关进程）仍待产品侧拍板。
+6. ~~**⑥ 派发 task-054：第三轮复验走查（NSIS / MSI 各一遍）+ `release.yml` 补 `target_commitish` + v0.1.6 发版**~~ **已完成开发（2026-10-27，状态 `testing`）**：`release.yml` 补 `target_commitish`、版本号升 `0.1.6`（四处 + lock）、`CHANGELOG.md`、第三轮走查清单（27 条 NSIS/MSI 双列）、升级闭环手册（6 步）。**发版动作待用户手动 `workflow_dispatch`（version 填 `0.1.6`）**，合并后由测试 Agent 接管 NSIS/MSI 双跑。
+7. **⑦ v0.1.6 发版后**：由**用户**执行 `docs/release/v0.1.6-upgrade-verification.md`（装 v0.1.5 → 检查更新 → 装 v0.1.6 → 重启 → 确认版本 → 功能回归）；由**测试 Agent**跑 `docs/test-reports/gui-walkthrough-round3-checklist.md`（NSIS/MSI 各一遍）。两者全绿后进入 **M3**（banner 下载进度反馈 / 差量更新）。`RmRestart`（关闭后自动重启被关进程）仍待产品侧拍板。
 
 ## 当前负责人 Agent
-**测试 Agent（提示词 9）**——`bugfix/task-053-progress-tail-flush` 开发轮已完成、状态 `testing`，待测试轮：独立重跑全部门禁 + 开 PR 触发 CI + 真机 GUI 走查（G7 连扫 3 次停在 100% / G8 老行新行对比）+ NSIS/MSI 安装态冒烟。上一手：DevFullstackRustReact（task-053 开发）。再上一手：DocsKeeper（task-053 派发 + 第二轮复验回填）。
+**测试 Agent（提示词 9）**——`feature/task-054-release-prep-v016` 开发轮已完成、状态 `testing`，待测试轮：独立重跑全部门禁 + 开 PR 触发 CI + 按 `docs/test-reports/gui-walkthrough-round3-checklist.md` 跑 NSIS/MSI 双列 27 条。**发版动作（`workflow_dispatch` version=0.1.6）由用户手动执行**，发布后由用户按 `docs/release/v0.1.6-upgrade-verification.md` 跑升级闭环。上一手：DevFullstackRustReact（task-054 开发）。再上一手：Review Lead（task-053 评审通过并合并 `351704f`）。
 
 ## Git 提交记录
 | Commit | 任务 | 说明 |
@@ -790,6 +804,13 @@ M2 updater 已关闭（task-048）；**task-049 / 050 / 051 / 052 均已评审�
 | aff506b | #task-053 | fix(frontend): Dashboard 收尾兜底置 100 + 延迟退订；SafeBox NULL 来源渲染「历史（无来源）」 |
 | c6d16b9 | #task-053 | test(frontend): SafeBox 来源列改断言「历史（无来源）」并补说明文案用例 |
 | （本次） | #task-053 | docs(state): 任务053完成，G7 进度条收尾 + G8 历史来源文案就绪 |
+| 35bc0a9 | #task-054 | ci(release): release.yml 补 target_commitish，tag 精确指向触发发版的 commit |
+| c807742 | #task-054 | chore(release): 版本号升级 v0.1.0 → v0.1.6（package.json / tauri.conf.json / Cargo.toml） |
+| b775ae8 | #task-054 | docs(changelog): 新增 CHANGELOG.md，v0.1.6 条目覆盖 task-050~053 主要变更 |
+| 718e643 | #task-054 | docs(test): 新增第三轮复验走查清单（NSIS/MSI 双列，27 条） |
+| f349be0 | #task-054 | chore(gitignore): 负向包含 docs/release/，发版手册可入库 |
+| 530ae8f | #task-054 | docs(release): 新增 v0.1.6 升级闭环验证手册（6 步 + 卡点速查） |
+| （本次） | #task-054 | docs(state): 任务054完成，v0.1.6 发版准备就绪，待用户手动 workflow_dispatch |
 
 ---
 变更轨迹：
@@ -901,3 +922,5 @@ M2 updater 已关闭（task-048）；**task-049 / 050 / 051 / 052 均已评审�
 - 2026-10-26  task-052  **测试通过 → 评审通过 → 合并 main**（`d92db1b`，CI PR #17 run 40311963933 全绿）：`cargo test --workspace` 245+8 / vitest 53 / build 180.85 kB；NSIS 4.01 MB + MSI 5.83 MB；CDP 真机 Dashboard 清理轮次 = 17（G4 修复前恒 0）、Items 分页栏存在、Console 0 红错。**G3 真机证据错位**（以 Items 页 `cleanup_item.session_id` 的 `#9010/#9009/#9008` 冒充 `safe_box.source_task_id`）；G1/G5 真机未验，报告自认
 - 2026-10-27  **第二轮真机复验 → 仍不通过**：**G7【P1，新】**扫描结束时进度条不满——`interpolate_percent` 渐近达不到 `to`，依赖的「槽位上界 + 收尾 100」两条边界事件被 `ThrottledEmitter` 丢弃式节流（`<100ms` 直接丢、无 trailing）吞掉，叠加前端 `scan_start` resolve 后立即 `unlisten`；集成测试用 `VecEmitter` 绕过节流器故未检出；**G3 ✅ 已实测通过**——首轮看到的「Session 空 / 来源列全 `—`」为历史数据（78 条移入时间全为 10-25，早于修复），用户新删除文件入箱后「来源」列正确显示 `#N`、Session 多选出现 `session #N (M 条)` 并可筛选，**G3 关闭**；**G8【P2，新】**历史行 `source_task_id` 永久 NULL → 永远 `—`、永远筛不到，建议渲染为「历史（无来源）」。唯一发版阻塞项 = G7，下一步 `bugfix/task-053-progress-tail-flush`
 - 2026-10-27  task-053  进度条尾部冲刷（G7）+ 历史来源文案（G8）：`ProgressEmitter::emit_force` 逃生口（`ThrottledEmitter` 转发 + 重置窗口、`Box<dyn>` 透传）、编排层收尾强制发送、前端「收到 100 立刻退订 / 200ms 兜底」+ resolve 后置满；新增**走真实 `ThrottledEmitter`** 的尾部回归 5 条并做反向验证（改回 `emit` 即红，停在 80，与真机一致）；保险箱 NULL 来源改「历史（无来源）」+ 筛选框说明。门禁 check/clippy/fmt 0、cargo test 250+8、vitest 54、build 181.51 kB。**开发轮按新流程不跑 CI、不做真机/安装态冒烟**，状态 `testing` 移交测试 Agent
+
+- 2026-10-27  task-054  v0.1.6 发版准备（release 溯源 + 版本号 + CHANGELOG + 复验清单 + 升级手册）：`release.yml` 补 `target_commitish: ${{ github.sha }}`；版本号 `0.1.0` → `0.1.6`（四处 + `Cargo.lock`），`tauri build` 产出 `C-DiskCleaner_0.1.6_x64-setup.exe`（4.01 MiB）+ `.msi`（5.83 MiB）+ 成对 `.sig`；新建 `CHANGELOG.md`（v0.1.6 三段，自本版启用不回溯）、第三轮走查清单（27 条 NSIS/MSI 双列，含 Console 口径「排除 G6 后零红」）、升级闭环手册（6 步 + 卡点速查）；`.gitignore` 加 `!docs/release/` 修误伤。门禁 check/clippy/fmt 0、cargo test 250+8、vitest 54、build 181.51 kB。**开发轮不跑 CI、不做安装态冒烟**，发版由用户手动 workflow_dispatch，NSIS/MSI 双跑移交测试 Agent
