@@ -1,6 +1,6 @@
 [package]
 name = "cdisk-cleaner"
-version = "0.1.0"
+version = "0.1.6"
 description = "C-Disk Cleaner Tauri 2 主进程壳"
 edition.workspace = true
 rust-version.workspace = true
