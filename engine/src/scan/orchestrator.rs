@@ -72,6 +72,11 @@ impl<'conn, 'emitter> ScanOrchestrator<'conn, 'emitter> {
     /// 自己那一槽内推进（槽内插值见 [`crate::scan::runner::interpolate_percent`]），
     /// 脚本跑完补一条「槽位上界」边界事件，全部结束后补一条 `percent = 100`。
     /// 这样任意时刻 `percent ∈ [0, 100]` 且单调不减。
+    ///
+    /// task-053 G7.2：收尾的 `percent = 100` 走 [`ProgressEmitter::emit_force`]
+    /// 强制发送。原因：它紧跟最后一条 item 事件（同毫秒级），走普通 `emit` 会被
+    /// `ThrottledEmitter` 的 100ms 丢弃式节流吞掉 → 进度条永远差一截（G7 现象）。
+    /// 槽位边界事件间隔以秒计，不会被吞，仍走普通 `emit` 以保住节流上限。
     pub fn run_all(&self, scripts_dir: &Path) -> Result<OrchestratorSummary, OrchestratorError> {
         let mut summary = OrchestratorSummary::default();
         let total = SCRIPTS.len();
@@ -109,13 +114,24 @@ impl<'conn, 'emitter> ScanOrchestrator<'conn, 'emitter> {
             return Err(OrchestratorError::AllScriptsFailed(total));
         }
         // 收尾：无论最后一个脚本是否成功，只要整体算成功就补一条 100%。
-        self.emit_progress(100, "done", summary.total_items as u64);
+        // 必须 force——普通 emit 会被节流吞（task-053 G7.2）。
+        self.emit_force_progress(100, "done", summary.total_items as u64);
         Ok(summary)
     }
 
-    /// 发一条编排层进度（脚本边界 / 收尾用）。
+    /// 发一条编排层进度（脚本边界用，允许被节流丢弃）。
     fn emit_progress(&self, percent: u8, label: &str, scanned_items: u64) {
         self.emitter.emit(&ScanProgress {
+            session_id: self.session_id,
+            percent,
+            current_path: label.to_string(),
+            scanned_items,
+        });
+    }
+
+    /// 发一条**不可被节流丢弃**的编排层进度（收尾用）。
+    fn emit_force_progress(&self, percent: u8, label: &str, scanned_items: u64) {
+        self.emitter.emit_force(&ScanProgress {
             session_id: self.session_id,
             percent,
             current_path: label.to_string(),
