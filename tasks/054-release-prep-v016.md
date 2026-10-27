@@ -10,7 +10,7 @@
 
 ## 状态字段
 
-pending
+testing
 
 ## 任务目标
 
@@ -209,3 +209,205 @@ DevAgent 交付物（后续执行结果）：
 4. 本任务文档本身**由 DocsKeeper 在派发时**单独提交一次：
    `docs(task): 新增任务054-v0.1.6 发版准备 (#task-054)`，
    该提交只含 `tasks/054-release-prep-v016.md` 一个文件，落在 `feature/task-054-release-prep-v016` 分支最前端。
+
+---
+
+## 实现备注
+
+> 执行日期：2026-10-27　分支：`feature/task-054-release-prep-v016`（基线 `02f45aa`，从 main `351704f` 拉出）
+
+### 1. 实际改动文件清单
+
+| 文件 | 类型 | 改动 |
+|---|---|---|
+| `.github/workflows/release.yml` | CI | `action-gh-release` 步骤加 `target_commitish: ${{ github.sha }}` + 6 行注释说明 |
+| `package.json` | 配置 | version `0.1.0` → `0.1.6`（monorepo 根） |
+| `app/package.json` | 配置 | version `0.1.0` → `0.1.6`（应用包） |
+| `app/src-tauri/tauri.conf.json` | 配置 | 顶层 version `0.1.0` → `0.1.6`（决定安装包文件名） |
+| `app/src-tauri/Cargo.toml` | 配置 | `[package] version` `0.1.0` → `0.1.6` |
+| `Cargo.lock` | 配置 | `cdisk-cleaner` 条目 version 自动更新为 `0.1.6`（`cargo check` 触发） |
+| `CHANGELOG.md` | 新建 | Keep a Changelog 格式，v0.1.6 三段 |
+| `docs/test-reports/gui-walkthrough-round3-checklist.md` | 新建 | 27 条，NSIS/MSI 双列 |
+| `docs/release/v0.1.6-upgrade-verification.md` | 新建 | 6 步升级闭环手册 + 卡点速查 |
+| `.gitignore` | 配置 | 加 `!docs/release/`（**白名单缺口，见 §9**） |
+| `docs/PROJECT_STATE.md` | 文档 | 7 处（见 §10） |
+
+### 2. `release.yml` 最终 diff
+
+```diff
+       # ===== 创建 Release 并上传所有产物 =====
+       # .msi / .exe / .sig / latest.json 全部上传，确保不漏。
++      #
++      # task-054：补 target_commitish —— tag 精确指向触发本次发版的 commit。
++      # 不指定时 GitHub 按默认分支（main）HEAD 建 tag，若 workflow_dispatch 之后
++      # main 又进了新 commit，tag 就会指向一个「从未构建过的 commit」，源码与产物
++      # 对不上（产物是从 github.sha 那次 checkout 构建的）。updater 的 tag 溯源
++      # 与事后排查都依赖这条对应关系。
+       - name: Create Release and upload all artifacts
+         uses: softprops/action-gh-release@v2
+         with:
+           name: v${{ env.RELEASE_VERSION }}
+           tag_name: v${{ env.RELEASE_VERSION }}
++          target_commitish: ${{ github.sha }}
+           generate_release_notes: true
+```
+
+加在**最后一个步骤**（创建 Release 那一步）的 `with:` 里，与 `tag_name` 相邻；参数名是 `target_commitish`（不是 `commitish`），与 `action-gh-release@v2` 的 input 名一致。**未改其它步骤**，构建流程零影响。
+
+> 说明：`github.sha` 是触发本次 workflow 的那个 commit。`push tag` 触发时它等于 tag 指向的 commit，`workflow_dispatch` 触发时等于被选中的 ref 的 HEAD——两种情况都正确。
+
+### 3. 版本号三处（实为四处）改动 diff
+
+```diff
+# package.json
+-  "version": "0.1.0",
++  "version": "0.1.6",
+
+# app/package.json
+-  "version": "0.1.0",
++  "version": "0.1.6",
+
+# app/src-tauri/tauri.conf.json
+-  "version": "0.1.0",
++  "version": "0.1.6",
+
+# app/src-tauri/Cargo.toml
+-version = "0.1.0"
++version = "0.1.6"
+
+# Cargo.lock（cargo check 自动更新，非手改）
+ name = "cdisk-cleaner"
+-version = "0.1.0"
++version = "0.1.6"
+```
+
+校验：
+
+```
+$ grep -rn '"version": "0.1.6"\|^version = "0.1.6"' package.json app/package.json app/src-tauri/tauri.conf.json app/src-tauri/Cargo.toml
+package.json:3:  "version": "0.1.6",
+app/package.json:4:  "version": "0.1.6",
+app/src-tauri/tauri.conf.json:4:  "version": "0.1.6",
+app/src-tauri/Cargo.toml:3:version = "0.1.6"
+```
+
+**与 CI 发版机制的关系（重要）**：`release.yml` 会在构建前用 `scripts/release-lib.mjs patch-conf` 按 `workflow_dispatch` 输入的 version **覆盖** `tauri.conf.json` 的顶层 version，构建后还有 `verify-artifacts` 硬校验安装包文件名。所以仓库里的 `0.1.6` 只是**本地构建的默认基线**，发版时以 workflow 输入为准，两者不冲突。**发版时 version 必须填 `0.1.6`**（与仓库基线一致，避免 tag 与本地产物对不上）。
+
+### 4. `tauri build` 实测产物
+
+```
+   Compiling cdisk-cleaner v0.1.6 (D:\GitHub\C-clean\app\src-tauri)
+    Finished `release` profile [optimized] target(s) in 1m 34s
+     Running makensis to produce ...\bundle\nsis\C-DiskCleaner_0.1.6_x64-setup.exe
+     Running light to produce ...\bundle\msi\C-DiskCleaner_0.1.6_x64_en-US.msi
+    Finished 2 bundles at:
+        ...\nsis\C-DiskCleaner_0.1.6_x64-setup.exe (4.01 MiB)
+        ...\msi\C-DiskCleaner_0.1.6_x64_en-US.msi (5.83 MiB)
+    Finished 2 updater signatures at:
+        ...\nsis\C-DiskCleaner_0.1.6_x64-setup.exe.sig
+        ...\msi\C-DiskCleaner_0.1.6_x64_en-US.msi.sig
+```
+
+安装包文件名含 `0.1.6`，且**成对产出 `.sig`**（注入 `TAURI_SIGNING_PRIVATE_KEY` 后；不注入则 `tauri build` 会因「public key found but no private key」非零退出）。
+
+### 5. CHANGELOG v0.1.6 条目摘要
+
+| 段 | 条数 | 内容 |
+|---|---|---|
+| 新增 | 6 | 保险箱多维筛选与来源追溯（051）、批量 purge/恢复（038/039）、dry-run 预览（040）、自动更新（035/036/042）、占用进程可处置（049/049b）、清理列表分页（052）、规则库回滚（044） |
+| 修复 | 9 | 扫描进度条（052+053）、小文件被截断（052）、来源列全空（052）、轮次恒 0（052）、释放 0 B（052）、历史来源文案（053）、安装版取不到规则库（050）、规则检查卡「检查中…」（041）、更新检查地址（041） |
+| 已知问题 | 4 | G6 设置页 IPC 红错、`RmShutdown` 连带同控制台进程、未代码签名、默认占位图标 |
+
+- 格式：Keep a Changelog + 语义化版本，`## [Unreleased]` 段留空（按要求不写未来计划）。
+- 文件头注明「**自 v0.1.6 起启用，更早版本未回溯**」——不为凑格式编造历史条目。
+- **比任务书多补 2 条**：`task-049/049b` 的占用进程可处置、`task-050` 的安装版取不到规则库。二者都在 v0.1.5 之后合入且用户可感知，漏写会让 CHANGELOG 失真。
+
+### 6. 第三轮走查清单条目数：**27 条**
+
+| 组 | 条数 | 覆盖 |
+|---|---|---|
+| A 安装与启动 | 4 | 干净目录安装 / 资源落位（含「无 `_up_`」）/ 数据目录隔离（安装目录 NO_DIFF）/ 窗口渲染 |
+| B 扫描进度 | 4 | **连扫 3 次停 100%**（G1+G7）/ 单调不倒退 / 计数与列表一致 / 全失败不报完成 |
+| C 列表分页 | 3 | **造 150+ 小文件验第 2 页**（G2）/ 小文件不被截断 / 翻页清空勾选 |
+| D 保险箱来源 | 4 | **新删文件写 `#N`**（G3）/ Session 下拉出现选项 / **历史行「历史（无来源）」**（G8）/ 筛选框说明文案 |
+| E 仪表盘轮次 | 1 | **连清 2 次显示 +2**（G4） |
+| F 已不存在语义 | 2 | **手动删文件后清理显示「M 项已不存在」**（G5）/ 释放量不含已不存在项 |
+| G 占用关闭 | 3 | 列出占用进程 / **confirm 含「同一控制台内的相关进程可能一并关闭」** / 受保护进程整批不关 |
+| H 自动更新 | 3 | 启动 banner（非阻塞）/ 设置页卡片一致 / 断网不弹红错 |
+| I Console | 2 | 五页走查（**排除 G6 后零红**）/ 扫描+清理链路零红 |
+| J 卸载 | 1 | 卸载后安装目录清除、`%APPDATA%` 保留 |
+
+每条带「NSIS 结果 / MSI 结果 / 证据」三列（初始为 ☐ 占位），汇总表 + 放行判定（两个安装包均「不通过=0 且 不适用=0」）+ 与前两轮差异表。
+
+### 7. 升级闭环手册步骤数：**6 步**（+ 前置 5 条 + 卡点速查 5 行）
+
+0. 前置 5 条（v0.1.6 已发布 / `latest.json` 版本与 URL 正确 / v0.1.5 包在 / 签名配对 / 干净环境），并强调**顺序不能反：先发 v0.1.6 再装 v0.1.5**
+1. 干净目录安装 v0.1.5（含 MSI per-user 备选命令 + 记录安装目录基线）
+2. 启动 → 等 banner「发现新版本 v0.1.6」→ 点「稍后」验证非阻塞 → 设置页卡片一致
+3. 点「立即更新」→ 下载（**注明 v0.1.6 无下载进度条属预期**）→ 安装
+4. 重启确认版本（**见 §9 偏差 4**：改用三条等效验证）
+5. 功能回归 R1–R6（进度条满格 / 分页 / 清理结果 / 保险箱来源 / 轮次 / 设置页）
+6. 回写结果表模板 + 「失败不要重装蒙过去」的排查指引
+
+手册开头明确写「**执行者：用户本人，在 v0.1.6 正式发布之后手动执行。DevAgent / 测试 Agent 不执行本手册**」。
+
+### 8. 门禁输出
+
+```
+cargo check --workspace --all-targets                     → 0
+cargo clippy --workspace --all-targets -- -D warnings     → 0
+cargo fmt --all -- --check                                → 0
+cargo test --workspace   → passed=250  failed=0  ignored=8
+pnpm --filter app lint   → 0 error（2 条既有 react-refresh warning）
+pnpm --filter app test   → 7 files / 54 passed
+pnpm --filter app build  → 181.51 kB │ gzip 58.01 kB
+tauri build              → exit 0（NSIS 4.01 MiB + MSI 5.83 MiB + 2 个 .sig）
+```
+
+- `250+8` 与 task-053 完全一致——本任务不改业务代码，**零回归**符合预期。
+- **环境坑（本轮新发现）**：`pnpm test` 连续多次报
+
+  ```
+  Error: EPERM: operation not permitted, open 'C:\Users\An\AppData\Local\Temp\xxxx\web\40b9f1f3...'
+   ❯ wrappedPromisesWriteFile .../cli/vendor/shim/node-brokered-fs-shim.cjs:701:20
+  ```
+
+  栈里是 **`node-brokered-fs-shim.cjs`（沙箱 fs 代理）**，即沙箱拦了写系统 Temp，**不是代码问题**。三次重跑分别只跑到 6/5/3 个文件。修法：把 `TMPDIR`/`TEMP`/`TMP` 指到工作区内再跑：
+
+  ```bash
+  mkdir -p target/vitest-tmp
+  TMPDIR="D:/GitHub/C-clean/target/vitest-tmp" TEMP="...\target\vitest-tmp" TMP="...\target\vitest-tmp" \
+    pnpm --filter app test      # → 7 files / 54 passed
+  ```
+
+  另外**不要与 `cargo test --workspace` 并行跑 vitest**，IO 争抢会显著加剧该现象（实测并行时失败率更高）。
+
+### 9. 与任务书不符的偏差（4 项）
+
+1. **白名单路径层级错**：任务书写 `src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock`，实际项目是 pnpm + Cargo workspace，路径为 `app/src-tauri/tauri.conf.json`、`app/src-tauri/Cargo.toml`，而 `Cargo.lock` 在**仓库根**（workspace 单一 lock）。已按实际路径改。
+2. **白名单漏 `.gitignore`**：`release/` 规则（本意是 Tauri 构建产物）会把 `docs/release/` 一起忽略，`git add docs/release/v0.1.6-upgrade-verification.md` 直接报 `ignored by one of your .gitignore files`。不改则手册无法入库。已加负向规则 `!docs/release/`（必须放在 `release/` **之后**才生效，因为 Git 不允许在「父目录被排除」时重新包含其内部文件），并用 `git check-ignore` 验证不再命中。
+3. **验收 6 的验证方式不可行**：任务书说「`pnpm --filter app build` 成功，产物文件名含 `0.1.6`」——`pnpm --filter app build` 只是 `vite build`，产物是 `dist/index-<hash>.js`，**永远不含版本号**。改为 `tauri build` 验证安装包文件名（已实测含 `0.1.6`）。
+4. **任务书假设存在「关于」页**：实际应用只有 5 个 tab（仪表盘/清理/保险箱/历史/设置），**没有「关于」页**，设置页也只显示「远端可更新版本」而不显示当前版本。手册步骤 4 改用三条等效验证：① 设置 → 应用 → 已安装的应用里看版本；② 右键 `C-DiskCleaner.exe` → 属性 → 详细信息 → 产品版本；③ 与步骤 1 的安装目录基线对比。**任两条命中即通过**。若后续产品要加「关于」页，那是独立任务，不在本任务白名单内。
+
+### 10. `docs/PROJECT_STATE.md` 改动（7 处）
+
+1. 「待办事项」追加 `- [x] 054: …`；
+2. 「最近一次变更」追加 `2026-10-27：task-054 开发完成（v0.1.6 发版准备），状态 testing` 整段（6 个子项 + 门禁 + 环境坑 + 4 项偏差）；
+3. 「下一步计划」⑥ 划掉标完成、⑦ 改为「v0.1.6 发版后：用户跑升级手册 + 测试 Agent 跑第三轮清单，全绿进 M3」；
+4. 「当前负责人 Agent」改 **测试 Agent（提示词 9）**（并写明发版动作由用户手动）；
+5. 「Git 提交记录」加 7 行；
+6. 「变更轨迹」加 1 行；
+7. （隐含）待办/已知问题段与 task-053 的衔接保持一致，未回改历史结论。
+
+### 11. 遗留问题
+
+- **G6**（设置页首调 `ipc.localhost` 红错）**未修**——任务书标注为可选、不阻塞发版。本轮只把门禁口径写进清单第一节（「排除 G6 的 2 error + 4 warning 后零红」），并在 CHANGELOG「已知问题」段向用户披露。若要修，建议独立任务（涉及 Tauri 2.x `useCustomProtocol` 回退策略，改动面在 `invoke.ts`/`tauri.conf`，不在本任务白名单）。
+- **升级闭环未验证**：手册已就绪，但端到端（装 v0.1.5 → 更新到 v0.1.6）必须等 v0.1.6 真正发布后才能跑，且由用户手动执行。**这是 v0.1.6 发布后唯一的未闭环项**。
+- **`latest.json` 仍在仓库根入库**（历次发版产物），属既有 P3 观察项，本任务不动。
+- **CHANGELOG 历史版本未回溯**：v0.1.0~v0.1.5 无条目，已在文件头声明，不编造。
+
+### 三句话结论
+
+1. 五个单元全部落地：`release.yml` 溯源、版本号 `0.1.6`（四处 + lock）、`CHANGELOG.md`、27 条第三轮清单、6 步升级手册，外加一处 `.gitignore` 误伤修复。
+2. 门禁零回归（250+8 / 54 / build 181.51 kB），`tauri build` 实测产出 `C-DiskCleaner_0.1.6_*` 双包 + 成对 `.sig`；本轮新踩的 vitest `EPERM` 是沙箱拦系统 Temp，改 `TMPDIR` 到工作区内即解决。
+3. 任务书 4 处与项目实际不符（路径层级 / 漏 `.gitignore` / `pnpm build` 不含版本号 / 无「关于」页）已按实际修正并记录；**发版与升级闭环验证留给用户手动执行，NSIS/MSI 双跑移交测试 Agent**。
