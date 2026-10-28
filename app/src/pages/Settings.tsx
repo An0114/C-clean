@@ -10,6 +10,8 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "../utils/invoke";
 import { check as checkApp, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
+import { getVersion } from "@tauri-apps/api/app";
+import { classifyUpdateError } from "../utils/update";
 
 // task-042：后端返回 CheckUpdateResult（三态：upToDate / newVersion / offline）。
 type CheckStatus = "upToDate" | "newVersion" | "offline";
@@ -64,7 +66,17 @@ const monoStyle: React.CSSProperties = {
   color: "#6b7280",
 };
 
-export default function Settings() {
+/**
+ * task-055 单元 5：设置页可通知外层「手动检查发现了新版本」。
+ *
+ * 用途：banner 有「稍后提醒」持久化（忽略某版本），但用户**手动**点「检查应用更新」
+ * 时应该强制把 banner 显示出来——手动动作的意图就是「我想看到结果」。
+ */
+interface SettingsProps {
+  onUpdateFound?: (version: string) => void;
+}
+
+export default function Settings({ onUpdateFound }: SettingsProps) {
   const [phase, setPhase] = useState<Phase>("loading");
   const [info, setInfo] = useState<CheckUpdateResult | null>(null);
   const [msg, setMsg] = useState<string>("");
@@ -77,6 +89,19 @@ export default function Settings() {
   const [appUpdate, setAppUpdate] = useState<Update | null>(null);
   const [appPhase, setAppPhase] = useState<"idle" | "checking" | "downloading" | "error">("idle");
   const [appMsg, setAppMsg] = useState<string>("");
+  // task-055 单元 5：当前应用版本（用于「当前 vX / 发现 vY」文案）。
+  // 取不到（ACL 未放行 / 非 Tauri 环境）就留空，文案自动退化成不带「当前」。
+  const [appLocalVersion, setAppLocalVersion] = useState<string>("");
+
+  useEffect(() => {
+    (async () => {
+      try {
+        setAppLocalVersion(await getVersion());
+      } catch {
+        setAppLocalVersion("");
+      }
+    })();
+  }, []);
 
   // 启动时拉一次：拿当前版本 + 是否有更新。
   const check = useCallback(async (withToast = false) => {
@@ -160,39 +185,49 @@ export default function Settings() {
   }, [check, info]);
 
   // task-035：检查应用自更新（tauri updater）
+  //
+  // task-055 单元 5：结果文案带「当前版本」，失败走中文映射。
+  // 现状（task-035）已有「检查中…」+ disabled，本轮补的是文案与错误映射。
   const checkApplication = useCallback(async () => {
     setAppPhase("checking");
     setAppMsg("");
+    const current = appLocalVersion ? `当前 v${appLocalVersion}` : "当前版本";
     try {
       const update = await checkApp();
       if (!update) {
         setAppUpdate(null);
-        setAppMsg("已是最新版本");
+        setAppMsg(`${current}，已是最新版本`);
         setAppPhase("idle");
         return;
       }
       setAppUpdate(update);
-      setAppMsg(`发现新版本 ${update.version}`);
+      setAppMsg(`${current} / 发现 v${update.version}`);
       setAppPhase("idle");
+      // task-055 单元 4+5：手动检查到新版本 → 通知外层强制显示 banner
+      // （忽略过该版本的「稍后提醒」不再拦着）。
+      onUpdateFound?.(update.version);
     } catch (e) {
       setAppUpdate(null);
-      setAppMsg(String(e));
+      setAppMsg(classifyUpdateError(String(e)));
       setAppPhase("error");
     }
-  }, []);
+  }, [appLocalVersion, onUpdateFound]);
 
   // task-035：下载并安装应用更新
+  //
+  // task-055 单元 5：失败文案复用 classifyUpdateError（与 banner 同一套映射）。
+  // 这里的进度事件暂不展示（banner 侧已有完整进度条），故回调保留空实现。
   const downloadAndInstall = useCallback(async () => {
     if (!appUpdate) return;
     setAppPhase("downloading");
     try {
-      await appUpdate.downloadAndInstall((event) => {
-        // 进度事件：下载中（event 类型 Progress 含 downloaded/total）
-        void event;
+      await appUpdate.downloadAndInstall(() => {
+        // 事件回调签名见 plugin-updater：downloadAndInstall(onEvent?, options?)
+        // Settings 卡片只显示「下载安装中…」，详细进度在顶部 banner。
       });
       await relaunch();
     } catch (e) {
-      setAppMsg(String(e));
+      setAppMsg(classifyUpdateError(String(e)));
       setAppPhase("error");
     }
   }, [appUpdate]);

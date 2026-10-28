@@ -3,27 +3,21 @@
 > **特别声明**：本文件是项目唯一真实数据源，也是「每次任务结束必更新、必单独提交」的文件。后续所有 Agent 必须遵守：任何任务完成后都要先更新本文件，再单独提交一次（commit message 形如 `docs(state): ... (#task-00X)`），不得与业务代码混在同一个 commit。
 
 ## 当前目标
-**M2 updater 正式关闭（2026-10-23）**：task-048 真机升级验证通过——已装 v0.1.0 的机器启动应用，顶部 banner 正确弹出「发现新版本 v0.1.1」+ 设置页应用更新卡片同步显示「发现新版本 0.1.1 / 新版本 0.1.1」，updater 从 check → 展示 → 引导下载安装全链路真机闭环。叠加 bugfix/task-035-release-signing 的签名/版本号修复（真实发版 run `39942401586` 产出 `.sig` + `latest.json`，pubkey keyid 一致），M2 里程碑收官。
-
-下一阶段焦点：**task-049 评审轮 2 通过并已合并 main（2026-10-24，merge commit `60e0797`）**——占用进程从「只报告」升级为「可处置」正式落地：护栏按 **PID → 映像文件名**（`QueryFullProcessImageNameW`）判定，与系统语言无关、取不到即 fail-closed；mixed 占用整批不关；`cleanup_retry_locked` + Items 失败明细/一键关闭重试。评审轮 1 的三项否决/阻塞缺陷（本地化绕过 / `closed-refused` 语义失真 / B7 不稳定）全部闭环，评审报告 `docs/reviews/049-review.md`（不通过）与 `docs/reviews/049b-review.md`（通过）。**M1-D 遗留第一项清零**。遗留（已登记第三档，不阻塞合并）：GUI 真机点击/Console 证据仍缺（需活动桌面机器，放行发版前补做）、`RmShutdown` 会连带关闭同 console 兄弟进程、mixed 场景无解释文案、打包资源路径错位（预存在）。下一项：派发 **task-051**（safe_box 增强：时间范围筛选 / 多选 session / audit_log 联表——编号由原 050 顺延，050 已被打包资源路径修复占用）。**task-050 打包资源路径错位修复已评审通过并合并 main（2026-10-25，merge commit `cadb286`）**——`bundle.resources` 数组式改映射式，规则/脚本稳定落到 `<安装目录>/rules`、`/scripts`（`_up_` 消失）；`AppPaths` 收窄为 release 只认 `resource_dir()`、缺失 fail-fast 带绝对路径，消除「任意目录启动安装版可劫持资源」的本地路径劫持面；契约测试接 CI 防复发。评审报告 `docs/reviews/050-review.md`（通过）。**放行条件（未闭环，发版前硬门禁）**：E20 GUI「扫描 → 清理」因本机 WebView2 渲染进程崩溃未取得运行时证据，须在有活动桌面的机器补做后方可发版。品牌图标决策：暂时不做，沿用 Tauri 默认占位。
-
-**task-051 已评审通过并合并 main（2026-10-25，merge commit `e6ab561`）**——保险箱从「只能按单 session 分页看」升级为「时间区间 + 多 session 组合筛选 + 条目审计历史」，task-018 的 list 边界三项全部清零。评审报告 `docs/reviews/051-review.md`（通过）：16 提交全部规范原子、26 条验收全覆盖（25 条实测 + F25 按任务书预设路径降级）、动态 SQL 注入面逐条走查无风险、抽查复现 3 条（引擎 12 条 + 前端 12 条全绿）。**放行条件（未闭环）**：GUI 真机走查连续第 4 轮被本机 WebView2 崩溃阻塞，须与 task-050 的 E20 合并为同一次发版前真机走查（含 Console 零红）。
-
-**③ 关闭体验文案小改已合并 main（2026-10-25，merge commit `801af22`）**——`confirm` 补「同一控制台内的相关进程可能一并关闭」、mixed fail-closed 补「因存在受保护进程，本次未关闭任何进程」；`Items.test.tsx` 7/7 通过、`pnpm lint` 干净。**task-049 遗留观察项 #1/#2 清零**。
-
-**真机 GUI 走查已执行（2026-10-25，用户在有活动桌面的机器上手动走查，首次取得真实 GUI 点击与 Console 证据）——结论：门禁不通过**。报告 `docs/test-reports/gui-walkthrough-2026-10-25.md`。E20「扫描 → 清理」不返 `INTERNAL`、清理成功、历史落库、清理链路 Console 零红**均成立**；但新暴露 **P1 三项**：G1 扫描进度条 `percent` 恒 0（`scan/runner.rs:121` 硬编码，编排层从未换算）；G2 清理列表前端硬编码 `limit: 100` + 后端 `size_bytes DESC` 无分页，**小文件被截断**（「被锁文件没出现在列表」的真因，非扫描漏扫）；G3 保险箱 `source_task_id` 恒 NULL（`commands.rs:149/227` 传 `None`）→ Session 多选空白 + 来源列全 `—`，**task-051 一半能力真机失效**。另 **P2 两项**：G4 仪表盘「清理轮次」恒 0（`executor.rs:82` `session_id` 写死 NULL + `COUNT(DISTINCT)` 忽略 NULL）；G5「清理成功释放 0 B」（文件已被外部删除 → `bytes_before=0` + NotFound 幂等 `Ok`）。G6 设置页 `rules_check_update` 首调 `ipc.localhost` 红错为**已知问题真机复现，非回归**。**下一项：派发 task-052 修复 G1–G5 后复验，方可发版。**
-
-**task-052 开发完成（2026-10-25，`feature/task-052-gui-p1p2-fixes`，状态 `testing`）**——G1–G5 五项全部修复：扫描进度条脚本级百分比、清理列表分页 + 稳定排序、`safe_box.source_task_id` 真实接线、清理轮次口径改 `COUNT(*)`、deleter 区分「真删 / 已不存在」。门禁全绿（`cargo test --workspace` 245+8 / vitest 53 / build 180.85 kB），`tauri build` exit 0 出 NSIS + MSI（含 `.sig`）。**按新流程：开发轮不跑 CI、不做 GUI 走查，全部移交测试 Agent 在测试轮完成。**
-
-**task-052 已测试通过 → 评审通过 → 合并 main（2026-10-26，merge commit `d92db1b`，CI PR #17 run `40311963933` 全绿）**——测试报告 `docs/test-reports/052-test-report.md`、评审报告 `docs/reviews/task-052-gui-p1p2-fixes-review.md`。**但测试报告对 G3 的真机证据用错了字段**：L3 行以「Items 页表格 Session 列显示 `#9010/#9009/#9008`」证明 G3 通过——该列是 `cleanup_item.session_id`（**扫描会话号**），与 `safe_box.source_task_id`（**清理批次 id**）完全不同源，两者不可互证。因此 **G3 的真机 UI 端到端验证在测试轮实际未做**（后端写入路径有 `execute_writes_source_task_id` 5 条集成用例兜底，代码可信；UI 侧当时无有效证据）。**补充：2026-10-27 用户新删除文件入箱实测，G3 真机 UI 验证通过，修复本身有效**——证据错位是测试方法问题，不影响修复结论。G1/G2/G5 亦仅由集成测试覆盖，测试报告 §47 自认「G1 进度条真机渲染未验证」（G1 后经复验证明确实未闭环，见 G7）。
-
-**第二轮真机复验（2026-10-27，用户手动走查 + 补充验证）——发版门禁仍不通过（唯一阻塞项为 G7）**，报告追加 §六（`docs/test-reports/gui-walkthrough-2026-10-25.md`）：
-- **G7【P1，新】扫描结束时进度条不满 = G1 修复未闭环（真缺陷）**：`interpolate_percent` 是渐近函数（`n/(n+50)`，槽内永远达不到 `to`），必须靠编排层补发的「槽位上界」与「收尾 100」两条边界事件才满格；但这两条恰好紧跟最后一条 item 事件（同毫秒级），被 **`ThrottledEmitter` 的丢弃式节流**（`ipc/progress.rs:118-137`，`<100ms` 直接丢、无 trailing 补偿）吞掉；叠加前端 `Dashboard.tsx:105-110` 在 `scan_start` resolve 后立即 `unlisten()`。**测试为何漏检**：`scan_progress_percent` 注入的是 `VecEmitter`（不经过节流器），收尾 100 必然被记录 → 断言绿。**测试替身绕过了生产链路。**
-- **G3 ✅ 已真机实测通过（2026-10-27 补充验证）**：用户**新删除文件入箱后实测有效**——「来源」列正确显示 `#N`、Session 多选框出现 `session #N (M 条)` 并可筛选。此前一轮看到的「Session 空 / 来源列全 `—`」为**历史数据**所致（78 条移入时间全为 `2026/10/25 19:21:04` / `18:37:47`，早于 `dc606cd` 与 `d92db1b`，写于 `SafeBoxDeleter::new(..., None)` 时期，`source_task_id` 天然 NULL），非修复失败。**G3 判定：代码 + 真机 UI 双验证通过，关闭。**
-- **G8【P2，新】历史行永久不可追溯**：NULL 一旦写入就无法补回（信息当时即丢失），task-052 之前入箱的行（现存 78 条）会永远显示 `—`、永远无法被 Session 筛选命中，用户无法分辨「历史条目」与「修复没生效」（本轮首验即因此二次误判）。G3 已验证有效，但这条体验缺陷仍独立存在。建议 UI 把 NULL 渲染为「历史（无来源）」+ 筛选框旁加说明。
-- **下一步**：开 `bugfix/task-053-progress-tail-flush`（G7 三处修复 + 过 `ThrottledEmitter` 的尾部用例 + 前端完成兜底）+ G8 文案。
+**v0.1.6 发版门禁收官（2026-10-28）**：升级闭环手册由用户真机跑通——装 v0.1.5 → banner 提示「发现新版本 0.1.6」→ 升级 → 重启后 A/B/C 三种方式均确认 0.1.6 → R1–R6 功能回归全过（证据见 `docs/release/v0.1.6-upgrade-verification.md` 末尾结果表）。第三轮 NSIS/MSI 双跑：各 27 条过 26，唯一不通过为 C08（`scripts\` 改名后应用启动即 fail-fast 闪烁退出，未出现「完成+报错」并存，但实现方式与预期的「运行时扫描失败红条」不同）；排除 G6 后 Console 零红错。M2 updater 闭环正式收官。
 
 ## 最近一次变更
+2026-10-28：**task-055 开发完成（M3 banner 下载进度 + 失败态 + 稍后提醒 + Settings loading），状态 `testing`**（`feature/task-055-update-banner-progress`）：
+  - **① 下载事件订阅**：`downloadAndInstall(onEvent)` —— 真实类型定义是 `downloadAndInstall(onEvent?: (p: DownloadEvent) => void, options?)`，**第一个参数就是回调**（任务书写 `{ onEvent }` 对象，与 plugin-updater 2.13.3 不符）；事件字段是 `data.contentLength` / `data.chunkLength`（任务书写 `totalSize` / `chunkSize`），`contentLength` 还是 **optional**（服务器不给 Content-Length 时拿不到总量）。`Finished` 后切 `installing` 态。
+  - **② 进度 UI**：线性进度条（宽度=percent，200ms 过渡抹平 chunk 级跳变）+ 标题 `下载更新中 N%` + 副行 `已下载 X.X / Y.Y MB，速度 ≈ Z`；total 未知时退化为 `已下载 X.X MB（总大小未知）`，不显示误导性的 0%。
+  - **③ 速度估算**：EMA，**窗口 1s、平滑系数 α=0.4**。不是每个 chunk 都算（会剧烈抖动），而是「每满 1s 用窗口增量 / 实际时长算瞬时速度」再 EMA。已下载字节数放 `useRef` 而非依赖 `setState` 的函数式 updater——在 updater 里再调 `setState` 是反模式，严格模式下会重复执行。
+  - **④ 失败态**：`classifyUpdateError` 按关键词映射 5 类（网络 → 「网络连接失败，请检查网络后重试」；签名 → 「签名校验失败，更新包可能已损坏，请重新下载」；磁盘 → 「磁盘空间不足，请清理 C 盘后重试」；版本 → 「当前已是最新版本」；兜底 → 「更新失败：<原文>（请截图反馈）」）。**判定顺序有讲究**：网络在签名之前，但签名错误原文常带 URL，所以网络正则只匹配真正的网络关键词（`network|request|\burl\b|dns|timeout|connect|offline|fetch|http`），避免把签名问题误判成网络。banner 失败态给「重试」（重新走 `downloadAndInstall`）+「关闭」。
+  - **⑤ 稍后提醒持久化**：`localStorage["cclean:update:dismissedVersion"]` 存**版本号字符串**（不是布尔），只忽略「这一个版本」；有更高版本时 banner 照弹。读写都 try-catch（隐私模式/配额满时静默降级为「重启后再弹」）。
+  - **⑥ Settings**：手动检查文案改 `当前 vX / 发现 vY` 或 `当前 vX，已是最新版本`（当前版本用 `getVersion()`，取不到则退化）；失败文案复用 `classifyUpdateError`；新增 `onUpdateFound` prop，手动检查发现新版本时通知 App 强制显示 banner（覆盖「稍后提醒」）。**检查中按钮 disabled + 「检查中…」是 task-035 既有实现，本轮只补文案与错误映射**。
+  - **新增文件 `app/src/utils/update.ts`**（**白名单缺口，见实现备注**）：`computePercent` / `formatMB` / `formatSpeed` / `classifyUpdateError` / `DISMISSED_VERSION_KEY` / `readDismissedVersion` / `writeDismissedVersion` / `shouldShowBanner` + 两个 EMA 常量。**为什么不塞 App.tsx**：① 组件文件多导出非组件会触发 `react-refresh/only-export-components`（`SafeBox.tsx` 已有 2 条同类 warning，不再增加）；② `Settings.tsx` 要复用 `classifyUpdateError`，而 App 会 import Settings，函数放 App 里会造成 App ↔ Settings 循环依赖。
+  - **门禁**：`pnpm --filter app lint` 0 error（2 条既有 warning）/ **vitest 81 passed（9 files，基线 54 + 新增 27）** / `pnpm --filter app build` **184.22 kB │ gzip 59.18 kB**（基线 181.51）/ `cargo test --workspace` **250 passed + 8 ignored**（本任务不改 Rust，零回归）。
+  - **环境坑**：vitest 仍偶发 `EPERM ... node-brokered-fs-shim.cjs`（沙箱拦写系统 Temp），本轮 3 次里 2 次复现，**重跑即绿**；`TMPDIR` 指到 `target/vitest-tmp` 有帮助但不能完全消除。
+  - **与任务书不符 3 项**：① `downloadAndInstall` 签名与事件字段名（见上）；② 白名单未含 `app/src/utils/update.ts`（共享纯函数必须有独立文件，见上）；③ 任务书要求「真机/安装态冒烟必做不可裁剪」，按 2026-10-25 新流程开发轮不做，移交测试 Agent。
+2026-10-28：**v0.1.6 升级闭环真机验证通过（用户本人执行）**——装 v0.1.5 → banner 显示「发现新版本 0.1.6」→ 升级 → 重启后 A/B/C 三种方式均确认 0.1.6 → R1–R6 功能回归全过（结果表追加于 `docs/release/v0.1.6-upgrade-verification.md` 末尾）。同日完成第三轮 NSIS/MSI 双跑：各 27 条过 26、不适用 0、排除 G6 后 Console 红错 0；唯一不通过为 C08（`scripts\` 改名后应用启动即 fail-fast 闪烁退出，未出现「完成+报错」并存，但实现方式与预期不同），说明已写入 `docs/test-reports/gui-walkthrough-round3-checklist.md` 汇总表下方。M2 updater 闭环正式收官；「当前目标」「下一步计划」两节按要求精简为短句。
 2026-10-11：完成 PRD / TRD / ARCHITECTURE / AGENTS / 立项决策记录全套长期基线文档，并初始化本状态白板。
 2026-10-11：task-001 完成——落地 app/engine/elevation/rules/scripts 五大目录骨架、Cargo workspace + pnpm workspace 双工作区，Tauri 2 最小空窗口（标题「C-Disk Cleaner」）端到端跑通，Cargo.lock 已入库。
 2026-10-11：task-002 完成——engine 内新建 db/ 子模块，rusqlite 0.40.2（bundled）连接入口、v1__init.sql 九张表 schema、user_version 手写迁移器，8 条集成测试全绿（含级联删除 / SET NULL / 单行表 CHECK / 迁移幂等）。
@@ -407,6 +401,8 @@
 
 - [x] 054：v0.1.6 发版准备——**①** `release.yml` 的 `softprops/action-gh-release` 步骤补 `target_commitish: ${{ github.sha }}`（tag 精确指向触发发版的 commit，不再默认指向 main HEAD）；**②** 版本号 `0.1.0` → `0.1.6`（`package.json` / `app/package.json` / `app/src-tauri/tauri.conf.json` / `app/src-tauri/Cargo.toml` 四处 + `Cargo.lock` 自动更新），`tauri build` 产出 `C-DiskCleaner_0.1.6_x64-setup.exe`（4.01 MiB）+ `.msi`（5.83 MiB）+ 成对 `.sig`；**③** 新建 `CHANGELOG.md`（Keep a Changelog 格式，v0.1.6 的「新增/修复/已知问题」三段，自本版起启用不回溯）；**④** 新建 `docs/test-reports/gui-walkthrough-round3-checklist.md`（27 条，NSIS/MSI 双列，含 G1/G2/G3/G4/G5/G7/G8 + 占用关闭 + updater + Console 口径 + 卸载）；**⑤** 新建 `docs/release/v0.1.6-upgrade-verification.md`（6 步升级闭环手册 + 卡点速查）；另修 `.gitignore` 的 `release/` 规则误伤 `docs/release/`（加 `!docs/release/` 负向包含）（`feature/task-054-release-prep-v016`；**开发轮完成，状态 `testing`**；门禁 check/clippy/fmt 0、`cargo test --workspace` 250 passed + 8 ignored、vitest 54、build 181.51 kB、`tauri build` exit 0；**发版动作（workflow_dispatch）由用户手动执行，不在本任务内**）
 
+- [x] 055：M3 更新体验——**①** `onUpdateNow` 订阅 `downloadAndInstall(onEvent)`（真实签名是**第一个参数就是回调**，非 `{onEvent}`；事件字段 `data.contentLength` / `data.chunkLength`，非 `totalSize`/`chunkSize`），`Started` 记总量、`Progress` 累加、`Finished` 切 installing；**②** banner 下载中显示线性进度条 + `下载更新中 N%` + `已下载 X.X / Y.Y MB，速度 ≈ Z`（EMA 平滑，1s 窗口、α=0.4；total 未知时退化为「总大小未知」）；**③** 失败态按关键词映射 5 类中文（网络 / 签名 / 磁盘 / 已是最新 / 兜底），banner 给「重试」+「关闭」；**④** 「稍后提醒」写 `localStorage["cclean:update:dismissedVersion"]`，启动时同版本不弹、更高版本照弹；**⑤** Settings 手动检查显示「当前 vX / 发现 vY」或「当前 vX，已是最新版本」，失败文案复用同一映射，`onUpdateFound` 让手动检查能强制显示 banner（`feature/task-055-update-banner-progress`；**开发轮完成，状态 `testing`**；门禁 lint 0 error、vitest **81 passed（9 files，新增 27）**、build **184.22 kB**、`cargo test --workspace` 250+8 不回归；**按新流程开发轮不跑 CI、不做真机/安装态冒烟**，移交测试 Agent）
+
 > 注：040~047 的完成明细未回填本清单（历史遗漏），以「最近一次变更」段与 `tasks/040-*.md`~`tasks/047-*.md` 为准。
 > 编号顺延（2026-10-24）：原定 050 的「safe_box 增强」顺延为 **051**，050 让位给发版阻塞级的打包资源路径缺陷。
 
@@ -443,21 +439,12 @@
 - [B 高] ~~发版 workflow 两个 bug：① 安装包版本号永远 0.1.0，不随 workflow_dispatch 输入变化；② 配了签名私钥却不生成 .sig（多轮改私钥传递方式均无效）。~~ **已由 bugfix/task-035-release-signing 修复（2026-10-23，状态 testing，待 CI 全绿 + 测试/评审复核）**：根因分别是「版本注入无校验、失败静默」与「`tauri.conf.json` 缺 `bundle.createUpdaterArtifacts`（Tauri 2 默认 false，为 false 时 bundler 不读私钥）」；修法与证据见「最近一次变更」。遗留：真机端到端升级验证（装旧版 → 检查更新 → 下载安装 → 重启到新版）需发版后人工跑。~~GitHub Secret `TAURI_SIGNING_PRIVATE_KEY` / `_PASSWORD` 必须与 `plugins.updater.pubkey` 配对（本地 `~/.tauri/cclean.key.pub` 与仓内 pubkey 不是同一对，CI 侧 secret 需用户自查）~~ **已证实配对（2026-10-23）**：v0.1.5 的 `.exe.sig` keyid `52ACA0C8DAA19EB3` 与 `plugins.updater.pubkey` 一致，真实发版 run `39942401586` 全绿、产物含 `.sig` + `latest.json`。
 
 ## 下一步计划
-M2 updater 已关闭（task-048）；**task-049 / 050 / 051 / 052 均已评审通过并合并 main（`60e0797` / `cadb286` / `e6ab561` / `d92db1b`）**，③ 关闭体验文案小改也已合并（`801af22`）。**发版前硬门禁 ② 真机 GUI 走查：2026-10-25 首轮不通过（G1–G6）；task-052 修复后 2026-10-27 第二轮复验——G3/G4 真机实测通过，唯一剩余阻塞项为 G7（进度条结束时不满）**（报告 `docs/test-reports/gui-walkthrough-2026-10-25.md` §六）。下一轮优先级：
-
-1. ~~**① 派发 task-051：safe_box 增强**~~ **已完成开发 → 测试轮 → 评审通过并合并 main（merge commit `e6ab561`）**：26 条验收全覆盖、抽查复现 3 条全绿、动态 SQL 注入面走查无风险。评审报告 `docs/reviews/051-review.md`。
-2. ~~**② 发版前硬门禁：真机 GUI 走查（一次覆盖两项）**~~ **已执行（2026-10-25）→ 不通过**：E20「扫描 → 清理」不返 `INTERNAL`、清理成功、历史落库、清理链路 Console 零红**均成立**；但暴露 G1 进度条恒 0 / G2 清理列表 100 条截断 / G3 保险箱 `source_task_id` 恒 NULL（P1×3）+ G4 清理轮次恒 0 / G5 释放 0 B（P2×2）+ G6 设置页 IPC 红错（P3，已知项复现）。
-3. ~~**③ 关闭体验文案小改**~~ **已完成并合并 main（merge commit `801af22`）**：`confirm` 补「同一控制台内的相关进程可能一并关闭」、mixed 场景补「因存在受保护进程，本次未关闭任何进程」；`Items.test.tsx` 7/7 + `lint` 干净。
-4. ~~**④ 派发 task-052：GUI 走查缺陷修复（G1–G5）**~~ **已开发 → 测试 → 评审 → 合并 main（2026-10-26，merge commit `d92db1b`，CI PR #17 全绿）**：`cargo test --workspace` 245+8 / vitest 53 / build 180.85 kB，NSIS 4.01 MB + MSI 5.83 MB。**真机复验结论（2026-10-27）：G3 ✅ / G4 ✅ 实测通过；G1 修复未闭环 → 复开为 G7；G2/G5 仍仅集成测试覆盖。**（测试报告曾用错 G3 证据：拿 Items 的 `cleanup_item.session_id` 冒充 `safe_box.source_task_id`，但真机实测最终证明修复本身有效。）
-5. ~~**⑤ 派发 `bugfix/task-053-progress-tail-flush`（唯一发版阻塞）**~~ **已完成开发（2026-10-27，状态 `testing`）**，移交测试 Agent：
-   - **G7（P1）✅ 已修**：走 `emit_force()` 路线（非 trailing 补偿）——`ProgressEmitter::emit_force` + `ThrottledEmitter` 覆写（转发 + 重置窗口）+ `Box<dyn>` 透传；编排层收尾 `emit_force_progress(100, "done", …)`；前端「收到 100 立刻退订 / 200ms 兜底」+ resolve 后主动置满。**关键回归** `scan_progress_throttled_tail.rs` 5 条走真实 `ThrottledEmitter`，并做反向验证（改回 `emit` 即红，停在 80）。
-   - **G8（P2）✅ 已修**：来源列 NULL →「历史（无来源）」淡灰 + 筛选框旁「早于 v0.1.6 的条目无来源信息」；不改 DB。
-   - ~~**G3 复验**~~ **已完成（2026-10-27）**：用户新删除文件入箱实测——「来源」列显示 `#N`、Session 多选框出现 `session #N (M 条)` 并可筛选，**G3 关闭**。
-6. ~~**⑥ 派发 task-054：第三轮复验走查（NSIS / MSI 各一遍）+ `release.yml` 补 `target_commitish` + v0.1.6 发版**~~ **已完成开发（2026-10-27，状态 `testing`）**：`release.yml` 补 `target_commitish`、版本号升 `0.1.6`（四处 + lock）、`CHANGELOG.md`、第三轮走查清单（27 条 NSIS/MSI 双列）、升级闭环手册（6 步）。**发版动作待用户手动 `workflow_dispatch`（version 填 `0.1.6`）**，合并后由测试 Agent 接管 NSIS/MSI 双跑。
-7. **⑦ v0.1.6 发版后**：由**用户**执行 `docs/release/v0.1.6-upgrade-verification.md`（装 v0.1.5 → 检查更新 → 装 v0.1.6 → 重启 → 确认版本 → 功能回归）；由**测试 Agent**跑 `docs/test-reports/gui-walkthrough-round3-checklist.md`（NSIS/MSI 各一遍）。两者全绿后进入 **M3**（banner 下载进度反馈 / 差量更新）。`RmRestart`（关闭后自动重启被关进程）仍待产品侧拍板。
+1. **C08 拍板**：`scripts\` 缺失时当前行为是「启动即 fail-fast 闪烁退出」，与清单期望的「运行时扫描失败红条 + 进度条不满」最终效果相同但实现方式不同，待产品/开发确认是否接受。
+2. **M3 下一项：差量更新（bsdiff / 差量包）评估**——banner 下载进度反馈已由 task-055 落地（`feature/task-055-update-banner-progress`，待测试轮）；差量更新是独立大块，建议先做技术评估再立项（task-056+）。
+3. **RmRestart**（关闭后自动重启被关进程）仍待产品侧拍板。
 
 ## 当前负责人 Agent
-**评审 Agent（提示词 10）**——`feature/task-054-release-prep-v016`（@`3315fc8`）测试轮通过、状态 `awaiting_review`，报告 `docs/test-reports/054-test-report.md`：L1/L2 全绿零回归、L4 MSI 负载/资源布局/数据隔离通过，0 缺陷。待办：① 提示词 B 建 draft PR 触发 Windows CI 五道闸轮询；② 评审 Agent 复审判定是否合 main。发版动作（`workflow_dispatch` version=0.1.6）与升级闭环手册仍由用户手动执行。上一手：测试 Agent（task-054 测试轮）。再上一手：DevFullstackRustReact（task-054 开发）。
+**评审 Agent（提示词 10）**——`feature/task-055-update-banner-progress`（@`a92193b`）测试轮通过、状态 `awaiting_review`，报告 `docs/test-reports/055-test-report.md`：L1/L2 全绿零回归（cargo 250+8 / lint 0 error / vitest 81 含新增 27 / build 184.22 kB）、L4 MSI `/a` 抽取布局正确且安装目录 NO_DIFF、数据落 `%APPDATA%`，**0 缺陷未开 bugfix 子分支**。待办：① 提示词 B 建 draft PR 触发 Windows CI 五道闸；② 评审 Agent 复审判定。L3 四条真实 GUI 交互（进度条 0→100 / 断网文案 / dismiss 重开不弹 / Settings loading）由用户在活动桌面补走查。上一手：测试 Agent（task-055 测试轮）。再上一手：DevFullstackRustReact（task-055 开发）。
 
 ## Git 提交记录
 | Commit | 任务 | 说明 |
@@ -811,6 +798,15 @@ M2 updater 已关闭（task-048）；**task-049 / 050 / 051 / 052 均已评审�
 | f349be0 | #task-054 | chore(gitignore): 负向包含 docs/release/，发版手册可入库 |
 | 530ae8f | #task-054 | docs(release): 新增 v0.1.6 升级闭环验证手册（6 步 + 卡点速查） |
 | （本次） | #task-054 | docs(state): 任务054完成，v0.1.6 发版准备就绪，待用户手动 workflow_dispatch |
+| a51ebef | #task-054 | merge: task-054 v0.1.6 发版准备——版本号+release 溯源+CHANGELOG+验证手册（--no-ff） |
+| 56d203b | #task-054 | docs(state): 回填 v0.1.6 发版升级闭环 + 第三轮 NSIS/MSI 走查结果 |
+| 50f40ea | #task-055 | feat(updater): downloadAndInstall 订阅 onEvent，记录 contentLength / chunkLength |
+| 0460edc | #task-055 | feat(ui): banner 下载中显示进度条 + 百分比/大小/速度（EMA 1s 窗口 α=0.4） |
+| 9b62db3 | #task-055 | fix(ui): updater 失败态按关键词映射中文文案 + 重试/关闭按钮 |
+| 107b4cb | #task-055 | feat(ui): 「稍后提醒」持久化到 localStorage，同版本不再弹 |
+| be2b22b | #task-055 | feat(settings): 手动检查更新显示当前/远端版本 + 失败文案复用 + onUpdateFound |
+| f133226 | #task-055 | test(ui): 补 27 条用例——失败文案 5 类 / 稍后提醒 / 百分比兜底 / 进度与失败态 / Settings loading |
+| （本次） | #task-055 | docs(state): 任务055完成，M3 banner 下载进度 + 失败态 + loading 就绪 |
 
 ---
 变更轨迹：
@@ -925,3 +921,5 @@ M2 updater 已关闭（task-048）；**task-049 / 050 / 051 / 052 均已评审�
 
 - 2026-10-27  task-054  v0.1.6 发版准备（release 溯源 + 版本号 + CHANGELOG + 复验清单 + 升级手册）：`release.yml` 补 `target_commitish: ${{ github.sha }}`；版本号 `0.1.0` → `0.1.6`（四处 + `Cargo.lock`），`tauri build` 产出 `C-DiskCleaner_0.1.6_x64-setup.exe`（4.01 MiB）+ `.msi`（5.83 MiB）+ 成对 `.sig`；新建 `CHANGELOG.md`（v0.1.6 三段，自本版启用不回溯）、第三轮走查清单（27 条 NSIS/MSI 双列，含 Console 口径「排除 G6 后零红」）、升级闭环手册（6 步 + 卡点速查）；`.gitignore` 加 `!docs/release/` 修误伤。门禁 check/clippy/fmt 0、cargo test 250+8、vitest 54、build 181.51 kB。**开发轮不跑 CI、不做安装态冒烟**，发版由用户手动 workflow_dispatch，NSIS/MSI 双跑移交测试 Agent
 - 2026-10-27  task-054  **测试轮通过**（`docs/test-reports/054-test-report.md`，分支 @`3315fc8`）：独立重跑 fmt/check/clippy/test（exit 0，250 passed + 8 ignored 零回归）/ lint 0 error / vitest 54（7 files）/ build 181.51 kB；契约核验版本号四处 `0.1.6`、`release.yml:148` `target_commitish: ${{ github.sha }}`、三份交付物齐全；L4 MSI `/a` 管理映像抽取 exit 0（exe 16.3 MB + rules 2 文件 + 5 个 scan ps1、无 `_up_`），从抽取目录直启 exe 安装目录 NO_DIFF、DB 落 `%APPDATA%`；**0 缺陷、未开 bugfix 子分支**。第三档登记：NSIS 真实安装因 UAC 被用户取消未执行、GUI 27 条点击仍被 WebView2 渲染不 paint 阻塞（历史已知项）、CI 五道闸待提示词 B 建 draft PR 轮询。状态置 `awaiting_review`，移交评审 Agent
+- 2026-10-28  task-055  M3 banner 下载进度反馈 + 失败态文案 + 手动检查 loading：`downloadAndInstall(onEvent)` 订阅（真实签名为第一个参数即回调，事件字段 `contentLength`/`chunkLength`）；banner 进度条 + `下载更新中 N%` + 已下载/总量 + EMA 速度（1s 窗口 α=0.4）；失败态 5 类中文映射 + 重试/关闭；「稍后提醒」写 `localStorage` 存版本号（同版本不弹、更高版本照弹）；Settings 手动检查显示「当前 vX / 发现 vY」+ `onUpdateFound` 强制显示 banner。新增 `app/src/utils/update.ts`（纯函数，避免 App↔Settings 循环依赖与 react-refresh 警告）。门禁 lint 0 / vitest **81**（+27）/ build 184.22 kB / cargo 250+8 不回归。**开发轮不跑 CI、不做真机冒烟**，移交测试 Agent
+- 2026-10-28  task-055  **测试轮通过**（`docs/test-reports/055-test-report.md`，分支 @`a92193b`）：独立重跑 fmt/check/clippy/test（exit 0，250 passed + 8 ignored 零回归）/ lint 0 error（2 warning 均 SafeBox.tsx 既有）/ vitest **9 files / 81 passed**（基线 54 + App 22 + Settings 5）/ build **184.22 kB / gzip 59.18 kB**；契约核对 18 条验收逐条对齐（含开发轮对任务书 API 签名的两处硬修正）；`tauri build` 产出 NSIS 4.02 MiB + MSI 5.83 MiB（末尾签名步因本地无私钥报错，CI 才有，预期）；MSI `/a` 抽取布局正确（exe + rules 2 + 5 ps1、无 `_up_`），直启后安装目录 NO_DIFF、数据落 `%APPDATA%`；**0 缺陷、未开 bugfix 子分支**。第三档：L3 四条 GUI 交互因 WebView2 自动化不 paint + 无 v0.1.7 Release 未取得（27 条 jsdom 用例补偿）、NSIS 真实安装需 UAC、CI 待提示词 B 建 PR。状态置 `awaiting_review`，移交评审 Agent
