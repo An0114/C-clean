@@ -39,3 +39,30 @@ export function formatSpeed(bytesPerSec: number): string {
   if (bytesPerSec >= 1024) return `${Math.round(bytesPerSec / 1024)} KB/s`;
   return `${Math.round(bytesPerSec)} B/s`;
 }
+
+/**
+ * updater 原始错误 → 中文文案（task-055 单元 3）。
+ *
+ * 顺序有意义：先判网络再判签名。「签名校验失败」的原始错误里常常同时带
+ * `https://...`（URL），若先判 URL 会被误归为网络问题，用户会一直重试网络
+ * 而永远修不好。同理 `disk` 放在 `version` 之前——"no space left" 不含
+ * version 词，但 `already` 这类词更罕见，放最后更安全。
+ */
+export function classifyUpdateError(raw: string): string {
+  const s = String(raw ?? "");
+  const lower = s.toLowerCase();
+
+  if (/network|request|\burl\b|dns|timeout|connect|offline|fetch|http/i.test(lower)) {
+    return "网络连接失败，请检查网络后重试";
+  }
+  if (/signature|\bkey\b|\bsign\b|signing|pubkey|minisign/i.test(lower)) {
+    return "签名校验失败，更新包可能已损坏，请重新下载";
+  }
+  if (/disk|space|enospc/i.test(lower)) {
+    return "磁盘空间不足，请清理 C 盘后重试";
+  }
+  if (/version|already|up to date/i.test(lower)) {
+    return "当前已是最新版本";
+  }
+  return `更新失败：${s}（请截图反馈）`;
+}

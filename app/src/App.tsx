@@ -10,6 +10,7 @@ import Items from "./pages/Items";
 import SafeBox from "./pages/SafeBox";
 import Settings from "./pages/Settings";
 import {
+  classifyUpdateError,
   computePercent,
   formatMB,
   formatSpeed,
@@ -172,9 +173,17 @@ export default function App() {
       await relaunch();
     } catch (e) {
       setBannerPhase("error");
-      setBannerError(String(e));
+      // task-055 单元 3：原始错误是英文（Network error / Signature error …），
+      // 用户看不懂也不知道该干什么，映射成可操作的中文文案。
+      setBannerError(classifyUpdateError(String(e)));
     }
   };
+  // task-055 单元 3：「重试」失败后用户可能不想再看到 banner，给「关闭」出口。
+  // 单元 4 起这里还会把版本号写进 localStorage（重启后同版本不再弹）。
+  const dismissBanner = () => {
+    setDismissed(true);
+  };
+
   // task-055 单元 2：下载百分比走 utils 纯函数（total 未知时返回 0，不除零）。
   const downloadPercent = computePercent(download.downloaded, download.total);
 
@@ -208,7 +217,7 @@ export default function App() {
           <div style={{ flex: 1 }}>
             <div style={{ fontWeight: 600 }}>
               {bannerPhase === "error"
-                ? `更新失败：${bannerError}`
+                ? bannerError
                 : bannerPhase === "installing"
                   ? "安装中，即将重启…"
                   : bannerPhase === "downloading"
@@ -249,7 +258,23 @@ export default function App() {
               </div>
             )}
           </div>
-          {bannerPhase !== "error" && (
+          {bannerPhase === "error" ? (
+            // task-055 单元 3：失败态给「重试」——重新走一遍 downloadAndInstall，
+            // 网络抖动/临时 5xx 大多能靠重试解决，不必让用户重启应用。
+            <button
+              onClick={onUpdateNow}
+              style={{
+                background: "#dc2626",
+                color: "#fff",
+                border: 0,
+                padding: "6px 12px",
+                borderRadius: 6,
+                cursor: "pointer",
+              }}
+            >
+              重试
+            </button>
+          ) : (
             <button
               onClick={onUpdateNow}
               disabled={bannerPhase === "downloading" || bannerPhase === "installing"}
@@ -271,7 +296,7 @@ export default function App() {
             </button>
           )}
           <button
-            onClick={() => setDismissed(true)}
+            onClick={dismissBanner}
             style={{
               background: "#fff",
               border: "1px solid #d1d5db",
@@ -280,7 +305,7 @@ export default function App() {
               cursor: "pointer",
             }}
           >
-            稍后
+            {bannerPhase === "error" ? "关闭" : "稍后"}
           </button>
         </div>
       )}
