@@ -449,9 +449,11 @@
 - [B 高] ~~发版 workflow 两个 bug：① 安装包版本号永远 0.1.0，不随 workflow_dispatch 输入变化；② 配了签名私钥却不生成 .sig（多轮改私钥传递方式均无效）。~~ **已由 bugfix/task-035-release-signing 修复（2026-10-23，状态 testing，待 CI 全绿 + 测试/评审复核）**：根因分别是「版本注入无校验、失败静默」与「`tauri.conf.json` 缺 `bundle.createUpdaterArtifacts`（Tauri 2 默认 false，为 false 时 bundler 不读私钥）」；修法与证据见「最近一次变更」。遗留：真机端到端升级验证（装旧版 → 检查更新 → 下载安装 → 重启到新版）需发版后人工跑。~~GitHub Secret `TAURI_SIGNING_PRIVATE_KEY` / `_PASSWORD` 必须与 `plugins.updater.pubkey` 配对（本地 `~/.tauri/cclean.key.pub` 与仓内 pubkey 不是同一对，CI 侧 secret 需用户自查）~~ **已证实配对（2026-10-23）**：v0.1.5 的 `.exe.sig` keyid `52ACA0C8DAA19EB3` 与 `plugins.updater.pubkey` 一致，真实发版 run `39942401586` 全绿、产物含 `.sig` + `latest.json`。
 
 ## 下一步计划
-1. **C08 拍板**：`scripts\` 缺失时当前行为是「启动即 fail-fast 闪烁退出」，与清单期望的「运行时扫描失败红条 + 进度条不满」最终效果相同但实现方式不同，待产品/开发确认是否接受。
-2. **差量更新评估结论：不立项 task-057**（`docs/research/delta-update-evaluation.md`，2026-10-28）。Tauri 2 官方 updater 不支持差量、自建成本 6–9 人日、4 MB 包省下的绝对量 <2 秒。**若要继续减小更新负担，改做「release profile 瘦身」**（`lto="fat"` + `codegen-units=1` + `strip=true` + `opt-level="z"`，预计 -20%~35%、1–2 人日，可选立项）。
-3. **RmRestart**（关闭后自动重启被关进程）仍待产品侧拍板。
+1. ~~**C08 拍板**~~ **已接受（2026-10-28 用户决策）**：`scripts\` 缺失时「启动即 fail-fast 闪烁退出」为可接受行为，不改代码。
+2. ~~**差量更新**~~ **不立项**（评估结论：Tauri 2 不支持、自建 6–9 人日、4 MB 包省流量 <2 秒不划算）。
+3. ~~**release profile 瘦身**~~ **不做**（2026-10-28 用户决策）：当前包体积可接受，不为 -20%~35% 再花 1–2 人日。
+4. **G6 豁免（已明确口径）**：设置页首调 `rules_check_update` 走 `ipc.localhost` 红错为 Tauri 2.x `useCustomProtocol` 首调已知项，功能经 postMessage 回退可用。**发版门禁口径：排除 G6 后 Console 零红即过**，G6 本身不阻塞发版、不修代码。
+5. **RmRestart（立项 task-057，当前推进项）**：关闭后自动重启被关进程。**产品决策（2026-10-28）**：做，但**默认关闭**；设置页加开关（用户自主选择开启/关闭）；开启后在占用关闭 confirm 文案中提示「将自动重启被关闭的进程」。
 
 ## 当前负责人 Agent
 **评审 Agent（提示词 10）**——`feature/task-056-research-and-cleanup`（@`1d2b9e8`）测试轮通过、状态 `awaiting_review`，报告 `docs/test-reports/056-test-report.md`：L1/L2 全绿（cargo 255+8 / vitest 81 / build 184.22 kB）；**1 处测试断言缺陷已走 bugfix 子分支闭环**——`cross_disk_restore_currently_returns_io_error` 断言跨盘 restore 必失败，实测 Windows 下跨卷 rename 实际成功（推翻开发轮「无 fallback 已知限制」结论），改 `cross_disk_restore_succeeds_across_drives`（`560cb94`，merge `1d2b9e8`）；L4 真实 v1 库迁移实测 user_version 1→2、restored_at 列就位、旧数据保留。待办：① 提示词 B 建 draft PR 触发 CI；② 评审重点复核 bugfix 断言修正；③ L3 GUI 走查由用户活动桌面补。上一手：测试 Agent（task-056 测试轮）。再上一手：DevBackendRustReact（task-056 开发）。
