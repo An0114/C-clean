@@ -41,6 +41,45 @@ export function formatSpeed(bytesPerSec: number): string {
 }
 
 /**
+ * 「稍后提醒」记录的 localStorage key（task-055 单元 4）。
+ *
+ * 存的是**版本号字符串**（如 `"0.1.7"`），不是布尔值——这样只忽略「这一个版本」，
+ * 下次真有 v0.1.8 时 banner 照常弹，不会因为一次忽略就永久静音。
+ */
+export const DISMISSED_VERSION_KEY = "cclean:update:dismissedVersion";
+
+/** 读已忽略的版本号；读不到（隐私模式 / 禁用存储）返回 null。 */
+export function readDismissedVersion(): string | null {
+  try {
+    return localStorage.getItem(DISMISSED_VERSION_KEY);
+  } catch {
+    return null;
+  }
+}
+
+/** 写已忽略的版本号；写失败只影响「重启后还会再弹」，不影响本次关闭。 */
+export function writeDismissedVersion(version: string): void {
+  try {
+    localStorage.setItem(DISMISSED_VERSION_KEY, version);
+  } catch {
+    // 隐私模式 / 配额满：静默降级
+  }
+}
+
+/**
+ * 是否应该弹 banner。
+ *
+ * 已忽略的版本与当前发现的版本**相同**才不弹；没有忽略记录、或忽略的是别的版本
+ * （说明有更新的版本）都要弹。
+ */
+export function shouldShowBanner(
+  updateVersion: string,
+  dismissedVersion: string | null
+): boolean {
+  return dismissedVersion !== updateVersion;
+}
+
+/**
  * updater 原始错误 → 中文文案（task-055 单元 3）。
  *
  * 顺序有意义：先判网络再判签名。「签名校验失败」的原始错误里常常同时带

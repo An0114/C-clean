@@ -14,8 +14,11 @@ import {
   computePercent,
   formatMB,
   formatSpeed,
+  readDismissedVersion,
+  shouldShowBanner,
   SPEED_EMA_ALPHA,
   SPEED_WINDOW_MS,
+  writeDismissedVersion,
 } from "./utils/update";
 
 type Tab = "dashboard" | "items" | "safebox" | "history" | "settings";
@@ -111,7 +114,11 @@ export default function App() {
     (async () => {
       try {
         const u = await check();
-        if (u) setUpdate(u);
+        if (!u) return;
+        setUpdate(u);
+        // task-055 单元 4：同版本已被「稍后」忽略过 → 本次启动不再弹。
+        // 有更高版本时 dismissedVersion 与新 version 不等，banner 照常出现。
+        setDismissed(!shouldShowBanner(u.version, readDismissedVersion()));
       } catch {
         // 静默：网络错 / endpoint 未就绪都不打扰用户
       }
@@ -179,9 +186,10 @@ export default function App() {
     }
   };
   // task-055 单元 3：「重试」失败后用户可能不想再看到 banner，给「关闭」出口。
-  // 单元 4 起这里还会把版本号写进 localStorage（重启后同版本不再弹）。
+  // task-055 单元 4：关闭时把版本号写进 localStorage，重启后同版本不再弹。
   const dismissBanner = () => {
     setDismissed(true);
+    if (update) writeDismissedVersion(update.version);
   };
 
   // task-055 单元 2：下载百分比走 utils 纯函数（total 未知时返回 0，不除零）。
