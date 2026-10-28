@@ -192,6 +192,11 @@ export default function App() {
     if (update) writeDismissedVersion(update.version);
   };
 
+  // task-055 单元 4+5：用户在设置页手动点「检查应用更新」并发现新版本时，
+  // 强制显示 banner（即使该版本此前被「稍后」忽略过）——手动动作的意图就是
+  // 「我想看到结果」，此时再压着不显示属于违背用户意图。
+  const handleManualUpdateFound = () => setDismissed(false);
+
   // task-055 单元 2：下载百分比走 utils 纯函数（total 未知时返回 0，不除零）。
   const downloadPercent = computePercent(download.downloaded, download.total);
 
@@ -340,7 +345,7 @@ export default function App() {
         {tab === "items" && <Items />}
         {tab === "safebox" && <SafeBox />}
         {tab === "history" && <History />}
-        {tab === "settings" && <Settings />}
+        {tab === "settings" && <Settings onUpdateFound={handleManualUpdateFound} />}
       </ErrorBoundary>
     </div>
   );
