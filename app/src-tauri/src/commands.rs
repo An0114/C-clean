@@ -608,3 +608,38 @@ pub async fn cleanup_list_pending(
         }
     }
 }
+
+/// `get_prefs`：读用户偏好（task-057）。新用户缺行时默认 auto_restart_on_close=false。
+#[tauri::command]
+pub async fn get_prefs(
+    paths: tauri::State<'_, AppPaths>,
+) -> Result<Envelope<engine::prefs::Prefs>, String> {
+    let conn = match engine::db::conn::open(&paths.data_root) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[get_prefs] open db: {e}");
+            return Ok(Envelope::err(INTERNAL));
+        }
+    };
+    Ok(Envelope::ok(engine::prefs::Prefs::load(&conn)))
+}
+
+/// `set_prefs`：写用户偏好（task-057）。目前只支持 autoRestartOnClose 一个开关。
+#[tauri::command]
+pub async fn set_prefs(
+    prefs: engine::prefs::Prefs,
+    paths: tauri::State<'_, AppPaths>,
+) -> Result<Envelope<engine::prefs::Prefs>, String> {
+    let conn = match engine::db::conn::open(&paths.data_root) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[set_prefs] open db: {e}");
+            return Ok(Envelope::err(INTERNAL));
+        }
+    };
+    if let Err(e) = engine::prefs::set_auto_restart(&conn, prefs.auto_restart_on_close) {
+        eprintln!("[set_prefs] write: {e}");
+        return Ok(Envelope::err(INTERNAL));
+    }
+    Ok(Envelope::ok(engine::prefs::Prefs::load(&conn)))
+}
