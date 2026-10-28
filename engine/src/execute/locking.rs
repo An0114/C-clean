@@ -329,7 +329,10 @@ pub fn who_is_locking(path: &str) -> Result<Vec<LockingProcess>, String> {
 ///   调 `RmRestart`（总超时 10s，失败仅 warning 不阻塞删除）。**默认 false**。
 ///
 /// 会话由 [`RmSession`] 的 `Drop` 收尾，任何提前返回都不会泄漏 handle。
-pub fn shutdown_locking_processes(path: &str, auto_restart: bool) -> Result<ShutdownOutcome, String> {
+pub fn shutdown_locking_processes(
+    path: &str,
+    auto_restart: bool,
+) -> Result<ShutdownOutcome, String> {
     #[cfg(windows)]
     {
         let session = RmSession::start()?;

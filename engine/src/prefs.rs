@@ -109,7 +109,11 @@ mod tests {
         .unwrap();
         set_auto_restart(&conn, true).unwrap();
         let other: String = conn
-            .query_row("SELECT value FROM settings WHERE key='other.key'", [], |r| r.get(0))
+            .query_row(
+                "SELECT value FROM settings WHERE key='other.key'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(other, "keep", "未知/其它 key 不能被破坏");
     }
