@@ -30,7 +30,8 @@
 //!    调用方若发现相邻进程被波及，原因在这里。集成用例
 //!    `shutdown_only_touches_registered_path` 给每个 holder 独立 console，
 //!    以便把「只关注册资源」这一性质单独测出来。
-//! 5. 本模块不提供 `RmRestart`（不自动重启被关掉的进程），留 task-050+。
+//! 5. task-057 起，本模块在 `shutdown_locking_processes(path, auto_restart)` 里
+//!    按需对 `bRestartable==TRUE` 的进程调 `RmRestart`（默认 false，由设置页开关控制）。
 
 /// 占用进程的最小可序列化视图（给前端 toast 用）。
 #[derive(Debug, Clone, serde::Serialize)]
@@ -315,18 +316,20 @@ pub fn who_is_locking(path: &str) -> Result<Vec<LockingProcess>, String> {
     }
 }
 
-/// 请求关闭占用 `path` 的进程（task-049）。
+/// 请求关闭占用 `path` 的进程（task-049），可选在关闭后自动重启被关进程（task-057）。
 ///
 /// 流程：`RmStartSession → RmRegisterResources(只注册这一个文件) → RmGetList →
-/// 护栏过滤（PID → 映像名）→ RmShutdown(RmForceShutdown) → RmEndSession`。
+/// 护栏过滤（PID → 映像名）→ RmShutdown(RmForceShutdown) → RmRestart(bRestartable) → RmEndSession`。
 ///
 /// - 无占用进程：不调 `RmShutdown`，返回空结果（幂等，重复点「重试」不报错）；
 /// - 有占用但**任何一个**被护栏拒绝：不调 `RmShutdown`，`closed` 为空、`refused` 完整
 ///   （mixed fail-closed，见 [`apply_mixed_fail_closed`]）；
-/// - 全部可关：调 `RmShutdown`，成功后把这些进程放进 `closed`。
+/// - 全部可关：调 `RmShutdown`，成功后把这些进程放进 `closed`；
+/// - `auto_restart=true` 时，在 `RmShutdown` 之后对 `bRestartable==TRUE` 的 pid
+///   调 `RmRestart`（总超时 10s，失败仅 warning 不阻塞删除）。**默认 false**。
 ///
 /// 会话由 [`RmSession`] 的 `Drop` 收尾，任何提前返回都不会泄漏 handle。
-pub fn shutdown_locking_processes(path: &str) -> Result<ShutdownOutcome, String> {
+pub fn shutdown_locking_processes(path: &str, auto_restart: bool) -> Result<ShutdownOutcome, String> {
     #[cfg(windows)]
     {
         let session = RmSession::start()?;
@@ -362,6 +365,31 @@ pub fn shutdown_locking_processes(path: &str) -> Result<ShutdownOutcome, String>
         }
 
         session.shutdown()?;
+
+        // task-057：可选自动重启。只对 bRestartable=TRUE 且在 closable 集合里的 pid 调用。
+        if auto_restart {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            let closable_pids: std::collections::HashSet<u32> =
+                closable.iter().map(|lp| lp.pid).collect();
+            for info in &infos {
+                if std::time::Instant::now() >= deadline {
+                    eprintln!("[rm-restart] 10s 总超时，剩余 pid 不再尝试");
+                    break;
+                }
+                let pid = info.Process.dwProcessId;
+                if !closable_pids.contains(&pid) {
+                    continue;
+                }
+                if !rm_restartable(info) {
+                    continue;
+                }
+                if let Err(e) = session.restart(pid) {
+                    // 单个重启失败不阻塞主流程（删除已经在 RmShutdown 后立即进行）。
+                    eprintln!("[rm-restart] pid={pid} restart failed: {e}");
+                }
+            }
+        }
+
         Ok(ShutdownOutcome {
             closed: closable,
             refused,
@@ -369,9 +397,17 @@ pub fn shutdown_locking_processes(path: &str) -> Result<ShutdownOutcome, String>
     }
     #[cfg(not(windows))]
     {
-        let _ = path;
+        let _ = (path, auto_restart);
         Ok(ShutdownOutcome::default())
     }
+}
+
+/// 纯函数：根据 RM_PROCESS_INFO 的 `bRestartable` 字段判断是否可被 RmRestart 拉起。
+///
+/// 抽成独立函数是为了单测：windows crate 的 `BOOL` 包了 i32，TRUE=1。
+#[cfg(windows)]
+fn rm_restartable(info: &RM_PROCESS_INFO) -> bool {
+    info.bRestartable.as_bool()
 }
 
 #[cfg(windows)]
@@ -497,6 +533,20 @@ impl RmSession {
             .ok()
             .map_err(|e| format!("RmShutdown: {e}"))
     }
+
+    /// task-057：对单个 pid 调 `RmRestart`，尝试拉起刚才被 RmShutdown 关掉的进程。
+    ///
+    /// 只对 `bRestartable==TRUE` 的进程有意义（调用方已过滤）；失败由调用方记录，
+    /// 不影响主删除流程。
+    fn restart(&self, pid: u32) -> Result<(), String> {
+        use windows::Win32::System::RestartManager::RmRestart;
+
+        // SAFETY: handle 同 shutdown；pid 由调用方从 RmGetList 返回值中取出，合法；
+        // 状态回调传 None（不关心重启进度）。
+        unsafe { RmRestart(self.handle, pid, None) }
+            .ok()
+            .map_err(|e| format!("RmRestart(pid={pid}): {e}"))
+    }
 }
 
 #[cfg(windows)]
@@ -532,8 +582,8 @@ mod tests {
     //! [`is_protected_process`]（真实 `OpenProcess` 路径）。
 
     use super::{
-        apply_mixed_fail_closed, decide, is_protected_process, LockingProcess, RefusedProcess,
-        REASON_PROTECTED, REASON_SYSTEM, REASON_UNKNOWN,
+        apply_mixed_fail_closed, decide, is_protected_process, rm_restartable, LockingProcess,
+        RefusedProcess, REASON_PROTECTED, REASON_SYSTEM, REASON_UNKNOWN,
     };
 
     const SELF: u32 = 4242;
@@ -740,5 +790,22 @@ mod tests {
         );
         assert!(closable.is_empty(), "closable={closable:?}");
         assert_eq!(refused_list.len(), 2, "refused={refused_list:?}");
+    }
+
+    // ---- task-057：RmRestart 纯逻辑判定 ----
+
+    #[cfg(windows)]
+    #[test]
+    fn rm_restartable_只对_b_true_返回_true() {
+        use windows::Win32::Foundation::BOOL;
+        use windows::Win32::System::RestartManager::RM_PROCESS_INFO;
+
+        let mut yes = RM_PROCESS_INFO::default();
+        yes.bRestartable = BOOL(1);
+        assert!(rm_restartable(&yes), "bRestartable=TRUE 才允许重启");
+
+        let mut no = RM_PROCESS_INFO::default();
+        no.bRestartable = BOOL(0);
+        assert!(!rm_restartable(&no), "bRestartable=FALSE 不重启");
     }
 }

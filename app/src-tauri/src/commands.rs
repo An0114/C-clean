@@ -182,6 +182,9 @@ pub async fn cleanup_retry_locked(
     };
     let conn = engine::db::conn::open(&paths.data_root).map_err(|e| e.to_string())?;
 
+    // task-057：在 spawn_blocking 之前读一次偏好（默认 false），闭包按值捕获。
+    let auto_restart = engine::prefs::get_auto_restart(&conn);
+
     // 1. 只收集本次 item_ids 对应的路径（查不到跳过，不中断）。
     let mut targets: Vec<String> = Vec::with_capacity(item_ids.len());
     for id in &item_ids {
@@ -200,7 +203,7 @@ pub async fn cleanup_retry_locked(
         // 同一进程可能占用多个文件，按 pid 去重，避免前端计数虚高。
         let mut seen: std::collections::HashSet<u32> = std::collections::HashSet::new();
         for p in targets {
-            match engine::execute::locking::shutdown_locking_processes(&p) {
+            match engine::execute::locking::shutdown_locking_processes(&p, auto_restart) {
                 Ok(outcome) => {
                     for lp in outcome.closed {
                         if seen.insert(lp.pid) {
