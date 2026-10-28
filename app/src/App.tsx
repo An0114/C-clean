@@ -1,7 +1,7 @@
 // task-027/029/030/031：App 加 Dashboard / Items / SafeBox / History / Settings tab 切换（不引 Router，useState）。
 // debt-cleanup-002 / Bug-1：外层加最小 Error Boundary——任何页面渲染期抛错
 // 不再整树白屏，而是在该 tab 区域显示「页面出错，点这里回仪表盘」。
-import { Component, useEffect, useState, type ReactNode } from "react";
+import { Component, useEffect, useRef, useState, type ReactNode } from "react";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import Dashboard from "./pages/Dashboard";
@@ -9,6 +9,13 @@ import History from "./pages/History";
 import Items from "./pages/Items";
 import SafeBox from "./pages/SafeBox";
 import Settings from "./pages/Settings";
+import {
+  computePercent,
+  formatMB,
+  formatSpeed,
+  SPEED_EMA_ALPHA,
+  SPEED_WINDOW_MS,
+} from "./utils/update";
 
 type Tab = "dashboard" | "items" | "safebox" | "history" | "settings";
 
@@ -88,6 +95,17 @@ export default function App() {
     downloaded: 0,
     total: 0,
   });
+  // task-055 单元 2：估算下载速度（字节/秒），由 EMA 平滑，1s 窗口。
+  const [speed, setSpeed] = useState(0);
+  // 已下载字节的「真值」放 ref：速度估算需要跨事件累计，不能依赖 setState 的
+  // 函数式 updater（在 updater 里再调 setState 是反模式，严格模式下会重复执行）。
+  const downloadedRef = useRef(0);
+  // 速度计量器：{ 窗口起点, 窗口起点时的已下载字节, EMA 值 }。
+  const meterRef = useRef<{ ts: number; bytes: number; ema: number }>({
+    ts: 0,
+    bytes: 0,
+    ema: 0,
+  });
   useEffect(() => {
     (async () => {
       try {
@@ -115,6 +133,9 @@ export default function App() {
     setBannerPhase("downloading");
     setBannerError("");
     setDownload({ downloaded: 0, total: 0 });
+    setSpeed(0);
+    downloadedRef.current = 0;
+    meterRef.current = { ts: 0, bytes: 0, ema: 0 };
     try {
       await update.downloadAndInstall((event) => {
         if (event.event === "Started") {
@@ -122,7 +143,27 @@ export default function App() {
           setDownload((prev) => ({ ...prev, total }));
         } else if (event.event === "Progress") {
           const chunk = event.data.chunkLength;
-          setDownload((prev) => ({ ...prev, downloaded: prev.downloaded + chunk }));
+          downloadedRef.current += chunk;
+          const downloaded = downloadedRef.current;
+          setDownload((prev) => ({ ...prev, downloaded }));
+
+          // task-055 单元 2：速度估算。每个 chunk 都算会剧烈抖动，改为
+          // 「每满 1s 用窗口增量算一次瞬时速度」再用 EMA 平滑。
+          const now = Date.now();
+          const m = meterRef.current;
+          if (m.ts === 0) {
+            // 首个 chunk 只打点，不出速度（没有时间跨度可算）。
+            meterRef.current = { ts: now, bytes: downloaded, ema: 0 };
+          } else {
+            const elapsed = now - m.ts;
+            if (elapsed >= SPEED_WINDOW_MS) {
+              const instant = (downloaded - m.bytes) / (elapsed / 1000);
+              const ema =
+                m.ema === 0 ? instant : SPEED_EMA_ALPHA * instant + (1 - SPEED_EMA_ALPHA) * m.ema;
+              meterRef.current = { ts: now, bytes: downloaded, ema };
+              setSpeed(ema);
+            }
+          }
         } else {
           // Finished：下载完成，进入安装阶段（Windows 上会拉起安装器并重启）。
           setBannerPhase("installing");
@@ -134,12 +175,8 @@ export default function App() {
       setBannerError(String(e));
     }
   };
-  // task-055 单元 1：下载百分比。total 未知（服务器没给 Content-Length）时为 0，
-  // 不做除零；download 累加可能超过 total（极少见的分块重复），夹到 100。
-  const downloadPercent =
-    download.total > 0
-      ? Math.min(100, Math.round((download.downloaded / download.total) * 100))
-      : 0;
+  // task-055 单元 2：下载百分比走 utils 纯函数（total 未知时返回 0，不除零）。
+  const downloadPercent = computePercent(download.downloaded, download.total);
 
   return (
     <div
@@ -181,6 +218,34 @@ export default function App() {
             {bannerPhase === "idle" && update.body && (
               <div style={{ fontSize: 12, color: "#374151", marginTop: 4 }}>
                 {update.body}
+              </div>
+            )}
+            {/* task-055 单元 2：下载中显示线性进度条 + 已下载/总量 + 估算速度 */}
+            {bannerPhase === "downloading" && (
+              <div style={{ marginTop: 8 }}>
+                <div
+                  style={{
+                    height: 6,
+                    background: "#bfdbfe",
+                    borderRadius: 3,
+                    overflow: "hidden",
+                  }}
+                >
+                  <div
+                    style={{
+                      height: "100%",
+                      width: `${downloadPercent}%`,
+                      background: "#2563eb",
+                      // 200ms 线性过渡：把 chunk 级跳变抹平，视觉上不抖。
+                      transition: "width 200ms linear",
+                    }}
+                  />
+                </div>
+                <div style={{ fontSize: 12, color: "#1e3a8a", marginTop: 4 }}>
+                  {download.total > 0
+                    ? `已下载 ${formatMB(download.downloaded)} / ${formatMB(download.total)}，速度 ≈ ${formatSpeed(speed)}`
+                    : `已下载 ${formatMB(download.downloaded)}（总大小未知），速度 ≈ ${formatSpeed(speed)}`}
+                </div>
               </div>
             )}
           </div>
