@@ -136,3 +136,68 @@ describe("Settings 手动检查应用更新（task-055）", () => {
     expect(await screen.findByText("当前版本 / 发现 v0.1.7")).toBeInTheDocument();
   });
 });
+
+// task-057：行为偏好 toggle
+describe("Settings 行为偏好（task-057）", () => {
+  it("启动时按 get_prefs 回填开关（true → 已开启）", async () => {
+    mockedInvoke.mockImplementation(((cmd: string) => {
+      if (cmd === "rules_check_update") {
+        return Promise.resolve(
+          ok({
+            status: "upToDate",
+            localVersion: "1.0.0",
+            localSha256: "a".repeat(64),
+            remoteVersion: "1.0.0",
+            remoteSha256: "a".repeat(64),
+            message: "ok",
+          })
+        );
+      }
+      if (cmd === "rules_has_backup") return Promise.resolve(ok(false));
+      if (cmd === "get_prefs") return Promise.resolve(ok({ autoRestartOnClose: true }));
+      return Promise.resolve(ok(null));
+    }) as never);
+
+    render(<Settings />);
+    // 文案「已开启」应出现
+    expect(await screen.findByText("已开启")).toBeInTheDocument();
+    const cb = screen.getByRole("checkbox") as HTMLInputElement;
+    expect(cb.checked).toBe(true);
+  });
+
+  it("默认 false：get_prefs 返回 false 时勾选框不勾；切换时调 set_prefs", async () => {
+    let setPrefsPayload: unknown = null;
+    mockedInvoke.mockImplementation(((cmd: string, args: unknown) => {
+      if (cmd === "rules_check_update") {
+        return Promise.resolve(
+          ok({
+            status: "upToDate",
+            localVersion: "1.0.0",
+            localSha256: "a".repeat(64),
+            remoteVersion: "1.0.0",
+            remoteSha256: "a".repeat(64),
+            message: "ok",
+          })
+        );
+      }
+      if (cmd === "rules_has_backup") return Promise.resolve(ok(false));
+      if (cmd === "get_prefs") return Promise.resolve(ok({ autoRestartOnClose: false }));
+      if (cmd === "set_prefs") {
+        setPrefsPayload = args;
+        return Promise.resolve(ok({ autoRestartOnClose: (args as { prefs: { autoRestartOnClose: boolean } }).prefs.autoRestartOnClose }));
+      }
+      return Promise.resolve(ok(null));
+    }) as never);
+
+    render(<Settings />);
+    expect(await screen.findByText("已关闭")).toBeInTheDocument();
+    const cb = screen.getByRole("checkbox") as HTMLInputElement;
+    expect(cb.checked).toBe(false);
+
+    fireEvent.click(cb);
+    await waitFor(() => {
+      expect(setPrefsPayload).not.toBeNull();
+    });
+    expect(setPrefsPayload).toEqual({ prefs: { autoRestartOnClose: true } });
+  });
+});
