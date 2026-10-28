@@ -218,3 +218,53 @@ DevAgent 交付物（后续执行结果）：
 4. 本任务文档本身**由 DocsKeeper 在派发时**单独提交一次：
    `docs(task): 新增任务057-RmRestart 自动重启与设置开关 (#task-057)`，
    该提交只含 `tasks/057-rm-restart-toggle.md` 一个文件，落在 `feature/task-057-rm-restart-toggle` 分支最前端。
+
+## 实现备注
+
+### 实际改动文件
+- `engine/src/prefs.rs`（新建）：`get_auto_restart` / `set_auto_restart`（UPSERT）+ `Prefs`（serde camelCase）+ 5 条单测。
+- `engine/src/lib.rs`：注册 `pub mod prefs;`。
+- `engine/src/execute/locking.rs`：`shutdown_locking_processes(path, auto_restart: bool)`；新增 `RmSession::restart(pid)` 调 `RmRestart`；新增纯函数 `rm_restartable(&RM_PROCESS_INFO)`；总超时 10s；单测 1 条（bRestartable TRUE/FALSE）。
+- `app/src-tauri/src/commands.rs`：新增 `get_prefs` / `set_prefs`；`cleanup_retry_locked` 在 spawn_blocking 前读 prefs 传入 shutdown。
+- `app/src-tauri/src/lib.rs`：invoke_handler 注册 `get_prefs` / `set_prefs`。
+- `engine/tests/locking_shutdown.rs`：所有 `shutdown_locking_processes(...)` 调用点补 `, false`。
+- `app/src/pages/Settings.tsx`：新增「行为偏好」卡片 + checkbox toggle + 说明文字。
+- `app/src/pages/Items.tsx`：启动时 get_prefs 回填 `autoRestartOnClose`；confirm 文案条件追加重启提示。
+- `app/src/pages/Settings.test.tsx` / `Items.test.tsx`：新增 4 条前端测试（默认 false、开启回填、切换调 set_prefs、confirm 文案联动）。
+
+### prefs 存储方案最终选择
+复用 v1 已有 `settings(key,value,updated_at)` 表，**不加迁移不加新列**。键名 `prefs.auto_restart_on_close`，值 `"1"`/`"0"`；缺行/非法值一律 fail-closed 到 false。DB 路径走 `%APPDATA%\com.and0114.cclean\data\cdiskcleaner.db`（AppPaths.data_root），跨应用重启保留。
+
+### RmRestart 调用最终代码结构
+- `RmShutdown` 成功后，若 `auto_restart=true`：
+  - deadline = now + 10s；
+  - 遍历 RmGetList 返回的 infos，仅对 pid ∈ closable 且 `bRestartable.as_bool()==true` 的进程调 `RmSession.restart(pid)`；
+  - 单个失败只 `eprintln!` warning，不阻塞删除；
+  - 超时而剩余未尝试则 break。
+
+### Settings 开关最终 UI
+原生 `<input type="checkbox">` + 旁注「已开启/已关闭」，放在新「行为偏好」卡片下，标题「自动重启被关闭的进程」，灰色说明文字「清理被占用的文件时，若系统支持（Restart Manager 标记为可重启），关闭后自动把进程重新拉起。默认关闭。」。
+
+### confirm 文案最终中文表述
+开启时在原 task-049 文案后追加一行：
+`注意：本次会在关闭后自动重启被关闭且支持重启的进程。`
+关闭时文案与 task-049 完全一致（不追加）。
+
+### 自验输出
+- `cargo check --workspace --all-targets` = 0；
+- `cargo clippy --workspace --all-targets` = 0（仅 2 条 pre-existing Default::default 字段赋值 warning，非本任务引入）；
+- `cargo fmt --all -- --check` = 0；
+- `cargo test -p engine` 全绿：lib 53 passed（含新增 prefs 5 + rm_restartable 1），集成测试全部通过（含 locking_shutdown 9 条）；
+- `pnpm lint` = 0（仅 SafeBox.tsx 2 条 react-refresh pre-existing warning）；
+- `pnpm test -- --run` = 0：9 文件 85 passed（基线 81 + 本任务新增 4）；
+- `pnpm build` = 0（vite 185.59 kB / gzip 59.59 kB）。
+
+### 偏差说明
+- 任务书建议「前端启动时读 prefs 写 React state + localStorage 缓存」——未做 localStorage 缓存，每次进页面都走一次 IPC（pref 读操作极轻，且避免 localStorage 与 DB 双写不一致）。
+- 任务书建议新建 `app/src-tauri/src/prefs.rs`——prefs 模块落在 `engine` crate 里（与 db/execute 同层），Tauri 命令只是薄包装，符合现有架构（业务逻辑全部在 engine）。
+- 任务书单元 5 要求新建 `engine/tests/prefs_test.rs`——prefs 单测直接放在 `engine/src/prefs.rs` 的 `#[cfg(test)] mod tests` 内（与 locking.rs 同风格），5 条用例覆盖了任务书列出的全部断言。
+
+### 遗留问题
+- RmRestart 白名单/黑名单：先全量可重启进程都试，后续看反馈再加。
+- 代码签名 / 品牌图标：本任务不做。
+- 真机/NSIS 打包冒烟：由测试 Agent 在提示词 9 的 L4 执行（开发侧已做单测 + 集成测试 + dev 自验）。
