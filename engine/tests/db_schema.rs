@@ -95,11 +95,12 @@ fn foreign_keys_pragma_on() {
 }
 
 #[test]
-fn user_version_bumped_to_1() {
+fn user_version_bumped_to_latest() {
     let dir = tempfile::tempdir().expect("tempdir");
     let conn = open(dir.path()).expect("open db");
 
-    assert_eq!(user_version(&conn), 1, "首次迁移后 user_version 应为 1");
+    // task-056：v2 加了 safe_box.restored_at，最新版本号从 1 升到 2。
+    assert_eq!(user_version(&conn), 2, "首次迁移后 user_version 应为最新版 2");
 }
 
 #[test]
@@ -108,9 +109,55 @@ fn migration_is_idempotent() {
     let first = open(dir.path()).expect("first open");
     drop(first);
 
-    // 第二次打开同一数据目录：不再执行任何迁移，仍 Ok 且版本仍为 1
+    // 第二次打开同一数据目录：不再执行任何迁移，仍 Ok 且版本不变
     let second = open(dir.path()).expect("second open should succeed (idempotent)");
-    assert_eq!(user_version(&second), 1, "重复打开后 user_version 不应变化");
+    assert_eq!(user_version(&second), 2, "重复打开后 user_version 不应变化");
+}
+
+/// task-056：v1 库（无 `restored_at` 列）升级到 v2 —— 不报错、旧数据保留、新列为 NULL。
+///
+/// 这是发版后真实会发生的路径：用户装过 v0.1.6，库里已有 in_box 行，
+/// 升级到含 v2 迁移的版本后首次启动必须平滑升级。
+#[test]
+fn migrate_v1_to_v2_preserves_existing_rows() {
+    let dir = tempfile::tempdir().expect("tempdir");
+
+    // 手工造一个「停在 v1」的库：只跑 v1 SQL + user_version=1，再塞一条 in_box 行。
+    // 注意路径必须与 `conn::open` 一致：`<data_root>/data/cdiskcleaner.db`。
+    {
+        let data_dir = dir.path().join("data");
+        std::fs::create_dir_all(&data_dir).expect("create data dir");
+        let raw = Connection::open(data_dir.join("cdiskcleaner.db")).expect("open raw db");
+        raw.execute_batch(include_str!("../src/db/migrations/v1__init.sql"))
+            .expect("apply v1 schema");
+        raw.pragma_update(None, "user_version", 1)
+            .expect("pin user_version=1");
+        raw.execute(
+            "INSERT INTO safe_box
+                (original_path, safe_rel_path, size_bytes, quarantined_at, expires_at, status)
+             VALUES ('C:\\old\\legacy.tmp', 'legacy.tmp', 100, 1000, 87400, 'in_box')",
+            [],
+        )
+        .expect("insert legacy row");
+    }
+
+    // 正常 open 触发 v1 → v2 迁移。
+    let conn = open(dir.path()).expect("v1 db should migrate to v2 without error");
+    assert_eq!(user_version(&conn), 2, "迁移后 user_version 应为 2");
+
+    let n: i64 = conn
+        .query_row("SELECT COUNT(*) FROM safe_box WHERE status='in_box'", [], |r| {
+            r.get(0)
+        })
+        .expect("count in_box rows");
+    assert_eq!(n, 1, "v1 已有的 in_box 行必须保留");
+
+    let restored_at: Option<i64> = conn
+        .query_row("SELECT restored_at FROM safe_box LIMIT 1", [], |r| {
+            r.get(0)
+        })
+        .expect("read restored_at");
+    assert_eq!(restored_at, None, "v1 老行的 restored_at 应为 NULL");
 }
 
 #[test]
