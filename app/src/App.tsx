@@ -79,8 +79,15 @@ export default function App() {
   // 无更新 / 网络失败都静默；有更新才在顶部 banner 提示。
   const [update, setUpdate] = useState<Update | null>(null);
   const [dismissed, setDismissed] = useState(false);
-  const [bannerPhase, setBannerPhase] = useState<"idle" | "downloading" | "error">("idle");
+  const [bannerPhase, setBannerPhase] = useState<
+    "idle" | "downloading" | "installing" | "error"
+  >("idle");
   const [bannerError, setBannerError] = useState("");
+  // task-055 单元 1：下载字节进度（downloaded 累加 chunkLength，total 来自 contentLength）。
+  const [download, setDownload] = useState<{ downloaded: number; total: number }>({
+    downloaded: 0,
+    total: 0,
+  });
   useEffect(() => {
     (async () => {
       try {
@@ -93,18 +100,47 @@ export default function App() {
   }, []);
 
   // task-036：banner「立即更新」——下载安装后自动重启
+  //
+  // task-055 单元 1：订阅下载事件。**真实 API 签名是
+  // `downloadAndInstall(onEvent?, options?)`——第一个参数就是回调函数**，
+  // 不是 `{ onEvent }` 对象（任务书原文如此，已按实际类型定义修正）。
+  // 事件结构（plugin-updater 2.13.3）：
+  //   { event: "Started",  data: { contentLength?: number } }
+  //   { event: "Progress", data: { chunkLength: number } }
+  //   { event: "Finished" }
+  // 注意 `contentLength` 是 optional —— 服务器没给 Content-Length 时拿不到总量，
+  // 百分比只能按「未知」处理（见 computePercent 的 total<=0 兜底）。
   const onUpdateNow = async () => {
     if (!update) return;
     setBannerPhase("downloading");
     setBannerError("");
+    setDownload({ downloaded: 0, total: 0 });
     try {
-      await update.downloadAndInstall();
+      await update.downloadAndInstall((event) => {
+        if (event.event === "Started") {
+          const total = event.data.contentLength ?? 0;
+          setDownload((prev) => ({ ...prev, total }));
+        } else if (event.event === "Progress") {
+          const chunk = event.data.chunkLength;
+          setDownload((prev) => ({ ...prev, downloaded: prev.downloaded + chunk }));
+        } else {
+          // Finished：下载完成，进入安装阶段（Windows 上会拉起安装器并重启）。
+          setBannerPhase("installing");
+        }
+      });
       await relaunch();
     } catch (e) {
       setBannerPhase("error");
       setBannerError(String(e));
     }
   };
+  // task-055 单元 1：下载百分比。total 未知（服务器没给 Content-Length）时为 0，
+  // 不做除零；download 累加可能超过 total（极少见的分块重复），夹到 100。
+  const downloadPercent =
+    download.total > 0
+      ? Math.min(100, Math.round((download.downloaded / download.total) * 100))
+      : 0;
+
   return (
     <div
       style={{
@@ -136,9 +172,11 @@ export default function App() {
             <div style={{ fontWeight: 600 }}>
               {bannerPhase === "error"
                 ? `更新失败：${bannerError}`
-                : bannerPhase === "downloading"
-                  ? "下载安装中…（应用即将重启）"
-                  : `发现新版本 v${update.version}`}
+                : bannerPhase === "installing"
+                  ? "安装中，即将重启…"
+                  : bannerPhase === "downloading"
+                    ? `下载更新中 ${downloadPercent}%`
+                    : `发现新版本 v${update.version}`}
             </div>
             {bannerPhase === "idle" && update.body && (
               <div style={{ fontSize: 12, color: "#374151", marginTop: 4 }}>
@@ -149,17 +187,22 @@ export default function App() {
           {bannerPhase !== "error" && (
             <button
               onClick={onUpdateNow}
-              disabled={bannerPhase === "downloading"}
+              disabled={bannerPhase === "downloading" || bannerPhase === "installing"}
               style={{
                 background: "#10b981",
                 color: "#fff",
                 border: 0,
                 padding: "6px 12px",
                 borderRadius: 6,
-                cursor: bannerPhase === "downloading" ? "not-allowed" : "pointer",
+                cursor:
+                  bannerPhase === "downloading" || bannerPhase === "installing"
+                    ? "not-allowed"
+                    : "pointer",
               }}
             >
-              {bannerPhase === "downloading" ? "安装中…" : "立即更新"}
+              {bannerPhase === "downloading" || bannerPhase === "installing"
+                ? "安装中…"
+                : "立即更新"}
             </button>
           )}
           <button
