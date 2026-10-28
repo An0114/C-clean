@@ -369,26 +369,29 @@ pub fn shutdown_locking_processes(
 
         session.shutdown()?;
 
-        // task-057：可选自动重启。只对 bRestartable=TRUE 且在 closable 集合里的 pid 调用。
+        // task-057：可选自动重启。
+        //
+        // Windows Restart Manager 的 RmRestart **没有按 pid 重启的参数**——一次调用
+        // 会自动重启本会话内所有「注册了可重启（bRestartable==TRUE）」的应用，是否
+        // 可重启由 RM 内核侧判定，调用方无需也无法逐 pid 选择。其第二参
+        // `dwRestartFlags` 是保留位，**必须为 0**（官方示例 RmRestart(h, 0, NULL)）。
+        //
+        // 测试轮修复：旧实现误把 `pid` 当 flags 传入并按 pid 循环调用，非零 flags
+        // 会让每次 RmRestart 都失败（ERROR_INVALID_PARAMETER），自动重启从不生效。
         if auto_restart {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
             let closable_pids: std::collections::HashSet<u32> =
                 closable.iter().map(|lp| lp.pid).collect();
-            for info in &infos {
-                if std::time::Instant::now() >= deadline {
-                    eprintln!("[rm-restart] 10s 总超时，剩余 pid 不再尝试");
-                    break;
-                }
-                let pid = info.Process.dwProcessId;
-                if !closable_pids.contains(&pid) {
-                    continue;
-                }
-                if !rm_restartable(info) {
-                    continue;
-                }
-                if let Err(e) = session.restart(pid) {
-                    // 单个重启失败不阻塞主流程（删除已经在 RmShutdown 后立即进行）。
-                    eprintln!("[rm-restart] pid={pid} restart failed: {e}");
+            let restartable = restartable_pids(&closable_pids, &infos);
+            if restartable.is_empty() {
+                eprintln!("[rm-restart] 被关闭的进程中没有可重启的，跳过 RmRestart");
+            } else {
+                eprintln!(
+                    "[rm-restart] 将尝试自动重启 {} 个可重启进程: pids={restartable:?}",
+                    restartable.len()
+                );
+                if let Err(e) = session.restart_all() {
+                    // 失败不阻塞主流程（删除在 RmShutdown 后已立即进行）。
+                    eprintln!("[rm-restart] RmRestart 失败: {e}");
                 }
             }
         }
@@ -411,6 +414,22 @@ pub fn shutdown_locking_processes(
 #[cfg(windows)]
 fn rm_restartable(info: &RM_PROCESS_INFO) -> bool {
     info.bRestartable.as_bool()
+}
+
+/// 诊断用：列出「被我们关闭（在 closable 集合内）且 RM 标记为可重启」的 pid。
+///
+/// 真正是否重启由 Restart Manager 内核侧决定（`bRestartable==TRUE` 才会被拉起），
+/// 这里只为日志可观察 + 单测守住「bRestartable=FALSE / 不在 closable 内的不进列表」。
+#[cfg(windows)]
+fn restartable_pids(
+    closable: &std::collections::HashSet<u32>,
+    infos: &[RM_PROCESS_INFO],
+) -> Vec<u32> {
+    infos
+        .iter()
+        .filter(|i| closable.contains(&i.Process.dwProcessId) && rm_restartable(i))
+        .map(|i| i.Process.dwProcessId)
+        .collect()
 }
 
 #[cfg(windows)]
@@ -537,18 +556,32 @@ impl RmSession {
             .map_err(|e| format!("RmShutdown: {e}"))
     }
 
-    /// task-057：对单个 pid 调 `RmRestart`，尝试拉起刚才被 RmShutdown 关掉的进程。
+    /// task-057：重启本会话内所有可重启应用（一次 `RmRestart(flags=0)`）。
     ///
-    /// 只对 `bRestartable==TRUE` 的进程有意义（调用方已过滤）；失败由调用方记录，
-    /// 不影响主删除流程。
-    fn restart(&self, pid: u32) -> Result<(), String> {
+    /// RmRestart 是同步阻塞调用（要逐个拉起 GUI 进程），用后台线程 + 10s 收包超时
+    /// 包住：超时只放弃等待、不阻塞已完成的删除主流程，工作线程稍后自行结束。
+    /// 失败仅记 warning，不影响用户已完成的清理。
+    fn restart_all(&self) -> Result<(), String> {
         use windows::Win32::System::RestartManager::RmRestart;
 
-        // SAFETY: handle 同 shutdown；pid 由调用方从 RmGetList 返回值中取出，合法；
-        // 状态回调传 None（不关心重启进度）。
-        unsafe { RmRestart(self.handle, pid, None) }
-            .ok()
-            .map_err(|e| format!("RmRestart(pid={pid}): {e}"))
+        let handle = self.handle;
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            // SAFETY: handle 来自 RmStartSession；flags 按官方文档必须为 0（保留位）；
+            // 状态回调传 None（不关心重启进度）。
+            let r = unsafe { RmRestart(handle, 0, None) };
+            let _ = tx.send(r);
+        });
+        match rx.recv_timeout(std::time::Duration::from_secs(10)) {
+            Ok(winerr) => winerr.ok().map_err(|e| format!("RmRestart: {e}")),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                eprintln!("[rm-restart] RmRestart 超过 10s，放弃等待（不阻塞删除）");
+                Ok(())
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                Err("RmRestart 工作线程异常结束".to_string())
+            }
+        }
     }
 }
 
@@ -585,8 +618,8 @@ mod tests {
     //! [`is_protected_process`]（真实 `OpenProcess` 路径）。
 
     use super::{
-        apply_mixed_fail_closed, decide, is_protected_process, rm_restartable, LockingProcess,
-        RefusedProcess, REASON_PROTECTED, REASON_SYSTEM, REASON_UNKNOWN,
+        apply_mixed_fail_closed, decide, is_protected_process, restartable_pids, rm_restartable,
+        LockingProcess, RefusedProcess, REASON_PROTECTED, REASON_SYSTEM, REASON_UNKNOWN,
     };
 
     const SELF: u32 = 4242;
@@ -803,12 +836,46 @@ mod tests {
         use windows::Win32::Foundation::BOOL;
         use windows::Win32::System::RestartManager::RM_PROCESS_INFO;
 
-        let mut yes = RM_PROCESS_INFO::default();
-        yes.bRestartable = BOOL(1);
+        // 用结构体字面量初始化（避免 field_reassign_with_default clippy 告警）。
+        let yes = RM_PROCESS_INFO {
+            bRestartable: BOOL(1),
+            ..Default::default()
+        };
         assert!(rm_restartable(&yes), "bRestartable=TRUE 才允许重启");
 
-        let mut no = RM_PROCESS_INFO::default();
-        no.bRestartable = BOOL(0);
+        let no = RM_PROCESS_INFO {
+            bRestartable: BOOL(0),
+            ..Default::default()
+        };
         assert!(!rm_restartable(&no), "bRestartable=FALSE 不重启");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn restartable_pids_只保留_closable_且_b_true() {
+        use std::collections::HashSet;
+        use windows::Win32::Foundation::BOOL;
+        use windows::Win32::System::RestartManager::{RM_PROCESS_INFO, RM_UNIQUE_PROCESS};
+
+        let mk = |pid: u32, restartable: BOOL| RM_PROCESS_INFO {
+            Process: RM_UNIQUE_PROCESS {
+                dwProcessId: pid,
+                ..Default::default()
+            },
+            bRestartable: restartable,
+            ..Default::default()
+        };
+        let infos = vec![
+            mk(100, BOOL(1)), // closable + 可重启 → 保留
+            mk(200, BOOL(0)), // closable 但不可重启 → 排除
+            mk(300, BOOL(1)), // 可重启但不在 closable → 排除
+        ];
+        let closable: HashSet<u32> = [100u32, 200].iter().copied().collect();
+        let got = restartable_pids(&closable, &infos);
+        assert_eq!(
+            got,
+            vec![100u32],
+            "应只保留 closable 且 bRestartable=TRUE 的 pid"
+        );
     }
 }
