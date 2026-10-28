@@ -44,19 +44,21 @@
 | 13 | G6 排查结论二选一 | 选 docs 豁免路线：根因 Tauri 2 custom protocol 首调时序竞争，warmup 否决（3 条理由） | 通过 |
 | 14 | G6 豁免口径写入 checklist | §六含 5 条判定规则 | 通过 |
 | 15 | G6 修复路线（若选） | 未选（docs 路线），不适用 | N/A |
-| 16 | cargo test -p engine 全绿（≥3 新增） | 255 passed + 8 ignored，0 failed；新增 5 条（migrate v1→v2、restored 行消失、restore 二次 NotFound、跨盘移入、跨盘恢复成功） | 通过 |
+| 16 | cargo test -p engine 全绿（≥3 新增） | 255 passed + 8 ignored，0 failed；新增 5 条（migrate v1→v2、restored 行消失、restore 二次 NotFound、跨盘移入、跨盘恢复可移植契约） | 通过 |
 
 ## 4. 缺陷清单
 
 | # | 现象 | 复现步骤 | 期望行为 | 严重度 | 处理 |
 | --- | --- | --- | --- | --- | --- |
-| 1 | `cross_disk_restore_currently_returns_io_error` 断言跨盘 restore 必失败，但实测 Windows 下跨盘 restore 成功（MoveFileExW 跨卷 copy+remove） | 多盘环境跑 `cargo test -p engine --test safe_box_cross_disk` | 断言应匹配实际行为：跨盘 restore 成功、文件落盘内容一致、restored_at 非空 | 中（测试断言错误，非代码 bug） | 已修（bugfix/task-056-cross-disk-restore-assertion） |
+| 1 | 首版测试 `cross_disk_restore_currently_returns_io_error` 断言跨盘 restore 必失败，但本机实测跨盘 restore 成功 | 多盘环境跑 cargo test | 断言应匹配实际行为 | 中（测试断言错误） | 已修（第一轮 bugfix） |
+| 2 | 第一轮 bugfix 把断言翻成「跨盘 restore 必成功」，但 CI（GitHub Windows runner）上 `std::fs::rename` 跨卷直接返 EXDEV（os error 17，「cannot move file to a different disk drive」），Run #139 红 | CI Windows runner 跑 cargo test | 测试应识别 Windows 跨卷 rename 行为因环境而异，两条路径都验状态自洽不丢数据 | 中（测试在不同环境结论不一致） | 已修（第二轮 bugfix `0854600`，Run #140 success） |
 
 ## 5. 测试期修复记录（bugfix 子分支）
 
 | # | 缺陷 | 修复分支 | commit hash | 提交信息 | 回归结果 |
 | --- | --- | --- | --- | --- | --- |
-| 1 | 跨盘 restore 断言错误（开发轮原假设「无 fallback 必报 IO」与 Windows 实际行为不符） | `bugfix/task-056-cross-disk-restore-assertion` | `560cb94` | test(execute): 修正跨盘 restore 断言——Windows 下跨卷 rename 实际成功，非已知限制 (#task-056) | 全量回归 cargo test --workspace exit 0（255+8）；fmt/clippy 0；merge --no-ff `1d2b9e8` 合回 feature，子分支已删 |
+| 1 | 跨盘 restore 断言错误（开发轮原假设「无 fallback 必报 IO」与本机行为不符） | `bugfix/task-056-cross-disk-restore-assertion` | `560cb94` | test(execute): 修正跨盘 restore 断言——Windows 下跨卷 rename 实际成功，非已知限制 (#task-056) | 全量回归 exit 0；merge `1d2b9e8` |
+| 2 | 第一轮 bugfix 断言在 CI 上相反（GitHub runner 跨卷 rename 返 EXDEV） | `bugfix/task-056-cross-disk-restore-portable` | `0854600` | test(execute): 跨盘 restore 改可移植契约测试——CI 上 rename 返 EXDEV，本机成功，两路都验状态不丢数据 (#task-056) | 本地 cargo test --workspace exit 0、clippy/fmt 0；merge `98e3bfd`；**CI Run #140 conclusion=success** |
 
 **修正要点**：
 - 测试从 `expect_err` 改为 `expect`，新用例名 `cross_disk_restore_succeeds_across_drives`；
@@ -66,7 +68,7 @@
 ## 6. 遗留问题（三档分流）
 
 ### 第一档（已修）
-缺陷 #1（跨盘 restore 断言）已走 bugfix 子分支闭环。
+缺陷 #1、#2（跨盘 restore 断言两轮修正）已走 bugfix 子分支闭环。
 
 ### 第二档（需用户拍板，状态 blocked）
 无。
@@ -74,13 +76,13 @@
 ### 第三档（已登记为已知限制）
 1. **L3 GUI 真机点击未取得**：本任务 UI 变化面小（restored 行不显示，由单测覆盖）；真实走查由用户活动桌面补。
 2. **NSIS 真实干净目录安装未跑**：需 UAC 提权；本轮以 MSI/直启 exe 完成迁移路径验证（关键风险面 = v1→v2 迁移不丢数据，已实测）。
-3. **CI 五道闸未轮询**：待提示词 B 建 draft PR。
+3. **跨盘 restore 在 GitHub Windows runner 上返 EXDEV**（os error 17）：`restore_from_safe_box` 裸 `std::fs::rename` 无 copy+remove fallback；测试已改为可移植契约（成功/失败两路都验不丢数据）。若要让跨盘 restore 在 CI/多数 Windows 机器真正成功，需给 restore 加 copy+remove fallback（与 delete_file 对齐），属行为变更，另立任务。
 4. **差量更新评估结论「不立项」**：若要减负，建议改做 release profile 瘦身（1–2 人日，预计 -20%~35%），待用户决定是否立项。
 5. **G6 不修**（Tauri 上游问题），等 custom protocol 首调时序修复；彻底解法（全走 postMessage）属架构取舍待产品拍板。
 6. **`safe_box` 表随 restore 次数增长**：低频操作当前无影响，未来如需清理另立任务。
 
 ## 7. 测试结论
 
-- **结论**：**通过**（L1/L2 全绿，含 1 处测试断言修正已闭环；L4 v1→v2 迁移在真实旧库上实测不丢数据）
-- **feature 分支最新 commit**：`1d2b9e8 merge: bugfix task-056 跨盘 restore 断言修正 (#task-056)`
-- **移交说明**：状态置 `awaiting_review`。待办：① 提示词 B 建 draft PR 触发 Windows CI 五道闸；② 评审 Agent 复核——重点复核 bugfix `560cb94`（测试断言修正，含推翻开发轮「跨盘 restore 已知限制」结论的实证）；③ L3 GUI 走查由用户活动桌面补。
+- **结论**：**通过**（L1/L2 全绿，含 2 轮测试断言修正已闭环；L4 v1→v2 迁移在真实旧库上实测不丢数据；**CI Run #140 conclusion=success** @ `98e3bfd`）
+- **feature 分支最新 commit**：`98e3bfd merge: bugfix task-056 跨盘 restore 可移植契约测试 (#task-056)`
+- **移交说明**：状态置 `awaiting_review`。CI 已绿（Run #140）。待办：① 评审 Agent 复核两轮 bugfix——重点复核 `0854600` 把跨盘 restore 改成可移植契约测试的理由（CI Windows runner 跨卷 rename 返 EXDEV，本机成功，单一路径断言在不同环境结论相反）；② L3 GUI 走查由用户活动桌面补。
