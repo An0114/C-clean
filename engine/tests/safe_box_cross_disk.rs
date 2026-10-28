@@ -127,7 +127,9 @@ fn cross_disk_move_into_box_falls_back_to_copy_remove() {
         "源与保险箱必须在不同盘，否则走不到 fallback"
     );
 
-    let moved = deleter.delete_file(&np).expect("cross-disk move must succeed");
+    let moved = deleter
+        .delete_file(&np)
+        .expect("cross-disk move must succeed");
     assert!(moved, "跨盘移入应返回 true（真删/真移）");
 
     // 源文件消失
@@ -208,7 +210,9 @@ fn cross_disk_restore_currently_returns_io_error() {
 
     // 行仍是 in_box（失败不改状态），文件仍在保险箱里没丢
     let status: String = conn
-        .query_row("SELECT status FROM safe_box WHERE id=?1", [id], |r| r.get(0))
+        .query_row("SELECT status FROM safe_box WHERE id=?1", [id], |r| {
+            r.get(0)
+        })
         .expect("read status");
     assert_eq!(status, "in_box", "恢复失败不应改状态");
     assert!(box_dir.join(rel).exists(), "失败后 box 文件必须还在");

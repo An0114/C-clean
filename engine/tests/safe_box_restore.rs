@@ -56,10 +56,7 @@ fn restore_returns_file_to_original_path() {
         )
         .unwrap();
     assert_eq!(status, "restored", "恢复后状态应为 restored");
-    assert!(
-        restored_at.is_some(),
-        "restored_at 必须写入（不能是 NULL）"
-    );
+    assert!(restored_at.is_some(), "restored_at 必须写入（不能是 NULL）");
     assert!(restored_at.unwrap() > 0, "restored_at 应是有效 unix 秒");
 
     let n_audit: i64 = conn
@@ -89,7 +86,9 @@ fn restored_row_disappears_from_list_and_quota() {
     assert_eq!(after.total_bytes, 0, "恢复后不应再计入保险箱总大小");
     // 行本身还在（审计价值），只是状态变了。
     let n_rows: i64 = conn
-        .query_row("SELECT COUNT(*) FROM safe_box WHERE id=?1", [id], |r| r.get(0))
+        .query_row("SELECT COUNT(*) FROM safe_box WHERE id=?1", [id], |r| {
+            r.get(0)
+        })
         .unwrap();
     assert_eq!(n_rows, 1, "行应保留（status='restored'），不是被 DELETE");
 }

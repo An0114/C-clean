@@ -100,7 +100,11 @@ fn user_version_bumped_to_latest() {
     let conn = open(dir.path()).expect("open db");
 
     // task-056：v2 加了 safe_box.restored_at，最新版本号从 1 升到 2。
-    assert_eq!(user_version(&conn), 2, "首次迁移后 user_version 应为最新版 2");
+    assert_eq!(
+        user_version(&conn),
+        2,
+        "首次迁移后 user_version 应为最新版 2"
+    );
 }
 
 #[test]
@@ -146,16 +150,16 @@ fn migrate_v1_to_v2_preserves_existing_rows() {
     assert_eq!(user_version(&conn), 2, "迁移后 user_version 应为 2");
 
     let n: i64 = conn
-        .query_row("SELECT COUNT(*) FROM safe_box WHERE status='in_box'", [], |r| {
-            r.get(0)
-        })
+        .query_row(
+            "SELECT COUNT(*) FROM safe_box WHERE status='in_box'",
+            [],
+            |r| r.get(0),
+        )
         .expect("count in_box rows");
     assert_eq!(n, 1, "v1 已有的 in_box 行必须保留");
 
     let restored_at: Option<i64> = conn
-        .query_row("SELECT restored_at FROM safe_box LIMIT 1", [], |r| {
-            r.get(0)
-        })
+        .query_row("SELECT restored_at FROM safe_box LIMIT 1", [], |r| r.get(0))
         .expect("read restored_at");
     assert_eq!(restored_at, None, "v1 老行的 restored_at 应为 NULL");
 }
