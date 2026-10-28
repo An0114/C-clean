@@ -18,7 +18,14 @@ use crate::db::DbError;
 ///
 /// 后续任务新增 `v2__xxx.sql` 时，在本表末尾追加一行即可；
 /// 表内顺序即版本升序，等价于「按文件名字典序」的语义。
-static MIGRATIONS: &[(u32, &str)] = &[(1, include_str!("migrations/v1__init.sql"))];
+///
+/// 版本历史：
+/// - v1（task-002）：九张表初始 schema；
+/// - v2（task-056）：`safe_box` 加 `restored_at` 审计列（restore 改为 UPDATE 不再 DELETE）。
+static MIGRATIONS: &[(u32, &str)] = &[
+    (1, include_str!("migrations/v1__init.sql")),
+    (2, include_str!("migrations/v2__safe_box_restored_at.sql")),
+];
 
 /// 对连接执行所有「版本号 > 当前 user_version」的迁移，返回迁移后的最新版本号。
 pub fn migrate(conn: &Connection) -> Result<u32, DbError> {

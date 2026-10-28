@@ -248,7 +248,8 @@ pub enum RestoreError {
     Db(String),
 }
 
-/// 按 id 把文件从保险箱 rename 回 original_path，删 safe_box 行，写 audit_log。
+/// 按 id 把文件从保险箱 rename 回 original_path，标记该行为 `status='restored'`
+/// 并写 `restored_at`（task-056 起不再 DELETE），最后写 audit_log。
 ///
 /// 与任务书 §A 的偏差（按 v1__init.sql 真实 schema 适配）：
 /// - 查询条件用 `status='in_box'`（不是 `purged_at IS NULL`）；
@@ -290,15 +291,23 @@ pub fn restore_from_safe_box(
     std::fs::rename(&box_abs, orig)
         .map_err(|e| RestoreError::Io(format!("rename {box_abs:?} -> {orig:?}: {e}")))?;
 
-    // 5. 删行
-    conn.execute("DELETE FROM safe_box WHERE id=?1", [safe_box_id])
-        .map_err(|e| RestoreError::Db(format!("delete safe_box row: {e}")))?;
-
-    // 6. audit_log
+    // 5. 标记为已恢复（task-056：不再 DELETE 行）
+    //
+    // 此前直接 DELETE，导致「这个文件什么时候恢复的」在 safe_box 里查不到，
+    // 只能去 audit_log 里按路径反查（N+1，且路径可能重复）。改为保留行 +
+    // 写 restored_at，与 v1 schema 里本就预留的 status='restored' 语义对齐。
+    // 列表/配额/统计的查询都带 `status='in_box'` 过滤，所以外部行为不变。
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
+    conn.execute(
+        "UPDATE safe_box SET status='restored', restored_at=?2 WHERE id=?1",
+        params![safe_box_id, now],
+    )
+    .map_err(|e| RestoreError::Db(format!("mark safe_box row restored: {e}")))?;
+
+    // 6. audit_log
     let detail = serde_json::json!({
         "safe_box_id": safe_box_id,
         "size_bytes": size_bytes,

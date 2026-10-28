@@ -129,3 +129,55 @@
 | Console | 口径模糊 | 明确「排除 G6 后零红」 |
 
 > 第 5 行是本轮最需要守住的：G3 的验证对象是 `safe_box.source_task_id`，不是 `cleanup_item.session_id`。两者不同源，不能互证——这是二轮报告的错误，已记录在 PROJECT_STATE。
+
+## 六、G6 已知项豁免口径（task-056 定稿）
+
+### 6.1 现象（逐字复述，判错时对照）
+
+每次**文档加载后首次**进入「设置」tab，Console 出现：
+
+| # | 级别 | 内容 |
+|---|---|---|
+| 1 | error | `POST http://ipc.localhost/rules_check_update net::ERR_CONNECTION_REFUSED`（source=network） |
+| 2 | error | 同上（第二次调用，`Settings.tsx` 的 `check()` 与 `refreshHasBak()` 各一次） |
+| 3-6 | warning | Tauri `IPC custom protocol failed, will use postMessage` ×4 |
+
+**关键特征**：同一次文档生命周期内**再次**进入设置页不再复现；功能完全可用（回退到 postMessage 后 IPC 正常）。
+
+### 6.2 根因
+
+Tauri 2 的 IPC 有两条通道：
+
+1. **custom protocol**（`http://ipc.localhost/<command>`）——默认首选，性能好；
+2. **postMessage**——回退通道。
+
+WebView2 上 custom protocol 的 handler 注册与 WebView 创建存在**时序竞争**：文档刚加载完的首次 IPC 请求可能早于 handler 就绪，于是 `ERR_CONNECTION_REFUSED`。Tauri 捕获失败后**内部标记该 webview 走 postMessage**，所以第二次不再尝试 custom protocol、也不再报错。
+
+这是 **Tauri 2.x 上游行为**，不是我们的代码问题：
+- 报错发生在 `invoke()` 内部（`@tauri-apps/api` 的 fetch 层），业务代码无法拦截；
+- 我们的 `invoke.ts` 已按信封约定处理返回，未做任何自定义协议选择。
+
+### 6.3 为什么不做「warmup 修复」
+
+任务书给了可选方案：「在 `Settings.tsx` 首调前 warmup 一下 IPC 通道（如调一次无副作用的 `app_info` 命令），触发 postMessage 回退」。
+
+**评估结论：不采用。** 理由三条：
+
+1. **warmup 不能消除红错，只会换个位置出现。** 首次 IPC 必失败是「handler 未就绪」导致的，warmup 调用自己就是「首次 IPC」，它同样会打 `ERR_CONNECTION_REFUSED`。Console 里的红错数量不变，只是命令名从 `rules_check_update` 变成 `app_info`——**对「Console 零红」这个门禁目标毫无帮助**。
+2. **可能变差。** 现在红错只在「用户进设置页」时出现（用户不点设置就看不到）；若在 `App` 挂载时 warmup，则**每次启动都必然红一次**，暴露面反而扩大。
+3. **本轮无法验证。** 按 2026-10-25/26 定的流程，开发轮不做 GUI/真机测试，warmup 是否真的让第二次调用顺畅、是否引入新的启动时序问题，开发侧拿不到证据。**提交一个自己无法验证的「修复」，比明确豁免更危险。**
+
+### 6.4 判定规则（测试轮照此执行）
+
+| 情况 | 判定 |
+|---|---|
+| Console 里**只有**上述 6 条（2 error + 4 warning），且都发生在「首次进设置页」 | **通过**（属 G6 已知项） |
+| 上述 6 条 + 其它任何红色 error | **不通过**，其它 error 单独登记 |
+| 同一文档内**第二次**进设置页仍报 `ipc.localhost` 错 | **不通过**（说明回退机制失效，与已知项描述不符） |
+| 设置页功能不可用（规则版本读不到、检查更新点不动） | **不通过**（说明回退后 IPC 也坏了） |
+| 其它页面（仪表盘/清理/保险箱/历史）首次 IPC 报同类错 | **不通过**（已知项只覆盖「设置页首次」，其它页面出现说明范围扩大） |
+
+### 6.5 后续处理
+
+- **不立项修复**。等 Tauri 上游修（跟踪 `tauri-apps/tauri` 关于 WebView2 custom protocol 首调时序的 issue）。若升级 Tauri 大版本后现象消失，回来把本条从「已知问题」删除。
+- 若未来 Console 门禁要收紧到「真零红」，唯一彻底解法是**显式关闭 custom protocol**（`app.windows[].useHttpsScheme` / 或在 builder 上强制 `use_custom_protocol(false)` 等价配置），全部走 postMessage。代价是 IPC 吞吐下降（每次调用多一次序列化往返），对当前调用量（低频、小载荷）可接受，但**属于架构级取舍，需要产品拍板**，不在 task-056 范围。
