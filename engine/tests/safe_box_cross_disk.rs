@@ -159,12 +159,14 @@ fn cross_disk_move_into_box_falls_back_to_copy_remove() {
     assert_eq!(size, content.len() as i64);
 }
 
-/// 跨盘恢复：`restore_from_safe_box` 的 `fs::rename` 也会跨盘。
+/// 跨盘恢复：`restore_from_safe_box` 把 box 文件 rename 回 original_path。
 ///
-/// 这条是**已知限制**：restore 没有 copy+remove fallback，跨盘恢复会直接报 IO 错误。
-/// 用例把它固化成「当前行为」，避免以后误以为支持。
+/// task-056 测试轮实测修正：开发轮原假设「跨盘 restore 无 fallback 必报 IO 错」，
+/// 但 Windows 上 `std::fs::rename`（MoveFileExW）跨卷实际成功（OS 层 copy+remove），
+/// 跨盘 restore 在 Windows 下可用。本用例固化正确行为：跨盘 restore 成功、
+/// 文件内容逐字节一致、行标记 restored 且 restored_at 非空。
 #[test]
-fn cross_disk_restore_currently_returns_io_error() {
+fn cross_disk_restore_succeeds_across_drives() {
     let Some((src_root, box_root)) = two_tempdirs_on_different_drives() else {
         eprintln!("[skip] 只有单盘环境，跨盘 restore 无法验证（CI 属预期）");
         return;
@@ -181,7 +183,8 @@ fn cross_disk_restore_currently_returns_io_error() {
     std::fs::create_dir_all(&box_dir).expect("create box_dir");
 
     let rel = "cross_restore.bin";
-    std::fs::write(box_dir.join(rel), vec![7u8; 128]).expect("write boxed file");
+    let content: Vec<u8> = (0..128u32).map(|i| (i % 251) as u8).collect();
+    std::fs::write(box_dir.join(rel), &content).expect("write boxed file");
 
     // 原路径在另一个盘
     let target = src_root.path().join("restore_target.bin");
@@ -199,21 +202,30 @@ fn cross_disk_restore_currently_returns_io_error() {
         "保险箱与恢复目标必须在不同盘"
     );
 
-    // 当前实现：rename 跨盘 → IO 错误（没有 fallback）。这是已知限制，不是回归。
-    let err = engine::execute::safe_box::restore_from_safe_box(&conn, &box_dir, id)
-        .expect_err("跨盘 restore 当前应报 IO 错误（已知限制）");
-    let msg = format!("{err:?}");
-    assert!(
-        msg.contains("Io"),
-        "期望 RestoreError::Io（rename 跨盘失败），实际 {msg}"
-    );
+    // Windows 下跨卷 rename 由 OS 完成 copy+remove，restore 应成功。
+    let res = engine::execute::safe_box::restore_from_safe_box(&conn, &box_dir, id)
+        .expect("跨盘 restore 在 Windows 下应成功（OS 跨卷 rename）");
+    assert_eq!(res.safe_box_id, id);
 
-    // 行仍是 in_box（失败不改状态），文件仍在保险箱里没丢
-    let status: String = conn
-        .query_row("SELECT status FROM safe_box WHERE id=?1", [id], |r| {
-            r.get(0)
-        })
-        .expect("read status");
-    assert_eq!(status, "in_box", "恢复失败不应改状态");
-    assert!(box_dir.join(rel).exists(), "失败后 box 文件必须还在");
+    // 目标文件落盘且内容逐字节一致
+    assert!(target.exists(), "恢复后目标文件应存在");
+    let restored = std::fs::read(&target).expect("read restored file");
+    assert_eq!(restored, content, "跨盘恢复后内容必须逐字节一致");
+
+    // box 原文件已移走
+    assert!(!box_dir.join(rel).exists(), "恢复后 box 文件应已移走");
+
+    // 行标记 restored 且 restored_at 非空
+    let (status, restored_at): (String, Option<i64>) = conn
+        .query_row(
+            "SELECT status, restored_at FROM safe_box WHERE id=?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .expect("read row");
+    assert_eq!(status, "restored", "恢复后状态应为 restored");
+    assert!(
+        restored_at.is_some_and(|t| t > 0),
+        "restored_at 应写入 unix 秒"
+    );
 }
