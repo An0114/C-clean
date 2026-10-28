@@ -6,6 +6,17 @@
 **v0.1.6 发版门禁收官（2026-10-28）**：升级闭环手册由用户真机跑通——装 v0.1.5 → banner 提示「发现新版本 0.1.6」→ 升级 → 重启后 A/B/C 三种方式均确认 0.1.6 → R1–R6 功能回归全过（证据见 `docs/release/v0.1.6-upgrade-verification.md` 末尾结果表）。第三轮 NSIS/MSI 双跑：各 27 条过 26，唯一不通过为 C08（`scripts\` 改名后应用启动即 fail-fast 闪烁退出，未出现「完成+报错」并存，但实现方式与预期的「运行时扫描失败红条」不同）；排除 G6 后 Console 零红错。M2 updater 闭环正式收官。
 
 ## 最近一次变更
+2026-10-28：**task-055 开发完成（M3 banner 下载进度 + 失败态 + 稍后提醒 + Settings loading），状态 `testing`**（`feature/task-055-update-banner-progress`）：
+  - **① 下载事件订阅**：`downloadAndInstall(onEvent)` —— 真实类型定义是 `downloadAndInstall(onEvent?: (p: DownloadEvent) => void, options?)`，**第一个参数就是回调**（任务书写 `{ onEvent }` 对象，与 plugin-updater 2.13.3 不符）；事件字段是 `data.contentLength` / `data.chunkLength`（任务书写 `totalSize` / `chunkSize`），`contentLength` 还是 **optional**（服务器不给 Content-Length 时拿不到总量）。`Finished` 后切 `installing` 态。
+  - **② 进度 UI**：线性进度条（宽度=percent，200ms 过渡抹平 chunk 级跳变）+ 标题 `下载更新中 N%` + 副行 `已下载 X.X / Y.Y MB，速度 ≈ Z`；total 未知时退化为 `已下载 X.X MB（总大小未知）`，不显示误导性的 0%。
+  - **③ 速度估算**：EMA，**窗口 1s、平滑系数 α=0.4**。不是每个 chunk 都算（会剧烈抖动），而是「每满 1s 用窗口增量 / 实际时长算瞬时速度」再 EMA。已下载字节数放 `useRef` 而非依赖 `setState` 的函数式 updater——在 updater 里再调 `setState` 是反模式，严格模式下会重复执行。
+  - **④ 失败态**：`classifyUpdateError` 按关键词映射 5 类（网络 → 「网络连接失败，请检查网络后重试」；签名 → 「签名校验失败，更新包可能已损坏，请重新下载」；磁盘 → 「磁盘空间不足，请清理 C 盘后重试」；版本 → 「当前已是最新版本」；兜底 → 「更新失败：<原文>（请截图反馈）」）。**判定顺序有讲究**：网络在签名之前，但签名错误原文常带 URL，所以网络正则只匹配真正的网络关键词（`network|request|\burl\b|dns|timeout|connect|offline|fetch|http`），避免把签名问题误判成网络。banner 失败态给「重试」（重新走 `downloadAndInstall`）+「关闭」。
+  - **⑤ 稍后提醒持久化**：`localStorage["cclean:update:dismissedVersion"]` 存**版本号字符串**（不是布尔），只忽略「这一个版本」；有更高版本时 banner 照弹。读写都 try-catch（隐私模式/配额满时静默降级为「重启后再弹」）。
+  - **⑥ Settings**：手动检查文案改 `当前 vX / 发现 vY` 或 `当前 vX，已是最新版本`（当前版本用 `getVersion()`，取不到则退化）；失败文案复用 `classifyUpdateError`；新增 `onUpdateFound` prop，手动检查发现新版本时通知 App 强制显示 banner（覆盖「稍后提醒」）。**检查中按钮 disabled + 「检查中…」是 task-035 既有实现，本轮只补文案与错误映射**。
+  - **新增文件 `app/src/utils/update.ts`**（**白名单缺口，见实现备注**）：`computePercent` / `formatMB` / `formatSpeed` / `classifyUpdateError` / `DISMISSED_VERSION_KEY` / `readDismissedVersion` / `writeDismissedVersion` / `shouldShowBanner` + 两个 EMA 常量。**为什么不塞 App.tsx**：① 组件文件多导出非组件会触发 `react-refresh/only-export-components`（`SafeBox.tsx` 已有 2 条同类 warning，不再增加）；② `Settings.tsx` 要复用 `classifyUpdateError`，而 App 会 import Settings，函数放 App 里会造成 App ↔ Settings 循环依赖。
+  - **门禁**：`pnpm --filter app lint` 0 error（2 条既有 warning）/ **vitest 81 passed（9 files，基线 54 + 新增 27）** / `pnpm --filter app build` **184.22 kB │ gzip 59.18 kB**（基线 181.51）/ `cargo test --workspace` **250 passed + 8 ignored**（本任务不改 Rust，零回归）。
+  - **环境坑**：vitest 仍偶发 `EPERM ... node-brokered-fs-shim.cjs`（沙箱拦写系统 Temp），本轮 3 次里 2 次复现，**重跑即绿**；`TMPDIR` 指到 `target/vitest-tmp` 有帮助但不能完全消除。
+  - **与任务书不符 3 项**：① `downloadAndInstall` 签名与事件字段名（见上）；② 白名单未含 `app/src/utils/update.ts`（共享纯函数必须有独立文件，见上）；③ 任务书要求「真机/安装态冒烟必做不可裁剪」，按 2026-10-25 新流程开发轮不做，移交测试 Agent。
 2026-10-28：**v0.1.6 升级闭环真机验证通过（用户本人执行）**——装 v0.1.5 → banner 显示「发现新版本 0.1.6」→ 升级 → 重启后 A/B/C 三种方式均确认 0.1.6 → R1–R6 功能回归全过（结果表追加于 `docs/release/v0.1.6-upgrade-verification.md` 末尾）。同日完成第三轮 NSIS/MSI 双跑：各 27 条过 26、不适用 0、排除 G6 后 Console 红错 0；唯一不通过为 C08（`scripts\` 改名后应用启动即 fail-fast 闪烁退出，未出现「完成+报错」并存，但实现方式与预期不同），说明已写入 `docs/test-reports/gui-walkthrough-round3-checklist.md` 汇总表下方。M2 updater 闭环正式收官；「当前目标」「下一步计划」两节按要求精简为短句。
 2026-10-11：完成 PRD / TRD / ARCHITECTURE / AGENTS / 立项决策记录全套长期基线文档，并初始化本状态白板。
 2026-10-11：task-001 完成——落地 app/engine/elevation/rules/scripts 五大目录骨架、Cargo workspace + pnpm workspace 双工作区，Tauri 2 最小空窗口（标题「C-Disk Cleaner」）端到端跑通，Cargo.lock 已入库。
@@ -390,6 +401,8 @@
 
 - [x] 054：v0.1.6 发版准备——**①** `release.yml` 的 `softprops/action-gh-release` 步骤补 `target_commitish: ${{ github.sha }}`（tag 精确指向触发发版的 commit，不再默认指向 main HEAD）；**②** 版本号 `0.1.0` → `0.1.6`（`package.json` / `app/package.json` / `app/src-tauri/tauri.conf.json` / `app/src-tauri/Cargo.toml` 四处 + `Cargo.lock` 自动更新），`tauri build` 产出 `C-DiskCleaner_0.1.6_x64-setup.exe`（4.01 MiB）+ `.msi`（5.83 MiB）+ 成对 `.sig`；**③** 新建 `CHANGELOG.md`（Keep a Changelog 格式，v0.1.6 的「新增/修复/已知问题」三段，自本版起启用不回溯）；**④** 新建 `docs/test-reports/gui-walkthrough-round3-checklist.md`（27 条，NSIS/MSI 双列，含 G1/G2/G3/G4/G5/G7/G8 + 占用关闭 + updater + Console 口径 + 卸载）；**⑤** 新建 `docs/release/v0.1.6-upgrade-verification.md`（6 步升级闭环手册 + 卡点速查）；另修 `.gitignore` 的 `release/` 规则误伤 `docs/release/`（加 `!docs/release/` 负向包含）（`feature/task-054-release-prep-v016`；**开发轮完成，状态 `testing`**；门禁 check/clippy/fmt 0、`cargo test --workspace` 250 passed + 8 ignored、vitest 54、build 181.51 kB、`tauri build` exit 0；**发版动作（workflow_dispatch）由用户手动执行，不在本任务内**）
 
+- [x] 055：M3 更新体验——**①** `onUpdateNow` 订阅 `downloadAndInstall(onEvent)`（真实签名是**第一个参数就是回调**，非 `{onEvent}`；事件字段 `data.contentLength` / `data.chunkLength`，非 `totalSize`/`chunkSize`），`Started` 记总量、`Progress` 累加、`Finished` 切 installing；**②** banner 下载中显示线性进度条 + `下载更新中 N%` + `已下载 X.X / Y.Y MB，速度 ≈ Z`（EMA 平滑，1s 窗口、α=0.4；total 未知时退化为「总大小未知」）；**③** 失败态按关键词映射 5 类中文（网络 / 签名 / 磁盘 / 已是最新 / 兜底），banner 给「重试」+「关闭」；**④** 「稍后提醒」写 `localStorage["cclean:update:dismissedVersion"]`，启动时同版本不弹、更高版本照弹；**⑤** Settings 手动检查显示「当前 vX / 发现 vY」或「当前 vX，已是最新版本」，失败文案复用同一映射，`onUpdateFound` 让手动检查能强制显示 banner（`feature/task-055-update-banner-progress`；**开发轮完成，状态 `testing`**；门禁 lint 0 error、vitest **81 passed（9 files，新增 27）**、build **184.22 kB**、`cargo test --workspace` 250+8 不回归；**按新流程开发轮不跑 CI、不做真机/安装态冒烟**，移交测试 Agent）
+
 > 注：040~047 的完成明细未回填本清单（历史遗漏），以「最近一次变更」段与 `tasks/040-*.md`~`tasks/047-*.md` 为准。
 > 编号顺延（2026-10-24）：原定 050 的「safe_box 增强」顺延为 **051**，050 让位给发版阻塞级的打包资源路径缺陷。
 
@@ -427,11 +440,11 @@
 
 ## 下一步计划
 1. **C08 拍板**：`scripts\` 缺失时当前行为是「启动即 fail-fast 闪烁退出」，与清单期望的「运行时扫描失败红条 + 进度条不满」最终效果相同但实现方式不同，待产品/开发确认是否接受。
-2. **进入 M3**：banner 下载进度反馈 / 差量更新。
+2. **M3 下一项：差量更新（bsdiff / 差量包）评估**——banner 下载进度反馈已由 task-055 落地（`feature/task-055-update-banner-progress`，待测试轮）；差量更新是独立大块，建议先做技术评估再立项（task-056+）。
 3. **RmRestart**（关闭后自动重启被关进程）仍待产品侧拍板。
 
 ## 当前负责人 Agent
-**用户本人**——v0.1.6 已发布并通过升级闭环真机验证（2026-10-28），NSIS/MSI 双跑各 26/27。待办：C08 行为拍板 → 进入 M3（banner 下载进度 / 差量更新）。
+**测试 Agent（提示词 9）**——`feature/task-055-update-banner-progress` 开发轮已完成、状态 `testing`，待测试轮：独立重跑全部门禁 + 开 PR 触发 CI + 真机冒烟（进度条 0→100 / 断网中文文案 + 重试 / 稍后提醒重开不弹 / Settings 检查 loading）+ NSIS 安装态复跑。上一手：DevFullstackRustReact（task-055 开发）。再上一手：DocsKeeper（task-055 派发 + v0.1.6 发版回填）。
 
 ## Git 提交记录
 | Commit | 任务 | 说明 |
@@ -785,6 +798,15 @@
 | f349be0 | #task-054 | chore(gitignore): 负向包含 docs/release/，发版手册可入库 |
 | 530ae8f | #task-054 | docs(release): 新增 v0.1.6 升级闭环验证手册（6 步 + 卡点速查） |
 | （本次） | #task-054 | docs(state): 任务054完成，v0.1.6 发版准备就绪，待用户手动 workflow_dispatch |
+| a51ebef | #task-054 | merge: task-054 v0.1.6 发版准备——版本号+release 溯源+CHANGELOG+验证手册（--no-ff） |
+| 56d203b | #task-054 | docs(state): 回填 v0.1.6 发版升级闭环 + 第三轮 NSIS/MSI 走查结果 |
+| 50f40ea | #task-055 | feat(updater): downloadAndInstall 订阅 onEvent，记录 contentLength / chunkLength |
+| 0460edc | #task-055 | feat(ui): banner 下载中显示进度条 + 百分比/大小/速度（EMA 1s 窗口 α=0.4） |
+| 9b62db3 | #task-055 | fix(ui): updater 失败态按关键词映射中文文案 + 重试/关闭按钮 |
+| 107b4cb | #task-055 | feat(ui): 「稍后提醒」持久化到 localStorage，同版本不再弹 |
+| be2b22b | #task-055 | feat(settings): 手动检查更新显示当前/远端版本 + 失败文案复用 + onUpdateFound |
+| f133226 | #task-055 | test(ui): 补 27 条用例——失败文案 5 类 / 稍后提醒 / 百分比兜底 / 进度与失败态 / Settings loading |
+| （本次） | #task-055 | docs(state): 任务055完成，M3 banner 下载进度 + 失败态 + loading 就绪 |
 
 ---
 变更轨迹：
@@ -899,3 +921,4 @@
 
 - 2026-10-27  task-054  v0.1.6 发版准备（release 溯源 + 版本号 + CHANGELOG + 复验清单 + 升级手册）：`release.yml` 补 `target_commitish: ${{ github.sha }}`；版本号 `0.1.0` → `0.1.6`（四处 + `Cargo.lock`），`tauri build` 产出 `C-DiskCleaner_0.1.6_x64-setup.exe`（4.01 MiB）+ `.msi`（5.83 MiB）+ 成对 `.sig`；新建 `CHANGELOG.md`（v0.1.6 三段，自本版启用不回溯）、第三轮走查清单（27 条 NSIS/MSI 双列，含 Console 口径「排除 G6 后零红」）、升级闭环手册（6 步 + 卡点速查）；`.gitignore` 加 `!docs/release/` 修误伤。门禁 check/clippy/fmt 0、cargo test 250+8、vitest 54、build 181.51 kB。**开发轮不跑 CI、不做安装态冒烟**，发版由用户手动 workflow_dispatch，NSIS/MSI 双跑移交测试 Agent
 - 2026-10-27  task-054  **测试轮通过**（`docs/test-reports/054-test-report.md`，分支 @`3315fc8`）：独立重跑 fmt/check/clippy/test（exit 0，250 passed + 8 ignored 零回归）/ lint 0 error / vitest 54（7 files）/ build 181.51 kB；契约核验版本号四处 `0.1.6`、`release.yml:148` `target_commitish: ${{ github.sha }}`、三份交付物齐全；L4 MSI `/a` 管理映像抽取 exit 0（exe 16.3 MB + rules 2 文件 + 5 个 scan ps1、无 `_up_`），从抽取目录直启 exe 安装目录 NO_DIFF、DB 落 `%APPDATA%`；**0 缺陷、未开 bugfix 子分支**。第三档登记：NSIS 真实安装因 UAC 被用户取消未执行、GUI 27 条点击仍被 WebView2 渲染不 paint 阻塞（历史已知项）、CI 五道闸待提示词 B 建 draft PR 轮询。状态置 `awaiting_review`，移交评审 Agent
+- 2026-10-28  task-055  M3 banner 下载进度反馈 + 失败态文案 + 手动检查 loading：`downloadAndInstall(onEvent)` 订阅（真实签名为第一个参数即回调，事件字段 `contentLength`/`chunkLength`）；banner 进度条 + `下载更新中 N%` + 已下载/总量 + EMA 速度（1s 窗口 α=0.4）；失败态 5 类中文映射 + 重试/关闭；「稍后提醒」写 `localStorage` 存版本号（同版本不弹、更高版本照弹）；Settings 手动检查显示「当前 vX / 发现 vY」+ `onUpdateFound` 强制显示 banner。新增 `app/src/utils/update.ts`（纯函数，避免 App↔Settings 循环依赖与 react-refresh 警告）。门禁 lint 0 / vitest **81**（+27）/ build 184.22 kB / cargo 250+8 不回归。**开发轮不跑 CI、不做真机冒烟**，移交测试 Agent
