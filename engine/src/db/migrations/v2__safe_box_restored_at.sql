@@ -1,0 +1,14 @@
+-- task-056：safe_box 增加 restored_at 审计列（task-017 遗留 B 低）。
+--
+-- 背景：此前 restore 成功后直接 DELETE 行，只留一条 audit_log，用户问
+-- 「这个文件什么时候恢复的」在 safe_box 里查不到。
+--
+-- 语义变更：restore 不再 DELETE，改为 status='restored' + restored_at=<unix 秒>。
+-- 列表/配额/统计的所有查询本来就带 `status='in_box'` 过滤，所以：
+--   - 保险箱列表不会显示已恢复行（行为不变）；
+--   - 已恢复行不占 5GB 配额（行为不变）；
+--   - 只是表里多留一行历史，供追溯。
+--
+-- 类型用 INTEGER 与同表 quarantined_at / expires_at 保持一致（都是 unix 秒），
+-- 前端 formatTs 可直接消费，不需要额外解析 ISO 字符串。
+ALTER TABLE safe_box ADD COLUMN restored_at INTEGER;
