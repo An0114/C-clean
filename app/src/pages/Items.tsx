@@ -191,6 +191,20 @@ export default function Items() {
   const [previewing, setPreviewing] = useState(false);
   const [preview, setPreview] = useState<Preview | null>(null);
 
+  // task-057：启动时拉一次偏好，confirm 文案据此追加「将自动重启被关闭的进程」。
+  // 读失败保持 false（fail-closed，不打扰用户）。
+  const [autoRestartOnClose, setAutoRestartOnClose] = useState(false);
+  useEffect(() => {
+    (async () => {
+      try {
+        const p = await api<{ autoRestartOnClose: boolean }>("get_prefs", {});
+        setAutoRestartOnClose(Boolean(p.autoRestartOnClose));
+      } catch {
+        setAutoRestartOnClose(false);
+      }
+    })();
+  }, []);
+
   /**
    * 拉取指定页。
    *
@@ -317,8 +331,12 @@ export default function Items() {
 
     const procs = dedupeProcs(locked.flatMap((f) => f.lockingProcesses));
     const list = procs.map(formatProc).join("\n");
+    // task-057：开关开启时追加一行提示，让用户知道关闭后进程会被自动拉起。
+    const restartHint = autoRestartOnClose
+      ? "\n注意：本次会在关闭后自动重启被关闭且支持重启的进程。"
+      : "";
     const confirmed = window.confirm(
-      `即将请求关闭以下进程：\n${list}\n\n未保存的数据可能丢失，关闭后会自动重试删除。\n注意：同一控制台内的相关进程可能一并关闭。是否继续？`,
+      `即将请求关闭以下进程：\n${list}\n\n未保存的数据可能丢失，关闭后会自动重试删除。\n注意：同一控制台内的相关进程可能一并关闭。${restartHint}\n是否继续？`,
     );
     // 取消：直接返回，不调命令，按钮保持可点。
     if (!confirmed) return;
@@ -358,7 +376,7 @@ export default function Items() {
     } finally {
       setRetrying(false);
     }
-  }, [result, busy, load]);
+  }, [result, busy, load, autoRestartOnClose]);
 
   // task-040 C2：只读预览。走 apiRaw 以拿回 2002 信封里的 blockedByL3。
   const previewSelection = useCallback(async () => {
