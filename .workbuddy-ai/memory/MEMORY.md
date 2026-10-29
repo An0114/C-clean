@@ -17,10 +17,26 @@ _项目级、跨会话生效的稳定约定。用户明确交代的规则写这�
 
 > 对上一版流程的影响：原「push 后必须等 CI 全绿才能报开发完成」不再适用于开发轮，改为「开发轮报完成只需本地门禁全绿」；CI 门禁整体后移到测试轮，且测试轮的 CI 结果成为评审的唯一放行依据。
 
+## 开发轮不做 GUI/UI 测试（2026-10-26 AnFer 明确交代）
+
+**开发 Agent 不碰 GUI / 真机 UI 测试，一律移交测试 Agent。**
+
+- 开发轮**只做**：本地静态/单元/集成门禁（fmt、clippy、cargo test、lint、vitest、build、资源契约）+ 必要的打包验证（`tauri build` 能出包即可）。
+- 开发轮**不做**：真机窗口点击、GUI 走查、Console 截图取证、安装后手工操作验证。
+- **真机 UI 测试统一由测试 Agent 在测试轮执行**（含 E20 扫描→清理 GUI 链路这类放行门禁）。
+- 开发轮的「运行时自查」只报 dev / 打包 / CI 三档里的**非 GUI** 结论；GUI 一栏直接写「移交测试 Agent」，不再作为开发轮的未闭环项登记。
+- 背景：本机 WebView2 渲染进程创建即崩（见下节），开发轮反复尝试取证既拿不到证据又拖时间，职责分离后两边都干净。
+
 ## 环境坑（本机）
 
 - `git push` 会因全局 `http.sslbackend=openssl` 报 `TLS connect error: error:0A000126 ... unexpected eof`，**push 时带 `git -c http.sslBackend=schannel`**（未改全局配置）。
-- GitHub API 必须经代理 `http://127.0.0.1:8607` 且带 `User-Agent`；`--noproxy '*'` 对 `api.github.com` 不通。
+- GitHub 网络（2026-10-29 更正，**这条最容易踩**）：本机跑着 **Clash Verge**（进程 `clash-verge` / `verge-mihomo`），**混合端口 7897**（不是 8607）。它开 fake-ip 时 `api.github.com` 被解析成 `198.18.0.111`（保留段），**代理一挂就全断**——直连和代理同时 000。
+  - 探测顺序：先 `curl --max-time 15 https://api.github.com/rate_limit` 测直连 → 不行再 `--proxy http://127.0.0.1:7897` → 两个都 000 就查 `Get-NetTCPConnection -State Listen | ? LocalPort -in 7890,7897,8607,1080` 和 `Get-Process | ? ProcessName -match 'clash|mihomo'`。
+  - 网络抖时**单次请求会偶发返回空体**，必须写重试（直连/代理交替，最多 6-8 轮），别当成鉴权失败。
+  - **Python urllib 走代理会 `SSL: UNEXPECTED_EOF_WHILE_READING`**（curl 走同一代理正常）。所以取数一律用 **curl**，python 只从 stdin 读 JSON 解析。
+- **永远带 `User-Agent`**（GitHub 无 UA 会 403）。
+- 本机**无 `gh` CLI**；建 PR / 查 check-runs 走 `git credential fill` 取 token + `api.github.com` REST。
+- curl 输出到 `/tmp/x.json` 后，Windows 版 python **读不到**（Git Bash 的 `/tmp` 与 Win 路径不通）——用管道喂 stdin，或写到仓库内 `target/` 下。
 - NSIS `perMachine` 在非管理员 shell 无法静默安装（弹 UAC / 残留 `consent.exe`），安装级布局验证改用 MSI per-user：`msiexec /i x.msi /qn ALLUSERS=2 MSIINSTALLPERUSER=1 INSTALLDIR=<dir>`。
 - 本机 WebView2 渲染进程创建即崩溃（Crashpad 新增 `.dmp`、CDP 9222 不通），**GUI 点击证据取不到**，一律按第三档登记 + jsdom/引擎集成用例补偿，不伪造。
 
