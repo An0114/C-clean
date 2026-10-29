@@ -320,6 +320,59 @@ pub fn who_is_locking(path: &str) -> Result<Vec<LockingProcess>, String> {
     }
 }
 
+/// 关闭进度的回调类型（task-060）：参数是「已等待的秒数」（从调 `RmShutdown` 起算）。
+///
+/// 用 `Arc<dyn Fn + Send + Sync>` 而不是 `&dyn Fn`，因为要把它 move 进计时线程。
+/// engine 不认识 Tauri，这里只负责「每秒喊一次」，怎么展示（emit 事件 / 打日志）
+/// 由调用方决定——保持 engine 与 UI 层解耦。
+pub type ProgressCallback = std::sync::Arc<dyn Fn(u32) + Send + Sync>;
+
+/// 起一个「每秒回调一次」的计时线程，返回 (停止标志, 线程句柄)。
+///
+/// 为什么要单独起线程：`RmShutdown` 是**同步阻塞的 FFI**，它没有超时参数、
+/// 也没有可用的进度回调（`pfnProgress` 需要裸函数指针，捕获不了上下文）。
+/// 阻塞期间主线程没法做任何事，所以只能另起线程计时。
+///
+/// 停止粒度 100ms：`RmShutdown` 常常 1–2s 就返回，如果 ticker 每次 sleep 满 1s
+/// 才检查停止标志，前端会多显示 1s 的「关闭中」——虽然无害，但没必要。
+#[cfg(windows)]
+fn spawn_shutdown_ticker(
+    cb: Option<ProgressCallback>,
+) -> (
+    std::sync::Arc<std::sync::atomic::AtomicBool>,
+    Option<std::thread::JoinHandle<()>>,
+) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let Some(cb) = cb else {
+        return (stop, None);
+    };
+
+    let stop_flag = stop.clone();
+    let handle = std::thread::spawn(move || {
+        let mut secs: u32 = 0;
+        loop {
+            // 10 × 100ms = 1s，期间随时可被 stop 打断。
+            for _ in 0..10 {
+                if stop_flag.load(Ordering::Relaxed) {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            secs += 1;
+            // 超过 30s 仍继续回调（secs > 30），前端据此提示「已超过预期，仍在等待」。
+            // 不在这里主动放弃：`RmShutdown` 无法中断，线程提前退出只会让用户
+            // 看不到「还在等」，误以为已经卡死。
+            cb(secs);
+        }
+    });
+
+    (stop, Some(handle))
+}
+
 /// 请求关闭占用 `path` 的进程（task-049），可选在关闭后自动重启被关进程（task-057 / 058）。
 ///
 /// 流程：`RmStartSession → RmRegisterResources(只注册这一个文件) → RmGetList →
@@ -339,6 +392,7 @@ pub fn shutdown_locking_processes(
     path: &str,
     auto_restart: bool,
     restart_whitelist: &[String],
+    on_progress: Option<ProgressCallback>,
 ) -> Result<ShutdownOutcome, String> {
     #[cfg(windows)]
     {
@@ -401,7 +455,25 @@ pub fn shutdown_locking_processes(
             None
         };
 
-        session.shutdown()?;
+        // task-060：RmShutdown 是同步阻塞的 FFI（实测最坏可等 30s），期间前端
+        // 只能干等。这里起一个 1s 计时线程，每秒把「已等 Xs」回调出去，让 UI
+        // 能显示进度而不是像卡死。
+        //
+        // 注意 `RmShutdown` **没有超时参数**，也无法中断——所谓「30s」是 RM 内部
+        // 对每个应用的处理上限（经验值），不是我们能设的。所以这里**不做超时中断**，
+        // 只在 secs > 30 时继续回调，由前端提示「已超过预期，仍在等待」。
+        let (stop_ticker, ticker) = spawn_shutdown_ticker(on_progress);
+        let shutdown_result = session.shutdown();
+        // 无论成功失败都先停 ticker，避免 `?` 提前返回导致线程泄漏（线程持有 cb，
+        // 泄漏会让前端一直收到进度事件）。
+        {
+            use std::sync::atomic::Ordering;
+            stop_ticker.store(true, Ordering::Relaxed);
+            if let Some(h) = ticker {
+                let _ = h.join();
+            }
+        }
+        shutdown_result?;
 
         // task-057：可选自动重启。
         //
@@ -442,7 +514,7 @@ pub fn shutdown_locking_processes(
     }
     #[cfg(not(windows))]
     {
-        let _ = (path, auto_restart, restart_whitelist);
+        let _ = (path, auto_restart, restart_whitelist, on_progress);
         Ok(ShutdownOutcome::default())
     }
 }
@@ -939,5 +1011,59 @@ mod tests {
             vec![100u32],
             "应只保留 closable 且 bRestartable=TRUE 的 pid"
         );
+    }
+
+    // ============ task-060：关闭进度 ticker ============
+
+    /// 计时线程每满 1s 回调一次；stop 之后不再增长。
+    ///
+    /// 用真实时间（约 1.3s）而不是 mock 时钟：ticker 就是靠 `sleep` 实现的，
+    /// 换成假时钟反而测不到「sleep 分段 + stop 打断」这个真实行为。
+    /// 等待上限设 3s，给 CI 上的调度抖动留余量。
+    #[cfg(windows)]
+    #[test]
+    fn shutdown_ticker_reports_seconds_until_stopped() {
+        use std::sync::atomic::Ordering;
+        use std::sync::{Arc, Mutex};
+        use std::time::Duration;
+
+        let seen: Arc<Mutex<Vec<u32>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        let cb: super::ProgressCallback = Arc::new(move |secs| {
+            sink.lock().unwrap().push(secs);
+        });
+
+        let (stop, handle) = super::spawn_shutdown_ticker(Some(cb));
+        let handle = handle.expect("传了回调就应该起线程");
+
+        // 等到至少 1 次回调（最多 3s）
+        let mut waited = 0;
+        while seen.lock().unwrap().is_empty() && waited < 30 {
+            std::thread::sleep(Duration::from_millis(100));
+            waited += 1;
+        }
+        let first = seen.lock().unwrap().clone();
+        assert_eq!(first, vec![1], "1s 后应只回调一次，且秒数是 1（不是 0）");
+
+        stop.store(true, Ordering::Relaxed);
+        handle.join().expect("ticker 应能正常退出");
+
+        // join 之后再等 1.2s，确认停止后不再有新回调
+        std::thread::sleep(Duration::from_millis(1200));
+        assert_eq!(
+            seen.lock().unwrap().len(),
+            1,
+            "stop 之后不应再有回调（否则线程泄漏，前端会一直收到进度事件）"
+        );
+    }
+
+    /// 不传回调时不建线程（返回 None），避免无意义的线程开销。
+    #[cfg(windows)]
+    #[test]
+    fn shutdown_ticker_is_noop_without_callback() {
+        let (stop, handle) = super::spawn_shutdown_ticker(None);
+        assert!(handle.is_none(), "None 回调不应起线程");
+        // 停止标志仍然可用（调用方无条件 store，不应 panic）
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
     }
 }

@@ -23,6 +23,7 @@
 // `{ page, pageSize }` 分页入参 + 底部翻页栏，翻页时清空勾选（避免跨页误删）。
 
 import { useCallback, useEffect, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { formatBytes } from "../utils/formatBytes";
 import { api, apiRaw } from "../utils/invoke";
 import {
@@ -186,6 +187,9 @@ export default function Items() {
   const [total, setTotal] = useState(0);
   // task-049：重试态（关闭占用进程 + 重删）。与 cleaning/previewing 互斥。
   const [retrying, setRetrying] = useState(false);
+  // task-060：关闭进程期间「已等待秒数」。null = 没在关（不显示进度条）。
+  // 来源是后端 `shutdown://progress` 事件（engine 每秒回调一次）。
+  const [shutdownSecs, setShutdownSecs] = useState<number | null>(null);
   const [result, setResult] = useState<ResultState | null>(null);
   // task-040 预览态。
   const [previewing, setPreviewing] = useState(false);
@@ -342,6 +346,19 @@ export default function Items() {
     if (!confirmed) return;
 
     setRetrying(true);
+    setShutdownSecs(0);
+    // task-060：订阅「关闭进度」。后端在 RmShutdown 阻塞期间每秒推一次
+    // `{ elapsedSecs, expectedMaxSecs }`，这里只取已等秒数。
+    // 订阅失败（非 Tauri 环境 / 事件通道异常）不影响主流程，进度条只是不出现。
+    let unlisten: (() => void) | null = null;
+    try {
+      unlisten = await listen<{ elapsedSecs: number }>("shutdown://progress", (e) => {
+        setShutdownSecs(e.payload.elapsedSecs);
+      });
+    } catch {
+      // 订阅失败（非 Tauri 环境 / 事件通道异常）不影响主流程，
+      // 只是进度条不出现——用户仍能看到按钮变成「关闭并重试中…」。
+    }
     try {
       const resp = await api<RetryLockedResp>("cleanup_retry_locked", {
         itemIds: locked.map((f) => f.itemId),
@@ -374,6 +391,9 @@ export default function Items() {
         prev ? { ...prev, tone: "fail", headline: `关闭并重试失败：${String(e)}` } : prev,
       );
     } finally {
+      // task-060：先退订再清状态，避免退订前的最后一条事件把进度条又点亮。
+      unlisten?.();
+      setShutdownSecs(null);
       setRetrying(false);
     }
   }, [result, busy, load, autoRestartOnClose]);
@@ -519,6 +539,37 @@ export default function Items() {
             >
               {retrying ? "关闭并重试中…" : "关闭占用进程并重试"}
             </button>
+          )}
+
+          {/* task-060：关闭进程期间的进度反馈。
+              RmShutdown 是阻塞调用、最坏等 30s，此前用户只看到按钮文字变化，
+              会以为卡死。这里按后端每秒推送的「已等秒数」画线性进度条；
+              超过 30s 不报错、继续显示，只是补一句「仍在等待系统响应」——
+              因为 RmShutdown 没有超时参数，我们也中断不了它。 */}
+          {retrying && shutdownSecs !== null && (
+            <div style={{ marginTop: 8, maxWidth: 380 }}>
+              <div style={{ fontSize: 12, color: "#92400e", marginBottom: 4 }}>
+                正在关闭进程… 已等 {shutdownSecs}s（最多 30s）
+                {shutdownSecs > 30 ? "，已超过预期，仍在等待系统响应" : ""}
+              </div>
+              <div
+                style={{
+                  height: 6,
+                  background: "#fde68a",
+                  borderRadius: 3,
+                  overflow: "hidden",
+                }}
+              >
+                <div
+                  style={{
+                    height: "100%",
+                    width: `${Math.min(100, (shutdownSecs / 30) * 100)}%`,
+                    background: "#d97706",
+                    transition: "width 300ms linear",
+                  }}
+                />
+              </div>
+            </div>
           )}
         </div>
       )}
