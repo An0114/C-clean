@@ -10,7 +10,7 @@
 
 ## 状态字段
 
-pending
+testing
 
 ## 任务目标
 
@@ -170,3 +170,168 @@ DevAgent 交付物（后续执行结果）：
 4. 本任务文档本身**由 DocsKeeper 在派发时**单独提交一次：
    `docs(task): 新增任务060-占用关闭体验优化 (#task-060)`，
    该提交只含 `tasks/060-shutdown-experience.md` 一个文件，落在 `feature/task-060-shutdown-experience` 分支最前端。
+
+---
+
+## 实现备注
+
+> 执行日期：2026-10-29　分支：`feature/task-060-shutdown-experience`（基线 `4982be0`，从 main `360df74` 拉出）
+
+### 1. 实际改动文件清单
+
+| 文件 | 类型 | 改动 |
+|---|---|---|
+| `engine/src/execute/locking.rs` | 后端 | `RmSession::register` 加 4 条「为什么不注册 rgapplications」的注释；文件头「已知限制」第 4 条补充；新增 `ProgressCallback` 类型 + `spawn_shutdown_ticker`；`shutdown_locking_processes` 加第四参并在 `RmShutdown` 前后起停 ticker；2 条 ticker 单测 |
+| `app/src-tauri/src/commands.rs` | Tauri（**白名单缺口**） | `cleanup_retry_locked` 加 `app: AppHandle` 注入参数；构造 `on_progress` 回调 emit `shutdown://progress` |
+| `app/src/pages/Items.tsx` | 前端 | `shutdownSecs` state + `listen("shutdown://progress")` + 进度条 UI |
+| `engine/tests/locking_shutdown.rs` | 测试 | 9 处调用点适配四参签名 |
+| `app/src/pages/Items.test.tsx` | 测试 | mock `@tauri-apps/api/event` + 1 条进度条用例 |
+| `docs/USER_GUIDE.md` | 文档 | 新增 4.5 跨盘行为 + FAQ Q9 + 3.5 补兄弟进程说明 |
+
+### 2. ⚠️ 单元 1：核实后**不改代码**（任务书方案无效）
+
+任务书要求「`RmRegisterResources` 除文件外再注册进程本身（`&[pid]`），让 `RmShutdown` 连带关闭兄弟进程」。**核实后不采纳**，四条理由：
+
+1. **参数类型不是 pid**。真实签名（`windows` crate 绑定）：
+
+   ```rust
+   pub unsafe fn RmRegisterResources(
+       dwsessionhandle: u32,
+       rgsfilenames: Option<&[PCWSTR]>,                 // 文件路径
+       rgapplications: Option<&[RM_UNIQUE_PROCESS]>,    // ← 不是 pid！
+       rgsservicenames: Option<&[PCWSTR]>,              // 服务名
+   ) -> WIN32_ERROR
+   ```
+
+   `RM_UNIQUE_PROCESS = { dwProcessId, ProcessStartTime }`，任务书的 `&[pid]` 编译不过；要正确构造还得额外调 `GetProcessTimes`。
+
+2. **注册「锁文件的进程」是冗余的**。`RmGetList` 已经通过「这个文件被谁占用」把它枚举出来了；再按进程注册一遍，结果集合不变、`RmShutdown` 行为完全一致——零收益。
+
+3. **连带关闭兄弟进程本来就在发生**。文件头「已知限制」第 4 条记着 task-049b 的实测：两个共用 console 的 shell 子进程，只对 A 的文件调 `RmShutdown`，B 也退出（exit code 1，没走到脚本结尾）。这是 RM 按 console 进程组的内部行为，**注册参数既不能开启也不能关闭它**。
+
+4. **强行注册有负面风险**。若把「同名应用」注册进去，`RmGetList` 会返回所有同名进程（跨用户、跨无关任务），扩大关闭面；而其中只要有一个命中护栏（受保护进程），mixed fail-closed 会让**整批都不关**——把原本能关的也关不掉，功能倒退。
+
+**本单元的实际交付**：把上述判断写进代码注释（防后人再照任务书改一遍），并在 USER_GUIDE 3.5 补用户可见说明（「同一个 cmd 窗口里的相关进程也可能一起退出，实测确认」）。**这不是「没做」，是核实后确认不该做。**
+
+### 3. 单元 2：RmShutdown 1s 进度（已实现）
+
+**后端结构**：
+
+```rust
+pub type ProgressCallback = std::sync::Arc<dyn Fn(u32) + Send + Sync>;
+
+// 每 1s 回调一次「已等秒数」；100ms 粒度响应停止标志
+fn spawn_shutdown_ticker(cb: Option<ProgressCallback>)
+    -> (Arc<AtomicBool>, Option<JoinHandle<()>>);
+
+// 调用处
+let (stop_ticker, ticker) = spawn_shutdown_ticker(on_progress);
+let shutdown_result = session.shutdown();          // 阻塞 FFI
+stop_ticker.store(true, Ordering::Relaxed);        // 无论成败都先停
+if let Some(h) = ticker { let _ = h.join(); }
+shutdown_result?;                                  // 再传播错误
+```
+
+两个设计点：
+
+- **engine 不认识 Tauri**。`shutdown_locking_processes` 只接受 `Arc<dyn Fn(u32)>`，emit 在 `commands.rs` 做——保持分层，engine 可单测、可跨平台编译。
+- **必须先停 ticker 再 `?`**。如果直接 `session.shutdown()?`，错误路径会跳过停止逻辑，ticker 线程泄漏（它持有回调 → 前端一直收到进度事件）。所以先存 `shutdown_result`、停线程、再传播。
+
+**事件契约**：
+
+```json
+{ "elapsedSecs": 7, "expectedMaxSecs": 30 }
+```
+
+**前端**：`Items.tsx` 在 `retrying` 期间 `listen("shutdown://progress")`，显示「正在关闭进程… 已等 7s（最多 30s）」+ 线性进度条（宽度 = min(secs/30, 1)）。超 30s 追加「，已超过预期，仍在等待系统响应」。
+
+### 4. ⚠️ 任务书的「30s 超时后放弃」做不到
+
+`RmShutdown(hSession, dwRestartFlags, pfnProgress)` **没有超时参数**，也无法中断——它是同步阻塞调用，等 RM 内部对每个应用处理完才返回。「30s」是实测的经验上限，不是我们能设的。
+
+所以**不做「超时放弃」**：ticker 到 30s 后继续回调（`secs > 30`），前端改文案提示「仍在等待」。这比「假装超时、实际线程还在跑」诚实。
+
+真正的「超时中断」需要放弃 RM 改用 `TerminateProcess`，代价是丢掉「请求式关闭、给用户保存机会」——与本产品「不粗暴删」的定位冲突，不做。
+
+### 5. 前端进度条样式
+
+| 属性 | 值 |
+|---|---|
+| 容器 | `height: 6px` / `background: #fde68a` / `border-radius: 3px` / `overflow: hidden` |
+| 填充 | `background: #d97706` / `width: min(100, secs/30*100)%` / `transition: width 300ms linear` |
+| 文案 | `font-size: 12px` / `color: #92400e` |
+| 位置 | 紧贴「关闭占用进程并重试」按钮下方，`margin-top: 8px` / `max-width: 380px` |
+
+**退订时序**：`finally` 里先 `unlisten()` 再 `setShutdownSecs(null)`——否则退订前的最后一条事件会把进度条又点亮（一闪而过）。
+
+### 6. 单元 3：跨盘恢复文档位置
+
+`docs/USER_GUIDE.md`：
+
+- **新增 4.5「跨盘行为（保险箱与文件不在同一个盘）」**：移入支持跨盘（同盘 rename 瞬时 / 跨盘自动「复制→删源」/ 复制成功但删源失败会删掉刚复制的那份）+ 恢复**不支持**跨盘（直接报 IO 错误、文件仍在保险箱、原位置无残留）+ 为什么不对称 + 实际影响很小。
+- **新增 FAQ Q9「跨盘恢复报错怎么办」**：三步处置（等过期 / 把数据目录改回同盘 / 实在要救时关应用后手动取），并明确「不建议手动翻保险箱目录，索引会对不上」。
+- **3.5 补兄弟进程说明**（属单元 1 的产出）：解释「一并关闭」是按 console 进程组的系统行为、应用无法收窄、关闭前先保存其它窗口工作。
+
+### 7. ⚠️ 任务书对「跨盘恢复」的描述是错的
+
+任务书写：「当保险箱目录与原文件不在同一盘时，用 copy+remove fallback；跨盘恢复比同盘慢」。
+
+**实际**（task-056 已实证并固化为用例 `cross_disk_restore_currently_returns_io_error`）：
+
+| 方向 | 跨盘支持 | 机制 |
+|---|---|---|
+| **移入**（清理 → 保险箱） | 支持 | `fs::rename` 失败（EXDEV）→ `copy` + `remove_file`，慢但可用 |
+| **恢复**（保险箱 → 原位置） | **不支持** | `fs::rename` 直接返回 `RestoreError::Io`，**没有 fallback** |
+
+文档按事实写「移入有、恢复没有」，并解释为什么恢复不做 fallback（照搬会引入「复制成功但删除失败 → 两处都有文件」的新失败模式）。
+
+### 8. 测试输出
+
+```
+cargo test --workspace  →  passed=275  failed=0  ignored=8
+pnpm --filter app test  →  9 files / 90 passed
+```
+
+新增 3 条：
+
+| 用例 | 位置 | 覆盖 |
+|---|---|---|
+| `shutdown_ticker_reports_seconds_until_stopped` | `locking.rs` 单测 | 1s 后回调 `[1]`（不是 0）；stop + join 后不再增长（防线程泄漏） |
+| `shutdown_ticker_is_noop_without_callback` | `locking.rs` 单测 | `None` 回调不起线程，停止标志仍可 store |
+| retrying 期间按事件显示「已等 Xs」，超 30s 补「仍在等待」 | `Items.test.tsx` | 手动推 `elapsedSecs: 7` → 断言文案；推 `31` → 断言补提示 |
+
+ticker 用例用**真实时间**（约 1.3s）而不是假时钟：ticker 就是靠 `sleep` 实现的，换假时钟反而测不到「sleep 分段 + stop 打断」这个真实行为。等待上限给 3s，留 CI 调度抖动余量。
+
+**`pnpm build`**：`188.06 kB │ gzip 60.50 kB`（基线 187.46，+0.6 kB 来自进度条 UI）。
+
+### 9. 真机 / 安装态冒烟 / CI
+
+| 项 | 状态 | 说明 |
+|---|---|---|
+| 占用关闭时看到「已等 Xs」进度条 | **移交测试 Agent** | 按新流程开发轮不做 GUI/真机 |
+| 同一 cmd 窗口父子进程被连带关闭 | **移交测试 Agent** | 同上 |
+| 跨盘恢复失败时文件仍在保险箱 | **移交测试 Agent** | 需构造双盘环境（本机 C:/D: 可造） |
+| CDP Console 零红（排除 G6） | **移交测试 Agent** | 同上 |
+| NSIS 安装态复跑 | **移交测试 Agent** | 同上 |
+| CI（PR + 五道闸） | **移交测试 Agent** | 开发分支不跑 CI；**未建 PR** |
+
+开发轮替代验证：ticker 的 2 条单测覆盖「按时回调 + 停止后不再回调」；前端用例覆盖「事件 → state → 文案」链路（含超 30s 分支）。
+
+### 10. 与任务书不符的偏差（3 项）
+
+1. **单元 1 不改代码**。任务书方案在 API 类型和逻辑上都站不住（见 §2），改为注释固化 + 用户文档说明。
+2. **「30s 超时后放弃」未实现**。`RmShutdown` 无超时参数且不可中断（见 §4），改为「超 30s 继续显示 + 提示仍在等待」。
+3. **白名单漏两个必改文件**：`app/src-tauri/src/commands.rs`（`cleanup_retry_locked` 要加 `AppHandle` 才能 emit；且 `shutdown_locking_processes` 加第四参必然级联）、`app/src/pages/Items.test.tsx`（Items 新增事件订阅，不 mock 会炸）。
+
+### 11. 遗留问题
+
+- **跨盘恢复 fallback 仍未实现**：本轮只做了文档化。真要做需设计「复制成功但删除失败」的中间态（例如先标记 `status='restoring'` 再删），属独立任务。
+- **`shutdown://progress` 是全局事件**：若将来支持并发关闭多个文件，前端会收到交错的秒数。当前 `cleanup_retry_locked` 是串行循环、同一时刻只有一个文件在关，暂无问题；并发化时要给事件加 `path` 或 `itemId` 字段区分。
+- **进度条是「已等时间」不是「真实进度」**：RM 的 `pfnProgress` 回调能拿到真实百分比，但它是裸函数指针（捕获不了上下文），要接就得引入全局状态（`static Mutex`），并发时会串。当前「已等 Xs」已能消除「卡死感」，暂不升级。
+- **v0.1.7 已发布**，本任务改动会进 v0.1.8；发版时需更新 CHANGELOG。
+
+### 三句话结论
+
+1. 单元 1 是**核实后决定不改**——`rgapplications` 不是 pid、注册锁文件进程本身冗余、连带关闭兄弟进程是 RM 既定行为且参数控制不了、强行注册还会因 mixed fail-closed 让整批都关不掉；把理由写进注释，比照任务书改一遍再回滚强。
+2. 单元 2 用「1s ticker + 事件 + 进度条」解决了「看起来卡死」，但**不做假超时**——`RmShutdown` 不可中断，超 30s 就如实说「仍在等待」。
+3. 单元 3 纠正了任务书的一个事实错误：**跨盘移入有 fallback，跨盘恢复没有**，文档按实际行为写，并给了三步处置。
