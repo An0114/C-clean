@@ -6,6 +6,14 @@
 **v0.1.7 已发布（2026-10-29）**：M2（updater 闭环）/ M3（banner 下载进度）/ M4（RmRestart + 白名单 + 保险箱原子性）全部收官。本轮拍板：代码签名不做、品牌图标不做、G6 不修；跨盘恢复 fallback / RmShutdown 连带兄弟进程 / RmShutdown 30s 无进度三项登记为日后新功能点，暂不修。进入下一开发阶段，任务派发待用户手动发起。
 
 ## 最近一次变更
+2026-10-30：**task-061 开发完成（M5 起步：主题切换 / 趋势图 / 自动扫描），状态 `testing`**（`feature/task-061-m5-start`）：
+  - **① 深色/浅色主题**：`prefs.theme` 三态（`system`/`light`/`dark`，默认 `system`，非法值归一化回落 system）。实现选**纯内联 CSS 变量**而非 index.css——根 div 上挂 `--bg`/`--surface`/`--text`/`--text-muted`/`--border`，子元素用 `var()`；好处是不新增任何 CSS 文件（本项目原本零 `.css`）、作用域就是根节点、组件不必知道当前深浅。跟随系统用 `matchMedia` + `change` 监听（用户改 Windows 主题不用重启）；`localStorage` 只做首屏防闪烁缓存，**真值仍在 DB**（启动后用 `get_prefs` 校准）。设置页「外观」三态，点选后 `onThemeChange` 通知 App 立即应用 + 乐观更新、失败回滚。**本期适配范围只有 App 外壳 / Dashboard / Settings**：Items/SafeBox/History 三页共 53 个硬编码颜色且不在白名单内，深色下仍是浅色——已在设置页如实注明「部分页面仍在适配中」，记入遗留问题。
+  - **② 清理趋势图**：新增 `cleanup_stats_trend(conn, days)`，按 `date(started_at,'unixepoch','localtime')` 分组求 `SUM(freed_bytes)`、日期升序。三个设计点：**只返回有记录的日期**（缺失由前端补 0——SQLite 无 `generate_series`，后端补零要递归 CTE，可读性差且前端画图时最清楚哪天缺）；**按本地时区分组**（用户看的是日历上的「那天」）；`days` 夹到 `1..=365`（传 0/负数会让 `WHERE started_at >= now` 变成查未来、静默返回空）。前端**手写 SVG 柱状图**不引 recharts（需求只是「每天一根柱 + 峰值 + 首尾日期」，为此加 100KB+ 依赖不划算；柱状而非折线是因为数据是离散日聚合，折线会把「没数据那天」画成斜线造成误导）。空数据 → 「暂无清理记录」，失败 → 失败占位且不影响卡片。
+  - **③ 计划自动扫描**：`prefs.auto_scan_enabled`（默认 **false**）+ `auto_scan_interval`（默认 `daily`，三档 daily/weekly/monthly）+ `last_auto_scan_at`（内部用，不暴露前端）。`auto_scan_due(enabled, interval, last, now)` 抽成纯函数便于单测（`last<=0` 视作立即到期——用户刚开开关应马上看到效果）。`auto_scan.rs` 起后台线程：**启动后先等 60s**（避开启动高峰）→ **每 30 分钟轮询**一次（不用精确定时：用户改间隔/改系统时间/休眠唤醒都会让 `sleep(到下次)` 错位，而一次轮询就是一条 SQLite 查询）。**只扫描不删除**（自动删除是「用户不在场时执行不可逆操作」，与产品定位冲突），扫完发系统通知「发现 N 项可清理，约 X（仅扫描，未删除）」。与手动扫描用 `ProgressState` 的 **`try_lock`** 互斥——拿不到说明用户正在扫，本轮跳过（不排队不阻塞）。失败也写 `last_auto_scan_at`，避免每 30 分钟重试轰炸。
+  - **门禁**：`cargo check` 0 / `clippy -D warnings` 0 / `fmt` 0 / **`cargo test --workspace` 291 passed + 8 ignored**（+16）/ `pnpm lint` 0 error / **vitest 98 passed（9 files，+8）** / `pnpm build` **195.04 kB │ gzip 62.65 kB**。
+  - **新增依赖**：`tauri-plugin-notification = "2"`（Rust 侧）+ `notification:default` 权限。**为什么装插件而不是自己调 WinRT Toast**：后者要注册 AppUserModelID、只在安装态可用，插件把 dev/安装态两条路径都处理好了。
+  - **与任务书不符 3 项**：① 任务书白名单没有 `app/src-tauri/{Cargo.toml, lib.rs, capabilities/default.json, auto_scan.rs}`——自动扫描必须有后台线程（lib.rs 起线程）+ 系统通知（新依赖 + 权限），这是**前提缺失**导致的必然超范围；② 任务书说「用 schtasks 或 Tauri 后台定时器」——选后者，`schtasks` 要管理员权限、会在系统里留计划任务，卸载时容易残留；③ 主题适配范围只有 3 页（见上）。
+  - **按新流程**：开发轮不跑 CI、不做真机/安装态冒烟，移交测试 Agent。
 2026-10-29：**task-060 开发完成（占用关闭体验：兄弟进程核实 + 30s 进度 + 跨盘文档），状态 `testing`**（`feature/task-060-shutdown-experience`）：
   - **① 连带兄弟进程：核实后不改代码**（任务书方案无效）。四条理由：① `RmRegisterResources` 第二组参数是 `Option<&[RM_UNIQUE_PROCESS]>`（`{dwProcessId, ProcessStartTime}`），**不是裸 pid**，任务书的 `&[pid]` 编译不过；② 注册「锁文件的进程」是**冗余**——`RmGetList` 已通过「文件被谁占用」把它枚举出来，集合不变、`RmShutdown` 行为一致，零收益；③ **连带关闭兄弟进程本来就在发生**，task-049b 实测（两个共用 console 的 `powershell.exe`，只对 A 的文件调 `RmShutdown`，B 也退出），这是 RM 按 console 进程组的内部行为，**注册参数既不能开启也不能关闭**；④ 强行注册同名应用会扩大关闭面，且其中只要有一个命中护栏（受保护进程），mixed fail-closed 会让**整批都不关**——功能倒退。已在 `RmSession::register` 写 4 条理由的注释（防后人再改），文件头「已知限制」第 4 条补「这不是没注册进程导致的」，USER_GUIDE 写清用户可见行为。
   - **② 30s 无进度 → 已修**。`shutdown_locking_processes` 加第四参 `on_progress: Option<ProgressCallback>`（`Arc<dyn Fn(u32) + Send + Sync>`，engine 不认识 Tauri，只负责每秒喊一次）；内部 `spawn_shutdown_ticker` 起 1s 计时线程（**100ms 响应停止**，`RmShutdown` 返回后立即 join，避免 `?` 提前返回导致线程泄漏、前端一直收进度事件）；`commands.rs` 的 `cleanup_retry_locked` 加 `app: AppHandle` 注入参数，把回调转成 `shutdown://progress` 事件（`{elapsedSecs, expectedMaxSecs: 30}`）；`Items.tsx` 在 retrying 期间显示「正在关闭进程… 已等 Xs（最多 30s）」+ 线性进度条。**关键限制**：`RmShutdown` **没有超时参数、也无法中断**，所谓「30s」是 RM 内部对每个应用的处理上限（经验值），所以**不做「30s 超时放弃」**——只在 secs > 30 时继续回调，前端补一句「已超过预期，仍在等待系统响应」，比假装超时更诚实。
@@ -453,6 +461,8 @@
 
 - [x] 060：占用关闭体验——**①** RmShutdown 连带兄弟进程**核实后不改代码**：任务书要求「`RmRegisterResources` 再注册进程本身（`&[pid]`）」，核实后不采纳——参数类型是 `Option<&[RM_UNIQUE_PROCESS]>`（pid + ProcessStartTime）不是裸 pid；且注册「锁文件的进程」是**冗余**的（`RmGetList` 已通过文件找到它，集合不变）；「连带关闭兄弟进程」是 RM 按 console 进程组的内部行为，task-049b 实测**只注册文件就已经发生**，注册参数既不能开启也不能关闭它；强行注册同名应用还会扩大关闭面并可能触发 mixed fail-closed 让整批都关不掉。已在 `RmSession::register` 加 4 条理由的注释 + 文件头「已知限制」第 4 条补充，并在 USER_GUIDE 写清用户可见行为。**②** RmShutdown **1s 进度反馈**：`shutdown_locking_processes` 加第四参 `on_progress: Option<ProgressCallback>`，内部起 1s ticker 线程（100ms 响应停止，`RmShutdown` 返回后立即停，避免线程泄漏），`commands.rs` 转成 `shutdown://progress` 事件（`{elapsedSecs, expectedMaxSecs:30}`），`Items.tsx` 显示「正在关闭进程… 已等 Xs（最多 30s）」+ 线性进度条，超 30s 补一句「仍在等待系统响应」。**③** `USER_GUIDE` 补 **4.5 跨盘行为**（移入有 copy+remove fallback / 恢复**不支持**跨盘 / 为什么不对称 / 实际影响很小）+ FAQ Q9（跨盘恢复报错怎么办，三步处置）（`feature/task-060-shutdown-experience`；**开发轮完成，状态 `testing`**；门禁 check/clippy/fmt 0、`cargo test --workspace` 275 passed + 8 ignored、vitest 90、build 188.06 kB；**按新流程开发轮不跑 CI、不做真机/安装态冒烟**，移交测试 Agent）
 
+- [x] 061：M5 起步——**① 深色/浅色主题**（`prefs.theme` 三态 `system/light/dark`，默认 `system`；实现方式是**纯内联 CSS 变量**——根 div 定义 `--bg/--surface/--text/--text-muted/--border`，子元素用 `var()` 取值，不新增任何 `.css` 文件；App 用 `matchMedia("(prefers-color-scheme: dark)")` 实时跟随系统变化，用 `localStorage` 缓存首屏防闪烁、DB prefs 为真值；设置页「外观」三态 + 即时生效（`onThemeChange` 回调，不用重启）。**本期只适配 App 外壳 / Dashboard / Settings 三页**——Items/SafeBox/History 的颜色是硬编码且不在白名单内，深色下仍浅色，已在 UI 里如实注明）；**② 清理趋势图**（`cleanup_stats_trend(days)` 按 `date(started_at,'unixepoch','localtime')` 分组求 `SUM(freed_bytes)`，升序；只返回有记录的日期、缺失由前端补 0；`days` 夹到 1..=365；仪表盘**手写 SVG 柱状图**不引图表库，空数据显示「暂无清理记录」，失败显示失败占位且不影响卡片）；**③ 计划自动扫描**（`prefs.auto_scan_enabled` 默认 false + `prefs.auto_scan_interval` 默认 daily（daily/weekly/monthly）+ `prefs.last_auto_scan_at` 内部记录；`auto_scan_due()` 纯函数判断到期；`auto_scan.rs` 起后台线程每 30 分钟轮询、启动后先等 60s；**只扫描不删除**，扫完发系统通知「发现 N 项可清理，约 X」；与手动扫描用 `ProgressState` 的 `try_lock` 互斥，拿不到锁就跳过本轮）（`feature/task-061-m5-start`；**开发轮完成，状态 `testing`**；门禁 check/clippy/fmt 0、`cargo test --workspace` 291 passed + 8 ignored、vitest 98、build 195.04 kB；**新增依赖 `tauri-plugin-notification` + `notification:default` 权限**；按新流程开发轮不跑 CI、不做真机/安装态冒烟，移交测试 Agent）
+
 > 注：040~047 的完成明细未回填本清单（历史遗漏），以「最近一次变更」段与 `tasks/040-*.md`~`tasks/047-*.md` 为准。
 > 编号顺延（2026-10-24）：原定 050 的「safe_box 增强」顺延为 **051**，050 让位给发版阻塞级的打包资源路径缺陷。
 
@@ -476,10 +486,10 @@
 1. v0.1.7 已发布，M2/M3/M4 全部收官。
 2. 本轮决策：代码签名不做 / 品牌图标不做 / G6 不修。
 3. **2026-10-29 用户最新决策**：跨盘恢复 fallback、RmShutdown 连带兄弟进程、RmShutdown 30s 无进度这三个功能**维持现状**，等开发任务基本结束后再决定是否改进；非必要默认不做改进，若有需要向用户提出再决策。
-4. 下一阶段（M5）任务：分析 PRD/TRD 中未实现的 P1/P2 功能，按用户「任务量尽量大」原则合并派发。
+4. **M5 持续推进**：首批（P2-3 主题 / P1-5 趋势图 / P1-1 自动扫描）已由 task-061 落地，待测试与评审。**后续候选**：P1-2 大文件地图、P1-3 已卸载残留定位、P1-4 注册表健康、P1-7 方案模板、P1-8 目标空间；P2-1 多盘、P2-2 自定义规则、P2-4 便携版 CLI。**另需补**：Items/SafeBox/History 三页的主题适配（task-061 只覆盖 3 页）。
 
 ## 当前负责人 Agent
-**DocsKeeper**——正在分析 PRD/TRD 引进 M5 阶段任务（深色/浅色主题、清理历史趋势图、计划自动清理等）。上一手：DevFullstackRustReact（task-060 开发）。
+**测试 Agent（提示词 9）**——`feature/task-061-m5-start` 开发轮已完成、状态 `testing`，待测试轮：独立重跑全部门禁 + 开 PR 触发 CI + 真机冒烟（① 主题三态切换与重开保留，注意 Items/SafeBox/History 三页深色下仍浅色属已知；② 仪表盘趋势图有数据/空数据两种形态；③ 开启自动扫描后等 60s+ 触发，验证「只扫描不删除」+ 系统通知弹出）+ NSIS 安装态复跑（通知在安装态才正常显示）。上一手：DevFullstackRustReact（task-061 开发）。再上一手：DocsKeeper（task-061 派发）。
 
 ## Git 提交记录
 | Commit | 任务 | 说明 |
@@ -880,6 +890,14 @@
 | 79e2c93 | #task-060 | test(execute): 补 ticker 用例 + 适配四参签名 + 前端进度条用例 |
 | e85444a | #task-060 | docs(guide): 补跨盘行为说明——移入有 fallback、恢复不支持跨盘 + FAQ Q9 |
 | （本次） | #task-060 | docs(state): 任务060完成，占用关闭体验优化（连带兄弟进程 + 30s 进度 + 跨盘文档） |
+| 3b2a961 | #task-060 | merge: task-060 占用关闭体验——RmShutdown 进度反馈+跨盘文档化（--no-ff） |
+| 890bc19 | #task-061 | feat(ui): 深色/浅色主题切换（三态 + prefs 持久化 + 即时生效） |
+| fde19d6 | #task-061 | test(ui): 补主题三态用例 + 适配整体覆盖断言 |
+| d01816d | #task-061 | feat(stats): 清理历史趋势图（cleanup_stats_trend + 仪表盘 SVG 柱状图） |
+| bdb7de3 | #task-061 | test(stats): 补趋势聚合用例 + 前端渲染用例 |
+| 6b1f9be | #task-061 | feat(scan): 计划自动扫描（开关+间隔，后台轮询，只扫描不删除，发通知） |
+| 424049c | #task-061 | test(scan): 补间隔归一化/到期判断/字节格式化 + 前端自动扫描 UI 用例 |
+| （本次） | #task-061 | docs(state): 任务061完成，M5 起步——主题切换/趋势图/自动扫描 |
 
 ---
 变更轨迹：
@@ -1003,3 +1021,4 @@
 - 2026-10-29  task-058  M4 收尾：**RmRestart 白名单**（`prefs.restart_whitelist` JSON 存 settings 表；空白名单=不限制，非空 fail-closed——`RmRestart` 无按 pid 参数只能整批重启，故改为「被关闭的可重启进程全部命中才重启」；匹配用映像名 + `*` 通配，且映像名必须在 `RmShutdown` 之前取，否则进程已死查不到）；**safe_box 原子性**（INSERT 提到 rename 之前 + 事务包裹，旧顺序反了才产生孤儿；跨盘 copy/remove 失败清理半成品）；**代码签名评估**（结论当前不做：CA/B 2023-06 强制硬件私钥与 GitHub Actions 天然冲突、EV/OV 需企业实体、Azure Artifact Signing 个人仅限美加；给出三个「该做」触发条件）；**CHANGELOG v0.1.7 草稿**（四段，版本号保持 0.1.6）。门禁 check/clippy/fmt 0、cargo test **273 passed + 8 ignored**（+11）、vitest 89、build 187.46 kB。**开发轮不跑 CI/真机/安装态冒烟**，移交测试 Agent
 - 2026-10-29  task-059  v0.1.7 发版准备（版本号/CHANGELOG/README/用户手册）：版本号 `0.1.6` → `0.1.7`（四处 + lock），`tauri build` 实测 `C-DiskCleaner_0.1.7_x64-setup.exe`（4.05 MiB）+ `.msi`（5.87 MiB）+ 成对 `.sig`；`CHANGELOG.md` v0.1.7 定稿（日期 2026-10-29、删 Unreleased 段）；**重写 `README.md`**（原文件状态停在「待进入 M0」、目录结构写「M1 阶段将新增 app/engine」、启动写「弹出空窗口」，全部失真，重写为开源门面）；新建 **`docs/USER_GUIDE.md`**（8 节 + 8 条 FAQ，按真实 UI 文案撰写，重点说清白名单 fail-closed 语义 / 「已不存在」不算失败 / 卸载不删 %APPDATA%）。门禁 check/fmt 0、cargo test **273 passed + 8 ignored**、vitest 89、build 187.46 kB、tauri build exit 0。**发版由用户手动 workflow_dispatch（version=0.1.7）**
 - 2026-10-29  task-060  占用关闭体验（连带兄弟进程 + 30s 进度 + 跨盘文档）：**兄弟进程**核实为 RM 按 console 进程组的既定行为、**不需改代码**（只注册文件就已发生；注册 `rgapplications` 参数类型是 `RM_UNIQUE_PROCESS` 不是 pid、且注册锁文件进程本身冗余、强行注册同名应用会扩大关闭面并可能触发 mixed fail-closed 让整批都关不掉），已在 `RmSession::register` 写 4 条理由 + USER_GUIDE 说明；**30s 无进度已修**（`shutdown_locking_processes` 第四参 `on_progress` + `spawn_shutdown_ticker` 1s 计时线程 + `shutdown://progress` 事件 + Items 进度条「已等 Xs（最多 30s）」，超 30s 提示仍在等待——`RmShutdown` 无超时参数不可中断，不做假超时）；**跨盘行为已文档化**（USER_GUIDE 4.5：移入有 copy+remove fallback、**恢复不支持跨盘**、原因与影响 + FAQ Q9 三步处置）。门禁 check/clippy/fmt 0、cargo test **275 passed + 8 ignored**（+2）、vitest **90**（+1）、build 188.06 kB。**开发轮不跑 CI/真机/安装态冒烟**，移交测试 Agent
+- 2026-10-30  task-061  M5 起步（主题/趋势图/自动扫描）：**主题三态**（`prefs.theme`，纯内联 CSS 变量不新增 css 文件，matchMedia 跟随系统，localStorage 防闪烁 + DB 为真值，本期只适配 App/Dashboard/Settings 三页）；**趋势图**（`cleanup_stats_trend` 按本地时区分天 SUM，只返回有记录日期、前端补 0，days 夹 1..=365；仪表盘手写 SVG 柱状图，空/失败各有占位）；**自动扫描**（`prefs.auto_scan_enabled`+`interval`+`last_auto_scan_at`，`auto_scan_due` 纯函数，后台 60s 后起、每 30 分钟轮询，**只扫描不删除**，完成发系统通知，与手动扫描 try_lock 互斥）。新增 `tauri-plugin-notification` + `notification:default` 权限。门禁 check/clippy/fmt 0、cargo test **291 passed + 8 ignored**（+16）、vitest **98**（+8）、build 195.04 kB。**开发轮不跑 CI/真机/安装态冒烟**，移交测试 Agent
