@@ -50,6 +50,7 @@ pub fn run() {
             commands::rules_rollback,
             commands::audit_log_list,
             commands::audit_log_stats,
+            commands::cleanup_stats_trend,
             commands::cleanup_list_pending,
             commands::get_prefs,
             commands::set_prefs

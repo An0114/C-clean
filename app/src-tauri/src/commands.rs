@@ -610,6 +610,31 @@ pub async fn audit_log_stats(
     }
 }
 
+/// `audit_log.trend`：最近 N 天每日释放量（task-061 趋势图数据源）。
+///
+/// `days` 由前端传（默认 30），engine 侧会夹到 1..=365。
+/// 只返回**有记录**的日期，缺失日期由前端补 0（理由见 `cleanup_stats_trend` 注释）。
+#[tauri::command]
+pub async fn cleanup_stats_trend(
+    days: Option<i64>,
+    paths: tauri::State<'_, AppPaths>,
+) -> Result<Envelope<Vec<engine::audit_log::stats::TrendPoint>>, String> {
+    let conn = match engine::db::conn::open(&paths.data_root) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[cleanup_stats_trend] open db: {e}");
+            return Ok(Envelope::err(INTERNAL));
+        }
+    };
+    match engine::audit_log::stats::cleanup_stats_trend(&conn, days.unwrap_or(30)) {
+        Ok(points) => Ok(Envelope::ok(points)),
+        Err(e) => {
+            eprintln!("[cleanup_stats_trend] trend: {e}");
+            Ok(Envelope::err(INTERNAL))
+        }
+    }
+}
+
 /// `cleanup.listPending`：分页列出 cleanup_item 表中所有待清理项（size 倒序）。
 ///
 /// task-052 G2：入参由 `limit/offset` 改为 `page/page_size`，返回
