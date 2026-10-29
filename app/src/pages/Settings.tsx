@@ -37,6 +37,11 @@ interface RollbackResult {
   message: string;
 }
 
+// task-057：用户偏好（与 engine::prefs::Prefs serde camelCase 对齐）。
+interface Prefs {
+  autoRestartOnClose: boolean;
+}
+
 type Phase =
   | "loading"
   | "idle"
@@ -92,6 +97,36 @@ export default function Settings({ onUpdateFound }: SettingsProps) {
   // task-055 单元 5：当前应用版本（用于「当前 vX / 发现 vY」文案）。
   // 取不到（ACL 未放行 / 非 Tauri 环境）就留空，文案自动退化成不带「当前」。
   const [appLocalVersion, setAppLocalVersion] = useState<string>("");
+
+  // task-057：用户偏好（默认 false，与后端 fail-closed 一致）。
+  const [prefs, setPrefs] = useState<Prefs>({ autoRestartOnClose: false });
+  const [prefsSaving, setPrefsSaving] = useState<boolean>(false);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const p = await api<Prefs>("get_prefs", {});
+        setPrefs({ autoRestartOnClose: Boolean(p.autoRestartOnClose) });
+      } catch {
+        // 读失败保持默认 false（fail-closed），不打扰用户。
+      }
+    })();
+  }, []);
+
+  const onToggleAutoRestart = useCallback(async (next: boolean) => {
+    // 乐观更新：先切 UI，写库失败再回滚。
+    setPrefs((p) => ({ ...p, autoRestartOnClose: next }));
+    setPrefsSaving(true);
+    try {
+      await api<Prefs>("set_prefs", { prefs: { autoRestartOnClose: next } });
+    } catch (e) {
+      // 回滚 UI。
+      setPrefs((p) => ({ ...p, autoRestartOnClose: !next }));
+      setToast({ ok: false, text: `保存设置失败：${String(e)}` });
+    } finally {
+      setPrefsSaving(false);
+    }
+  }, []);
 
   useEffect(() => {
     (async () => {
@@ -448,6 +483,33 @@ export default function Settings({ onUpdateFound }: SettingsProps) {
               {appPhase === "downloading" ? "安装中…" : "立即更新并重启"}
             </button>
           )}
+        </div>
+      </div>
+
+      {/* task-057：行为偏好卡片——默认关闭，新用户看不到任何自动重启行为 */}
+      <h2 style={{ margin: "24px 0 12px", fontSize: 16 }}>行为偏好</h2>
+      <div style={cardStyle}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div>
+            <div style={{ fontSize: 13, color: "#111827", fontWeight: 600 }}>
+              自动重启被关闭的进程
+            </div>
+            <div style={{ fontSize: 12, color: "#6b7280", marginTop: 4, lineHeight: 1.5 }}>
+              清理被占用的文件时，若系统支持（Restart Manager 标记为可重启），
+              关闭后自动把进程重新拉起。默认关闭。
+            </div>
+          </div>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: prefsSaving ? "wait" : "pointer" }}>
+            <input
+              type="checkbox"
+              checked={prefs.autoRestartOnClose}
+              disabled={prefsSaving}
+              onChange={(e) => onToggleAutoRestart(e.target.checked)}
+            />
+            <span style={{ fontSize: 12, color: "#374151" }}>
+              {prefs.autoRestartOnClose ? "已开启" : "已关闭"}
+            </span>
+          </label>
         </div>
       </div>
     </div>

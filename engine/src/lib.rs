@@ -26,3 +26,6 @@ pub mod rules;
 
 /// 扫描子系统：消费 ps1 NDJSON 行协议，spawn 子进程、写 cleanup_item、emit 进度（task-012）。
 pub mod scan;
+
+/// 用户偏好（task-057）：复用 settings 表存 auto_restart_on_close 等开关。
+pub mod prefs;

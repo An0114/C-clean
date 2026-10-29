@@ -23,12 +23,12 @@ fn shutdown_no_lockers_is_idempotent() {
     let path = p.to_string_lossy().to_string();
 
     // 第一次：没有任何进程打开它 → 不该调 RmShutdown，返回空结构。
-    let first = shutdown_locking_processes(&path).expect("first call ok");
+    let first = shutdown_locking_processes(&path, false).expect("first call ok");
     assert!(first.closed.is_empty(), "closed={:?}", first.closed);
     assert!(first.refused.is_empty(), "refused={:?}", first.refused);
 
     // 第二次：幂等，重复点「重试」不应该报 RM 错误。
-    let second = shutdown_locking_processes(&path).expect("second call ok");
+    let second = shutdown_locking_processes(&path, false).expect("second call ok");
     assert!(second.closed.is_empty());
     assert!(second.refused.is_empty());
 
@@ -44,7 +44,7 @@ fn shutdown_nonexistent_path_does_not_panic() {
 
     // 不存在路径：RM 可能注册失败（Err）也可能注册成功但零占用（Ok 空）。
     // 这里只要求「不 panic、不误报已关闭进程」。
-    match shutdown_locking_processes(&path) {
+    match shutdown_locking_processes(&path, false) {
         Ok(outcome) => {
             assert!(outcome.closed.is_empty(), "closed={:?}", outcome.closed);
             assert!(outcome.refused.is_empty(), "refused={:?}", outcome.refused);
@@ -71,7 +71,7 @@ fn shutdown_never_closes_self() {
     let path = p.to_string_lossy().to_string();
     let self_pid = std::process::id();
 
-    let outcome = shutdown_locking_processes(&path).expect("shutdown ok");
+    let outcome = shutdown_locking_processes(&path, false).expect("shutdown ok");
     println!("self outcome: {outcome:?}");
 
     // 红线：无论 RM 是否枚举到本进程，都绝不能把自己放进 closed（不自杀）。
@@ -91,7 +91,7 @@ fn shutdown_never_closes_self() {
 #[cfg(not(windows))]
 fn shutdown_returns_empty_on_non_windows() {
     // 非 Windows：固定返回空结构，保证跨平台编译与调用方无需分支。
-    let outcome = shutdown_locking_processes(r"C:\whatever\none.txt").expect("ok");
+    let outcome = shutdown_locking_processes(r"C:\whatever\none.txt", false).expect("ok");
     assert!(outcome.closed.is_empty());
     assert!(outcome.refused.is_empty());
 }
@@ -119,7 +119,7 @@ fn shutdown_locked_file_closes_holder() {
     std::thread::sleep(std::time::Duration::from_secs(4));
 
     let t0 = std::time::Instant::now();
-    let outcome = shutdown_locking_processes(&path).expect("shutdown ok");
+    let outcome = shutdown_locking_processes(&path, false).expect("shutdown ok");
     println!("shutdown took {:?}, outcome: {outcome:?}", t0.elapsed());
     assert!(
         !outcome.closed.is_empty(),
@@ -204,7 +204,7 @@ fn execute_retry_after_shutdown_deletes_locked_file() {
     );
 
     // 请求关闭占用进程。
-    let outcome = shutdown_locking_processes(&path).expect("shutdown ok");
+    let outcome = shutdown_locking_processes(&path, false).expect("shutdown ok");
     println!("shutdown: {outcome:?}");
     assert!(!outcome.closed.is_empty(), "closed={outcome:?}");
 
@@ -360,7 +360,7 @@ fn shutdown_only_touches_registered_path() {
     );
 
     // 只对 A 请求关闭。
-    let outcome = shutdown_locking_processes(&path_a).expect("shutdown a ok");
+    let outcome = shutdown_locking_processes(&path_a, false).expect("shutdown a ok");
     println!("shutdown a: {outcome:?}");
     assert!(!outcome.closed.is_empty(), "closed={outcome:?}");
 
@@ -474,7 +474,7 @@ fn shutdown_refuses_protected_image_holder() {
         );
     }
 
-    let outcome = shutdown_locking_processes(&path).expect("shutdown ok");
+    let outcome = shutdown_locking_processes(&path, false).expect("shutdown ok");
     println!("fake explorer outcome: {outcome:?}");
 
     // 红线：explorer.exe 命中护栏 → 一个都不关，且必须出现在 refused 里。

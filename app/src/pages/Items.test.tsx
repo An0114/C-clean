@@ -96,6 +96,8 @@ function mockInvoke(overrides: Record<string, () => Promise<unknown>> = {}) {
     if (cmd === "cleanup_list_pending") return Promise.resolve(pageOf(ROWS, ROWS.length));
     if (cmd === "cleanup_execute") return Promise.resolve(ok(SUMMARY_FAILED));
     if (cmd === "cleanup_retry_locked") return Promise.resolve(ok(RETRY_RESP));
+    // task-057：默认偏好关闭，老用例不受影响。
+    if (cmd === "get_prefs") return Promise.resolve(ok({ autoRestartOnClose: false }));
     return Promise.resolve(ok(null));
   }) as never);
 }
@@ -479,5 +481,38 @@ describe("清理列表分页（G2）", () => {
     const calls = mockedInvoke.mock.calls.filter(([cmd]) => cmd === "cleanup_list_pending");
     expect(calls[0][1]).toEqual({ page: 1, pageSize: 100 });
     expect(calls[1][1]).toEqual({ page: 2, pageSize: 100 });
+  });
+});
+
+// task-057：confirm 文案根据 prefs.autoRestartOnClose 追加提示
+describe("重试 confirm 文案联动（task-057）", () => {
+  it("开关开启时：confirm 文案包含「自动重启被关闭」提示", async () => {
+    mockInvoke({
+      get_prefs: () => Promise.resolve(ok({ autoRestartOnClose: true })),
+    });
+    await renderLoaded();
+    selectFirstRow();
+    fireEvent.click(screen.getByText("清理已选"));
+    await waitFor(() => expect(screen.getByText("关闭占用进程并重试")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByText("关闭占用进程并重试"));
+    const confirmMock = vi.mocked(window.confirm);
+    const text = confirmMock.mock.calls[0][0] as string;
+    expect(text).toContain("自动重启被关闭");
+  });
+
+  it("开关关闭时：confirm 文案不含重启提示（默认 fail-closed）", async () => {
+    mockInvoke({
+      get_prefs: () => Promise.resolve(ok({ autoRestartOnClose: false })),
+    });
+    await renderLoaded();
+    selectFirstRow();
+    fireEvent.click(screen.getByText("清理已选"));
+    await waitFor(() => expect(screen.getByText("关闭占用进程并重试")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByText("关闭占用进程并重试"));
+    const confirmMock = vi.mocked(window.confirm);
+    const text = confirmMock.mock.calls[0][0] as string;
+    expect(text).not.toContain("自动重启被关闭");
   });
 });

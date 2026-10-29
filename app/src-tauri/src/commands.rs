@@ -182,6 +182,9 @@ pub async fn cleanup_retry_locked(
     };
     let conn = engine::db::conn::open(&paths.data_root).map_err(|e| e.to_string())?;
 
+    // task-057：在 spawn_blocking 之前读一次偏好（默认 false），闭包按值捕获。
+    let auto_restart = engine::prefs::get_auto_restart(&conn);
+
     // 1. 只收集本次 item_ids 对应的路径（查不到跳过，不中断）。
     let mut targets: Vec<String> = Vec::with_capacity(item_ids.len());
     for id in &item_ids {
@@ -200,7 +203,7 @@ pub async fn cleanup_retry_locked(
         // 同一进程可能占用多个文件，按 pid 去重，避免前端计数虚高。
         let mut seen: std::collections::HashSet<u32> = std::collections::HashSet::new();
         for p in targets {
-            match engine::execute::locking::shutdown_locking_processes(&p) {
+            match engine::execute::locking::shutdown_locking_processes(&p, auto_restart) {
                 Ok(outcome) => {
                     for lp in outcome.closed {
                         if seen.insert(lp.pid) {
@@ -607,4 +610,39 @@ pub async fn cleanup_list_pending(
             Ok(Envelope::err(INTERNAL))
         }
     }
+}
+
+/// `get_prefs`：读用户偏好（task-057）。新用户缺行时默认 auto_restart_on_close=false。
+#[tauri::command]
+pub async fn get_prefs(
+    paths: tauri::State<'_, AppPaths>,
+) -> Result<Envelope<engine::prefs::Prefs>, String> {
+    let conn = match engine::db::conn::open(&paths.data_root) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[get_prefs] open db: {e}");
+            return Ok(Envelope::err(INTERNAL));
+        }
+    };
+    Ok(Envelope::ok(engine::prefs::Prefs::load(&conn)))
+}
+
+/// `set_prefs`：写用户偏好（task-057）。目前只支持 autoRestartOnClose 一个开关。
+#[tauri::command]
+pub async fn set_prefs(
+    prefs: engine::prefs::Prefs,
+    paths: tauri::State<'_, AppPaths>,
+) -> Result<Envelope<engine::prefs::Prefs>, String> {
+    let conn = match engine::db::conn::open(&paths.data_root) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[set_prefs] open db: {e}");
+            return Ok(Envelope::err(INTERNAL));
+        }
+    };
+    if let Err(e) = engine::prefs::set_auto_restart(&conn, prefs.auto_restart_on_close) {
+        eprintln!("[set_prefs] write: {e}");
+        return Ok(Envelope::err(INTERNAL));
+    }
+    Ok(Envelope::ok(engine::prefs::Prefs::load(&conn)))
 }
