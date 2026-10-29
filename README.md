@@ -1,92 +1,122 @@
 # C-Disk Cleaner
 
-> 一款面向普通用户与开发者的 Windows C 盘安全清理桌面应用：
-> 先扫描诊断、按风险分级、用户自主选择、执行可追溯——
+> 一款面向普通用户与开发者的 Windows C 盘安全清理工具：**先扫描诊断、按风险分级、用户自主选择、执行可追溯**。
 > 把「会清理」变成「敢清理、看得见、能回滚」。
-
-## 项目状态
-
-- 阶段：**立项 / 原始需求草稿已固化，待进入 PRD 与 M0 技术验证**
-- 许可证：MIT
-- 仓库：<https://github.com/An0114/C-clean>
-- 运行平台：Windows 10 / 11（x64 / ARM64），不支持 macOS / Linux
-
-## 一句话定位
 
 **每一个删除决定都有依据，每一次清理都能追溯。**
 
-差异化于：
-- 大众清理工具（CCleaner / 360 / 火绒）：默认更保守、可回滚、无全家桶推广；
-- 专业清理工具（Dism++ / SpaceSniffer / TreeSize）：每步有解释、有影响说明、有审计日志。
+当前版本：**v0.1.7**（[更新日志](CHANGELOG.md)）· 平台：Windows 10 / 11 x64 · 许可证：MIT
 
-## 技术栈（已最终拍板，2026-10-11 立项决策）
+---
 
-| 层 | 选型 | 说明 |
-|----|------|------|
-| 桌面框架 | **Tauri 2（最终方案）** | Rust 核心 + WebView 前端，安装包 ~10MB；无 Plan B，按"两期演进"推进（M1 壳调 ps1，M2+ Rust 重写引擎） |
-| 前端 | React + TypeScript | 与开发者栈一致 |
-| 本地存储 | SQLite | 扫描历史 / 方案 / 保险箱索引 / 审计日志 |
-| 规则库 | JSON | 托管于 GitHub Raw，checksum 校验，不加签名；可热更新 |
-| 兼容层 | PowerShell 脚本 | M1 阶段通过白名单 IPC 调用现有 5 个 ps1，M2+ 逐步 Rust 化 |
-| 特权操作 | 独立提权 exe | 按需 UAC，完成即退出，无常驻提权进程 |
-| 平台 | **仅 Windows 10 / 11 x64 + ARM64** | 完全不做 macOS / Linux（2026-10-11 立项决策 #6） |
+## 为什么还要再造一个清理工具
+
+| 对比 | 常见做法 | 本项目的做法 |
+|---|---|---|
+| 大众清理工具（CCleaner / 360 / 火绒） | 一键全清、默认激进、夹带推广 | 默认保守、**可回滚**、无推广、无遥测 |
+| 专业工具（Dism++ / SpaceSniffer / TreeSize） | 功能强但门槛高，每步要自己判断 | 每项**有解释、有影响说明、有审计日志** |
+
+核心差异是三件事：**保险箱（删了能拿回来）、dry-run 预演（删之前先看清单）、审计日志（删了什么、什么时候删的）**。
+
+## 功能
+
+- **扫描**：五类目标——浏览器缓存、开发工具缓存（npm/pnpm/Cargo 等）、预读取文件、系统临时文件、Windows 更新残留。按脚本分阶段推进，实时进度与计数。
+- **清理**：按风险分级（L1 可直接清 / L2 需逐项确认 / L3 硬编码禁止）；执行前可 **dry-run 预览**，看到「将被删除的文件数 / 大小 / 路径清单」以及会被拦下的项与原因。
+- **保险箱**：所有删除**先移入保险箱**（默认 7 天可恢复）。支持按时间区间、多 session 组合筛选；每条记录显示「来源」批次；可批量恢复（父目录缺失自动创建）或永久删除。
+- **占用进程处置**：文件被程序占用导致删不掉时，列出占用进程并可「关闭占用进程并重试」；可选**清理后自动重启被关闭的进程**（默认关闭，支持进程名白名单）。
+- **审计日志**：每次扫描 / 清理 / 恢复 / 永久删除都有记录，历史页可按条件查看，统计卡片显示累计释放空间与清理轮次。
+- **自动更新**：启动时非阻塞检查新版本，顶部 banner 提示；下载时显示进度条、百分比、已下载大小与实时速度；失败按原因给中文提示并可重试。
+- **规则库热更新**：规则从 GitHub 拉取并校验 checksum，支持回滚到上一版；离线时自动降级使用本地规则库。
+
+## 安装
+
+从 [GitHub Releases](https://github.com/An0114/C-clean/releases) 下载最新版本：
+
+| 包 | 文件名 | 说明 |
+|---|---|---|
+| NSIS（推荐） | `C-DiskCleaner_x.y.z_x64-setup.exe` | 安装向导，体积更小 |
+| MSI | `C-DiskCleaner_x.y.z_x64_en-US.msi` | 适合企业环境批量部署（`msiexec /i`） |
+
+> **首次运行会被 SmartScreen 拦截**（安装包未做代码签名）。点「更多信息 → 仍要运行」即可。
+> 为什么不做签名、什么条件下会做，见 [`docs/research/code-signing-evaluation.md`](docs/research/code-signing-evaluation.md)。
+
+**系统要求**：Windows 10 1809+ 或 Windows 11，64 位。需要 WebView2 Runtime（Win11 自带，Win10 通常已随 Edge 安装）。
+
+## 开发
+
+前置依赖：
+
+```powershell
+rustc --version    # Rust stable（rustup）
+node --version     # Node.js >= 20
+pnpm --version     # pnpm >= 9（corepack enable 后可用）
+# 另需：Microsoft C++ Build Tools、WebView2 Runtime
+```
+
+常用命令（仓库根目录执行）：
+
+```powershell
+pnpm install                        # 安装前端 workspace 依赖
+pnpm tauri dev                      # 开发模式：编译 Rust 壳 + 拉起 Vite dev server
+pnpm tauri build                    # 打包（产物在 target/release/bundle/）
+pnpm --filter app test              # 前端单测（vitest）
+cargo test --workspace              # Rust 全量测试
+cargo clippy --workspace --all-targets -- -D warnings
+```
+
+打包需要 updater 签名私钥（缺失会以「public key found but no private key」失败）：
+
+```powershell
+$env:TAURI_SIGNING_PRIVATE_KEY = Get-Content .\cclean-new.key -Raw
+pnpm tauri build
+```
+
+## 技术栈
+
+| 层 | 选型 |
+|---|---|
+| 桌面框架 | [Tauri 2](https://tauri.app/)（Rust 核心 + 系统 WebView，安装包约 4 MB） |
+| 前端 | React 18 + TypeScript + Vite |
+| 核心引擎 | Rust（扫描 / 分级 / 执行 / 保险箱 / 审计） |
+| 本地存储 | SQLite（`rusqlite` bundled，带手写迁移器） |
+| 系统集成 | Windows Restart Manager（占用进程处置）、UAC 提权独立 exe |
+| 规则库 | JSON（远端拉取 + checksum 校验 + 本地回滚） |
 
 ## 目录结构
 
 ```
 C-clean/
-├── docs/                                   # 长期文档（PRD / 架构设计 / 安全评审 / 路线图）
-│   └── .gitkeep
-├── tasks/                                  # 任务文档（按 M0 / M1 / M2 阶段拆分的任务清单）
-│   └── .gitkeep
-├── C-Disk-Cleaner桌面端应用成熟设想.md      # 用户原始设想（PRD 的输入原材料）
-├── README.md                               # 本文件
-├── LICENSE                                 # MIT
-├── .gitignore
-└── .gitattributes
-
-# 以下目录将在 M1 阶段按 monorepo 结构新增：
-#   app/     Tauri 应用（前端 + src-tauri）
-#   engine/  Rust 核心（扫描 / 分级 / 执行引擎）
-#   rules/   JSON 规则库（与 scripts/ 共用同一规则源）
-#   scripts/ PowerShell CLI 兼容层
+├── app/                  Tauri 应用（React 前端 + src-tauri 主进程壳）
+├── engine/               Rust 核心（db / scan / execute / ipc）
+├── elevation/            独立提权 exe（按需 UAC，完成即退出）
+├── rules/                JSON 规则库（与 scripts/ 共用同一规则源）
+├── scripts/              扫描脚本（5 个 scan_*.ps1 + smoke_test.ps1）+ 发版工具（release-lib.mjs）
+├── docs/                 设计文档、评审报告、测试报告、技术评估、项目状态白板
+├── tasks/                任务文档（按编号拆分）
+├── CHANGELOG.md          更新日志
+└── LICENSE               MIT
 ```
 
-## 安全与信任基线（产品生命线）
+## 安全与隐私基线
 
-- **红线硬编码**：L3 禁止项在 UI 不出现，代码层二次校验路径白名单；
-- **保险箱默认开启**：所有清理先移入保险箱，7 天内可恢复；
-- **DryRun 预演**：执行前展示「将删除的文件数 / 大小 / 路径清单」；
-- **双确认**：L1 一键确认，L2 逐项确认；注册表 / WinSxS 敏感操作二次确认；
-- **最小权限**：主进程普通权限，仅写操作按需 UAC 提权；
-- **隐私承诺**：全本地处理，无遥测、无云上传、无广告 SDK；唯一网络请求为规则库 JSON 更新（可关闭）。
-- **代码签名**：不购买 EV 代码签名证书（2026-10-11 立项决策 #5），接受 SmartScreen 首次警告；仍需走杀软白名单流程（Defender / 火绒 / 卡巴斯基等）以避免误报。
+这是产品生命线，不是宣传语：
 
-## 协作模式
+- **L3 红线硬编码**：系统关键路径的禁止项在 UI 不出现，代码层二次校验路径白名单。
+- **保险箱默认开启**：所有清理先移入保险箱，7 天内可恢复。
+- **dry-run 预演**：执行前展示将被删除的完整清单。
+- **最小权限**：主进程普通权限，仅写操作按需 UAC 提权，无常驻提权进程。
+- **全本地处理**：无遥测、无云上传、无广告 SDK。唯一的网络请求是规则库更新与版本检查，两者失败都不影响核心功能。
 
-- 文档三层架构：
-  - `docs/`：长期稳定文档（PRD、架构、安全规范、立项决策记录）；
-  - `PROJECT_STATE.md`：项目当前状态，**由 M0 负责人在 M0 启动当天首次写入**（2026-10-11 立项决策 #8）；
-  - `tasks/`：按阶段拆分的任务文档；
-- **多 Agent 切分粒度：按业务模块 A~F 切分，不按技术层切分**（2026-10-11 立项决策 #7）：
-  - A 应用缓存清理 / B 系统临时与日志 / C 系统组件存储（WinSxS）/ D 已卸载残留 / E 系统级大文件 / F 注册表健康；
-- 每个 Agent 独立提交，规则库 PR 合并前必须通过「误删风险评审」。
+## 贡献
 
-## 本地启动（M0 脚手架）
+欢迎提 Issue 与 PR。改动前建议先读：
 
-前置依赖（本机一次性安装即可）：
+- [`docs/PROJECT_STATE.md`](docs/PROJECT_STATE.md)——项目当前状态与已知问题
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)——模块边界与关键约束
+- [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md)——面向用户的功能说明（改 UI 时请同步更新）
 
-```powershell
-# 1. Rust stable（rustup）
-rustc --version
-# 2. Node.js >= 20 与 pnpm >= 9（corepack enable 后即可使用 pnpm）
-node --version; pnpm --version
-# 3. WebView2 Runtime（Win11 自带）与 Microsoft C++ Build Tools
-```
+提交前请确保 `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace`、`pnpm --filter app lint/test/build` 全部通过。
 
-首次启动（仓库根目录执行）：
+## 许可证
 
-```powershell
-pnpm install      # 安装前端 workspace 依赖
-pnpm tauri dev    # 编译 Tauri 壳、拉起 Vite dev server，弹出标题为「C-Disk Cleaner」的空窗口
-```
+[MIT](LICENSE) © 2026 An0114
