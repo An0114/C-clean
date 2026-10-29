@@ -8,9 +8,15 @@
 //   C11    重试后绿条 + 受保护进程提示；
 //   C12    三态互斥（预览中重试按钮禁用）。
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor, fireEvent, cleanup } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent, cleanup, act } from "@testing-library/react";
 import { invoke } from "@tauri-apps/api/core";
 import Items from "./Items";
+
+// task-060：Items 现在会 listen("shutdown://progress") 显示关闭进度，
+// jsdom 里没有 Tauri 事件通道，必须打桩。
+vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn() }));
+import { listen } from "@tauri-apps/api/event";
+const mockedListen = vi.mocked(listen);
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
@@ -118,6 +124,9 @@ function selectFirstRow() {
 beforeEach(() => {
   mockedInvoke.mockReset();
   mockInvoke();
+  // task-060：默认「订阅成功但永不推送」，老用例行为不变。
+  mockedListen.mockReset();
+  mockedListen.mockResolvedValue((() => {}) as never);
   // jsdom 没实现 confirm，必须显式打桩。
   vi.spyOn(window, "confirm").mockReturnValue(false);
 });
@@ -514,5 +523,43 @@ describe("重试 confirm 文案联动（task-057）", () => {
     const confirmMock = vi.mocked(window.confirm);
     const text = confirmMock.mock.calls[0][0] as string;
     expect(text).not.toContain("自动重启被关闭");
+  });
+});
+
+// task-060：关闭进程期间的进度反馈
+describe("关闭进度反馈（task-060）", () => {
+  it("retrying 期间按事件显示「已等 Xs」，超 30s 补「仍在等待」", async () => {
+    // 捕获 Items 注册的事件回调，手动推送进度
+    let emit: ((e: { payload: { elapsedSecs: number } }) => void) | null = null;
+    mockedListen.mockImplementation((async (_evt: string, cb: never) => {
+      emit = cb;
+      return () => {};
+    }) as never);
+
+    // 让 cleanup_retry_locked 永不 resolve，把 UI 卡在 retrying=true
+    mockInvoke({ cleanup_retry_locked: () => new Promise(() => {}) });
+    vi.mocked(window.confirm).mockReturnValue(true);
+
+    await renderLoaded();
+    selectFirstRow();
+    fireEvent.click(screen.getByText("清理已选"));
+    await waitFor(() => expect(screen.getByText("关闭占用进程并重试")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("关闭占用进程并重试"));
+
+    // listen 是异步的，等回调注册上来
+    await waitFor(() => expect(emit).not.toBeNull());
+
+    // 1) 正常区间：显示已等秒数与上限
+    act(() => emit!({ payload: { elapsedSecs: 7 } }));
+    expect(
+      await screen.findByText(/正在关闭进程… 已等 7s（最多 30s）/)
+    ).toBeInTheDocument();
+
+    // 2) 超过 30s：不报错、继续显示，只补一句「仍在等待系统响应」
+    //    （RmShutdown 没有超时参数，我们中断不了它）
+    act(() => emit!({ payload: { elapsedSecs: 31 } }));
+    expect(
+      await screen.findByText(/已等 31s（最多 30s），已超过预期，仍在等待系统响应/)
+    ).toBeInTheDocument();
   });
 });

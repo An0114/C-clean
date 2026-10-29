@@ -170,6 +170,9 @@ pub async fn cleanup_execute(
 /// - 单条 shutdown 失败只打日志，不中断整批。
 #[tauri::command]
 pub async fn cleanup_retry_locked(
+    // task-060：需要 AppHandle 才能把「已等待 Xs」的进度事件推给前端。
+    // 这是 Tauri 2 的命令注入参数，不由前端传。
+    app: tauri::AppHandle,
     item_ids: Vec<i64>,
     paths: tauri::State<'_, AppPaths>,
 ) -> Result<Envelope<engine::execute::locking::RetryLockedResp>, String> {
@@ -200,6 +203,25 @@ pub async fn cleanup_retry_locked(
 
     // 2. RmShutdown 是阻塞 FFI（最坏等目标进程响应，实测可达 ~30s），
     //    丢进 blocking 线程池，避免占住 async runtime 拖慢其他 IPC。
+    //
+    // task-060：同时把「已等待秒数」每秒推给前端。engine 不认识 Tauri，
+    // 只接受一个 `Arc<dyn Fn(u32)>` 回调，emit 在这里做——保持分层干净。
+    // 事件名 `shutdown://progress`，payload `{ elapsedSecs, expectedMaxSecs }`。
+    let app_for_progress = app.clone();
+    let on_progress: engine::execute::locking::ProgressCallback =
+        std::sync::Arc::new(move |secs: u32| {
+            use tauri::Emitter;
+            let _ = app_for_progress.emit(
+                "shutdown://progress",
+                serde_json::json!({
+                    "elapsedSecs": secs,
+                    // 30s 是 RM 内部对每个应用的处理上限（经验值），不是我们能设的超时。
+                    // 前端用它画进度条，并在 secs > 30 时提示「仍在等待」。
+                    "expectedMaxSecs": 30,
+                }),
+            );
+        });
+
     let shutdown = tauri::async_runtime::spawn_blocking(move || {
         let mut acc = engine::execute::locking::ShutdownOutcome::default();
         // 同一进程可能占用多个文件，按 pid 去重，避免前端计数虚高。
@@ -209,6 +231,9 @@ pub async fn cleanup_retry_locked(
                 &p,
                 auto_restart,
                 &restart_whitelist,
+                // 每个文件独立关闭，计时各自从 1s 重新开始（前端会看到重置，
+                // 属预期：这是「当前这个文件等了多久」而不是「整批等了多久」）。
+                Some(on_progress.clone()),
             ) {
                 Ok(outcome) => {
                     for lp in outcome.closed {
