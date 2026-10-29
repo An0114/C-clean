@@ -201,7 +201,7 @@ describe("Settings 行为偏好（task-057）", () => {
     // task-058：set_prefs 是「整体覆盖」，前端必须连当前白名单一起提交，
     // 否则会把用户已配好的白名单清空。这里 get_prefs 没给白名单 → 空数组。
     expect(setPrefsPayload).toEqual({
-      prefs: { autoRestartOnClose: true, restartWhitelist: [] },
+      prefs: { autoRestartOnClose: true, restartWhitelist: [], theme: "system" },
     });
   });
 });
@@ -268,7 +268,7 @@ describe("Settings 重启白名单（task-058）", () => {
 
     await waitFor(() => expect(setPayload).not.toBeNull());
     expect(setPayload).toEqual({
-      prefs: { autoRestartOnClose: true, restartWhitelist: ["notepad.exe", "code.exe"] },
+      prefs: { autoRestartOnClose: true, restartWhitelist: ["notepad.exe", "code.exe"], theme: "system" },
     });
     // 保存后用后端返回值回填（去空白后的真实生效内容）
     await waitFor(() => expect(ta.value).toBe("notepad.exe\ncode.exe"));
@@ -291,9 +291,106 @@ describe("Settings 重启白名单（task-058）", () => {
 
     await waitFor(() => expect(setPayload).not.toBeNull());
     expect(setPayload).toEqual({
-      prefs: { autoRestartOnClose: false, restartWhitelist: [] },
+      prefs: { autoRestartOnClose: false, restartWhitelist: [], theme: "system" },
     });
     expect(await screen.findByText("白名单已清空（不限制重启）")).toBeInTheDocument();
     expect(await screen.findByText("当前：不限制")).toBeInTheDocument();
+  });
+});
+
+// task-061：外观（主题三态）
+describe("Settings 外观（task-061）", () => {
+  function mockPrefs(theme: string) {
+    mockedInvoke.mockImplementation(((cmd: string) => {
+      if (cmd === "rules_check_update") {
+        return Promise.resolve(
+          ok({
+            status: "upToDate",
+            localVersion: "1.0.0",
+            localSha256: "a".repeat(64),
+            remoteVersion: "1.0.0",
+            remoteSha256: "a".repeat(64),
+            message: "ok",
+          })
+        );
+      }
+      if (cmd === "rules_has_backup") return Promise.resolve(ok(false));
+      if (cmd === "get_prefs") {
+        return Promise.resolve(
+          ok({ autoRestartOnClose: false, restartWhitelist: [], theme })
+        );
+      }
+      return Promise.resolve(ok(null));
+    }) as never);
+  }
+
+  it("三个选项齐全，get_prefs 的 theme 决定默认选中", async () => {
+    mockPrefs("dark");
+
+    render(<Settings />);
+    // 三个标签都在
+    expect(await screen.findByText("跟随系统")).toBeInTheDocument();
+    expect(screen.getByText("浅色")).toBeInTheDocument();
+    expect(screen.getByText("深色")).toBeInTheDocument();
+
+    // theme=dark → 「深色」单选被选中
+    const radios = screen.getAllByRole("radio") as HTMLInputElement[];
+    await waitFor(() => {
+      const dark = radios.find((r) => r.closest("label")?.textContent?.includes("深色"));
+      expect(dark?.checked).toBe(true);
+    });
+  });
+
+  it("缺 theme 时默认「跟随系统」选中", async () => {
+    mockPrefs("system");
+
+    render(<Settings />);
+    const radios = screen.getAllByRole("radio") as HTMLInputElement[];
+    await waitFor(() => {
+      const sys = radios.find((r) => r.closest("label")?.textContent?.includes("跟随系统"));
+      expect(sys?.checked).toBe(true);
+    });
+  });
+
+  it("点「深色」→ set_prefs 带 theme=dark 且通知外层立即生效", async () => {
+    let payload: unknown = null;
+    const onThemeChange = vi.fn();
+    mockedInvoke.mockImplementation(((cmd: string, args: unknown) => {
+      if (cmd === "rules_check_update") {
+        return Promise.resolve(
+          ok({
+            status: "upToDate",
+            localVersion: "1.0.0",
+            localSha256: "a".repeat(64),
+            remoteVersion: "1.0.0",
+            remoteSha256: "a".repeat(64),
+            message: "ok",
+          })
+        );
+      }
+      if (cmd === "rules_has_backup") return Promise.resolve(ok(false));
+      if (cmd === "get_prefs") {
+        return Promise.resolve(ok({ autoRestartOnClose: false, restartWhitelist: [], theme: "system" }));
+      }
+      if (cmd === "set_prefs") {
+        payload = args;
+        return Promise.resolve(ok({ autoRestartOnClose: false, restartWhitelist: [], theme: "dark" }));
+      }
+      return Promise.resolve(ok(null));
+    }) as never);
+
+    render(<Settings onThemeChange={onThemeChange} />);
+    await screen.findByText("深色");
+
+    const radios = screen.getAllByRole("radio") as HTMLInputElement[];
+    const dark = radios.find((r) => r.closest("label")?.textContent?.includes("深色"))!;
+    fireEvent.click(dark);
+
+    await waitFor(() => expect(payload).not.toBeNull());
+    // 整体覆盖语义：其它字段必须一起带上，否则会被清空
+    expect(payload).toEqual({
+      prefs: { autoRestartOnClose: false, restartWhitelist: [], theme: "dark" },
+    });
+    expect(onThemeChange).toHaveBeenCalledWith("dark");
   });
 });
