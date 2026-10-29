@@ -183,7 +183,9 @@ pub async fn cleanup_retry_locked(
     let conn = engine::db::conn::open(&paths.data_root).map_err(|e| e.to_string())?;
 
     // task-057：在 spawn_blocking 之前读一次偏好（默认 false），闭包按值捕获。
+    // task-058：白名单同一次读好一起捕获（空 = 不限制）。
     let auto_restart = engine::prefs::get_auto_restart(&conn);
+    let restart_whitelist = engine::prefs::get_restart_whitelist(&conn);
 
     // 1. 只收集本次 item_ids 对应的路径（查不到跳过，不中断）。
     let mut targets: Vec<String> = Vec::with_capacity(item_ids.len());
@@ -203,7 +205,11 @@ pub async fn cleanup_retry_locked(
         // 同一进程可能占用多个文件，按 pid 去重，避免前端计数虚高。
         let mut seen: std::collections::HashSet<u32> = std::collections::HashSet::new();
         for p in targets {
-            match engine::execute::locking::shutdown_locking_processes(&p, auto_restart) {
+            match engine::execute::locking::shutdown_locking_processes(
+                &p,
+                auto_restart,
+                &restart_whitelist,
+            ) {
                 Ok(outcome) => {
                     for lp in outcome.closed {
                         if seen.insert(lp.pid) {
@@ -642,6 +648,12 @@ pub async fn set_prefs(
     };
     if let Err(e) = engine::prefs::set_auto_restart(&conn, prefs.auto_restart_on_close) {
         eprintln!("[set_prefs] write: {e}");
+        return Ok(Envelope::err(INTERNAL));
+    }
+    // task-058：白名单与开关分开两个 key 存（开关是 bool、白名单是 JSON 数组），
+    // 一起写成功才算保存成功；任一步失败都返回 INTERNAL 让前端回滚 UI。
+    if let Err(e) = engine::prefs::set_restart_whitelist(&conn, &prefs.restart_whitelist) {
+        eprintln!("[set_prefs] write whitelist: {e}");
         return Ok(Envelope::err(INTERNAL));
     }
     Ok(Envelope::ok(engine::prefs::Prefs::load(&conn)))

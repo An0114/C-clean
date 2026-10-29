@@ -198,6 +198,102 @@ describe("Settings 行为偏好（task-057）", () => {
     await waitFor(() => {
       expect(setPrefsPayload).not.toBeNull();
     });
-    expect(setPrefsPayload).toEqual({ prefs: { autoRestartOnClose: true } });
+    // task-058：set_prefs 是「整体覆盖」，前端必须连当前白名单一起提交，
+    // 否则会把用户已配好的白名单清空。这里 get_prefs 没给白名单 → 空数组。
+    expect(setPrefsPayload).toEqual({
+      prefs: { autoRestartOnClose: true, restartWhitelist: [] },
+    });
+  });
+});
+
+// task-058：重启白名单编辑框
+describe("Settings 重启白名单（task-058）", () => {
+  /** 通用 mock：rules 相关返回 upToDate，prefs 由参数控制。 */
+  function mockWithPrefs(prefsPayload: unknown, onSet?: (args: unknown) => unknown) {
+    mockedInvoke.mockImplementation(((cmd: string, args: unknown) => {
+      if (cmd === "rules_check_update") {
+        return Promise.resolve(
+          ok({
+            status: "upToDate",
+            localVersion: "1.0.0",
+            localSha256: "a".repeat(64),
+            remoteVersion: "1.0.0",
+            remoteSha256: "a".repeat(64),
+            message: "ok",
+          })
+        );
+      }
+      if (cmd === "rules_has_backup") return Promise.resolve(ok(false));
+      if (cmd === "get_prefs") return Promise.resolve(ok(prefsPayload));
+      if (cmd === "set_prefs") {
+        return Promise.resolve(ok(onSet ? onSet(args) : null));
+      }
+      return Promise.resolve(ok(null));
+    }) as never);
+  }
+
+  it("启动时把已存白名单回填到 textarea（每行一条）", async () => {
+    mockWithPrefs({ autoRestartOnClose: true, restartWhitelist: ["notepad.exe", "*.exe"] });
+
+    render(<Settings />);
+    const ta = (await screen.findByLabelText("重启白名单")) as HTMLTextAreaElement;
+    await waitFor(() => {
+      expect(ta.value).toBe("notepad.exe\n*.exe");
+    });
+    expect(screen.getByText("当前生效 2 条")).toBeInTheDocument();
+  });
+
+  it("白名单为空时显示「当前：不限制」", async () => {
+    mockWithPrefs({ autoRestartOnClose: false, restartWhitelist: [] });
+
+    render(<Settings />);
+    expect(await screen.findByText("当前：不限制")).toBeInTheDocument();
+  });
+
+  it("编辑后点保存：按行解析、去空白、丢空行，并带上当前开关值", async () => {
+    let setPayload: unknown = null;
+    mockWithPrefs({ autoRestartOnClose: true, restartWhitelist: [] }, (args) => {
+      setPayload = args;
+      return {
+        autoRestartOnClose: true,
+        restartWhitelist: ["notepad.exe", "code.exe"],
+      };
+    });
+
+    render(<Settings />);
+    const ta = (await screen.findByLabelText("重启白名单")) as HTMLTextAreaElement;
+
+    fireEvent.change(ta, { target: { value: "  notepad.exe \n\n  code.exe  \n   " } });
+    fireEvent.click(screen.getByText("保存白名单"));
+
+    await waitFor(() => expect(setPayload).not.toBeNull());
+    expect(setPayload).toEqual({
+      prefs: { autoRestartOnClose: true, restartWhitelist: ["notepad.exe", "code.exe"] },
+    });
+    // 保存后用后端返回值回填（去空白后的真实生效内容）
+    await waitFor(() => expect(ta.value).toBe("notepad.exe\ncode.exe"));
+    expect(await screen.findByText("白名单已保存（2 条）")).toBeInTheDocument();
+  });
+
+  it("清空白名单后保存 → 提交空数组并提示「不限制」", async () => {
+    let setPayload: unknown = null;
+    mockWithPrefs({ autoRestartOnClose: false, restartWhitelist: ["notepad.exe"] }, (args) => {
+      setPayload = args;
+      return { autoRestartOnClose: false, restartWhitelist: [] };
+    });
+
+    render(<Settings />);
+    const ta = (await screen.findByLabelText("重启白名单")) as HTMLTextAreaElement;
+    await waitFor(() => expect(ta.value).toBe("notepad.exe"));
+
+    fireEvent.change(ta, { target: { value: "" } });
+    fireEvent.click(screen.getByText("保存白名单"));
+
+    await waitFor(() => expect(setPayload).not.toBeNull());
+    expect(setPayload).toEqual({
+      prefs: { autoRestartOnClose: false, restartWhitelist: [] },
+    });
+    expect(await screen.findByText("白名单已清空（不限制重启）")).toBeInTheDocument();
+    expect(await screen.findByText("当前：不限制")).toBeInTheDocument();
   });
 });

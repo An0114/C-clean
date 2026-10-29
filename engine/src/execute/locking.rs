@@ -316,7 +316,7 @@ pub fn who_is_locking(path: &str) -> Result<Vec<LockingProcess>, String> {
     }
 }
 
-/// 请求关闭占用 `path` 的进程（task-049），可选在关闭后自动重启被关进程（task-057）。
+/// 请求关闭占用 `path` 的进程（task-049），可选在关闭后自动重启被关进程（task-057 / 058）。
 ///
 /// 流程：`RmStartSession → RmRegisterResources(只注册这一个文件) → RmGetList →
 /// 护栏过滤（PID → 映像名）→ RmShutdown(RmForceShutdown) → RmRestart(bRestartable) → RmEndSession`。
@@ -327,11 +327,14 @@ pub fn who_is_locking(path: &str) -> Result<Vec<LockingProcess>, String> {
 /// - 全部可关：调 `RmShutdown`，成功后把这些进程放进 `closed`；
 /// - `auto_restart=true` 时，在 `RmShutdown` 之后对 `bRestartable==TRUE` 的 pid
 ///   调 `RmRestart`（总超时 10s，失败仅 warning 不阻塞删除）。**默认 false**。
+/// - `restart_whitelist`（task-058）：非空时，只有「被关闭的可重启进程**全部**命中
+///   白名单」才调 `RmRestart`，否则整体跳过（理由见 [`crate::prefs::whitelist_allows_restart`]）。
 ///
 /// 会话由 [`RmSession`] 的 `Drop` 收尾，任何提前返回都不会泄漏 handle。
 pub fn shutdown_locking_processes(
     path: &str,
     auto_restart: bool,
+    restart_whitelist: &[String],
 ) -> Result<ShutdownOutcome, String> {
     #[cfg(windows)]
     {
@@ -367,6 +370,33 @@ pub fn shutdown_locking_processes(
             });
         }
 
+        // task-057 / 058：在 RmShutdown **之前**先把「要重启谁」算好。
+        //
+        // 两个原因：
+        // 1. 白名单要用**映像名**匹配，而 RM 的 strAppName 是本地化 FileDescription
+        //    （中文系统下 `notepad.exe` 显示为「记事本」）→ 必须走 `image_file_name`；
+        // 2. `image_file_name` 内部 `OpenProcess` 在进程被杀掉后必然失败，此时再查
+        //    只能得到空串 → 白名单会永远不命中，自动重启静默失效。
+        //
+        // `restartable` 依赖 `infos`（shutdown 前快照）与 `closable`，两者此刻都可用。
+        let restart_plan: Option<(Vec<u32>, Vec<String>)> = if auto_restart {
+            let closable_pids: std::collections::HashSet<u32> =
+                closable.iter().map(|lp| lp.pid).collect();
+            let restartable = restartable_pids(&closable_pids, &infos);
+            if restartable.is_empty() {
+                eprintln!("[rm-restart] 被关闭的进程中没有可重启的，跳过 RmRestart");
+                None
+            } else {
+                let names: Vec<String> = restartable
+                    .iter()
+                    .map(|pid| image_file_name(*pid).unwrap_or_default())
+                    .collect();
+                Some((restartable, names))
+            }
+        } else {
+            None
+        };
+
         session.shutdown()?;
 
         // task-057：可选自动重启。
@@ -378,12 +408,17 @@ pub fn shutdown_locking_processes(
         //
         // 测试轮修复：旧实现误把 `pid` 当 flags 传入并按 pid 循环调用，非零 flags
         // 会让每次 RmRestart 都失败（ERROR_INVALID_PARAMETER），自动重启从不生效。
-        if auto_restart {
-            let closable_pids: std::collections::HashSet<u32> =
-                closable.iter().map(|lp| lp.pid).collect();
-            let restartable = restartable_pids(&closable_pids, &infos);
-            if restartable.is_empty() {
-                eprintln!("[rm-restart] 被关闭的进程中没有可重启的，跳过 RmRestart");
+        //
+        // task-058：因为「全有或全无」，「只重启白名单内的」无法直接实现；改为
+        // fail-closed——只有被关闭的可重启进程全部命中白名单才调 RmRestart。
+        if let Some((restartable, restartable_names)) = restart_plan {
+            if !crate::prefs::whitelist_allows_restart(restart_whitelist, &restartable_names) {
+                // 只要有一个可重启进程不在白名单内，就整体不重启，否则一次
+                // RmRestart 会把用户明确排除的进程也拉起来。
+                eprintln!(
+                    "[rm-restart] 白名单不允许：可重启进程 {:?} 未全部命中白名单 {:?}，跳过 RmRestart",
+                    restartable_names, restart_whitelist
+                );
             } else {
                 eprintln!(
                     "[rm-restart] 将尝试自动重启 {} 个可重启进程: pids={restartable:?}",
@@ -403,7 +438,7 @@ pub fn shutdown_locking_processes(
     }
     #[cfg(not(windows))]
     {
-        let _ = (path, auto_restart);
+        let _ = (path, auto_restart, restart_whitelist);
         Ok(ShutdownOutcome::default())
     }
 }
