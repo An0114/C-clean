@@ -6,6 +6,13 @@
 **v0.1.7 已发布（2026-10-29）**：M2（updater 闭环）/ M3（banner 下载进度）/ M4（RmRestart + 白名单 + 保险箱原子性）全部收官。本轮拍板：代码签名不做、品牌图标不做、G6 不修；跨盘恢复 fallback / RmShutdown 连带兄弟进程 / RmShutdown 30s 无进度三项登记为日后新功能点，暂不修。进入下一开发阶段，任务派发待用户手动发起。
 
 ## 最近一次变更
+2026-10-29：**task-060 开发完成（占用关闭体验：兄弟进程核实 + 30s 进度 + 跨盘文档），状态 `testing`**（`feature/task-060-shutdown-experience`）：
+  - **① 连带兄弟进程：核实后不改代码**（任务书方案无效）。四条理由：① `RmRegisterResources` 第二组参数是 `Option<&[RM_UNIQUE_PROCESS]>`（`{dwProcessId, ProcessStartTime}`），**不是裸 pid**，任务书的 `&[pid]` 编译不过；② 注册「锁文件的进程」是**冗余**——`RmGetList` 已通过「文件被谁占用」把它枚举出来，集合不变、`RmShutdown` 行为一致，零收益；③ **连带关闭兄弟进程本来就在发生**，task-049b 实测（两个共用 console 的 `powershell.exe`，只对 A 的文件调 `RmShutdown`，B 也退出），这是 RM 按 console 进程组的内部行为，**注册参数既不能开启也不能关闭**；④ 强行注册同名应用会扩大关闭面，且其中只要有一个命中护栏（受保护进程），mixed fail-closed 会让**整批都不关**——功能倒退。已在 `RmSession::register` 写 4 条理由的注释（防后人再改），文件头「已知限制」第 4 条补「这不是没注册进程导致的」，USER_GUIDE 写清用户可见行为。
+  - **② 30s 无进度 → 已修**。`shutdown_locking_processes` 加第四参 `on_progress: Option<ProgressCallback>`（`Arc<dyn Fn(u32) + Send + Sync>`，engine 不认识 Tauri，只负责每秒喊一次）；内部 `spawn_shutdown_ticker` 起 1s 计时线程（**100ms 响应停止**，`RmShutdown` 返回后立即 join，避免 `?` 提前返回导致线程泄漏、前端一直收进度事件）；`commands.rs` 的 `cleanup_retry_locked` 加 `app: AppHandle` 注入参数，把回调转成 `shutdown://progress` 事件（`{elapsedSecs, expectedMaxSecs: 30}`）；`Items.tsx` 在 retrying 期间显示「正在关闭进程… 已等 Xs（最多 30s）」+ 线性进度条。**关键限制**：`RmShutdown` **没有超时参数、也无法中断**，所谓「30s」是 RM 内部对每个应用的处理上限（经验值），所以**不做「30s 超时放弃」**——只在 secs > 30 时继续回调，前端补一句「已超过预期，仍在等待系统响应」，比假装超时更诚实。
+  - **③ 跨盘行为文档化**。`USER_GUIDE` 新增 **4.5 跨盘行为**：**移入支持跨盘**（同盘 rename 瞬时；跨盘自动改「复制 → 删源」，慢但可用；复制成功但删源失败时会删掉刚复制的那份再报错，避免重复副本）+ **恢复不支持跨盘**（直接报 IO 错误，文件仍在保险箱、原位置无残留）+ 为什么不对称（照搬 copy+remove 会引入「复制成功但删除失败 → 两处都有文件」的新失败模式，需单独设计）+ 实际影响很小（保险箱固定 C 盘 `%APPDATA%`）。另补 **FAQ Q9**（跨盘恢复报错怎么办，三步处置，并明确「不建议手动翻保险箱目录，索引会对不上」）。
+  - **与任务书不符 3 项**：① 任务书说「跨盘恢复用 copy+remove fallback」——**错的**，task-056 已实证**恢复没有 fallback**（移入才有），文档按事实写；② 任务书说「30s 超时后放弃」——技术上做不到（`RmShutdown` 不可中断），改为「超 30s 继续显示 + 提示仍在等待」；③ 白名单漏了 `app/src-tauri/src/commands.rs`（加 `AppHandle` 参数才能 emit，且四参签名级联）与 `app/src/pages/Items.test.tsx`（新增事件订阅需要 mock）。
+  - **门禁**：`cargo check` 0 / `clippy -D warnings` 0 / `fmt` 0 / **`cargo test --workspace` 275 passed + 8 ignored**（+2：ticker 两条）/ `pnpm lint` 0 error / **vitest 90 passed（9 files，+1 进度条用例）** / `pnpm build` **188.06 kB │ gzip 60.50 kB**。
+  - **按新流程**：开发轮不跑 CI、不做真机/安装态冒烟，移交测试 Agent。
 2026-10-29：**v0.1.7 已发布，进入下一开发阶段**。用户拍板：① 代码签名维持不做（SmartScreen 警告可接受，触发条件未到）；② 品牌图标维持 Tauri 默认占位；③ G6（设置页首调 `ipc.localhost` 红错）维持豁免不修；④ 三项已知限制——跨盘 restore 无 copy+remove fallback、RmShutdown 连带同 console 兄弟进程、RmShutdown 最坏 ~30s 前端无进度——登记为日后新功能点，暂不修。本次只更新文档，不派发新任务；下一阶段任务派发由用户后续手动发起。
 2026-10-29：**task-059 开发完成（v0.1.7 发版准备 + README 重写 + 用户手册），状态 `testing`**（`feature/task-059-release-prep-v017`）：
   - **① 版本号 `0.1.6` → `0.1.7`**：四处（`package.json` / `app/package.json` / `app/src-tauri/tauri.conf.json` / `app/src-tauri/Cargo.toml`）+ `Cargo.lock` 自动更新。`tauri build` 实测产出 `C-DiskCleaner_0.1.7_x64-setup.exe`（**4.05 MiB**）+ `C-DiskCleaner_0.1.7_x64_en-US.msi`（**5.87 MiB**）+ 成对 `.sig`。**注意**：任务书说「`pnpm --filter app build` 产物文件名含 0.1.7」是错的——vite build 产物是 `dist/index-<hash>.js`，永远不含版本号（task-054 已记录过这个偏差），必须用 `tauri build` 验。
@@ -444,6 +451,8 @@
 
 - [x] 059：v0.1.7 发版准备 + README/用户手册——**①** 版本号 `0.1.6` → `0.1.7`（`package.json` / `app/package.json` / `app/src-tauri/tauri.conf.json` / `app/src-tauri/Cargo.toml` 四处 + `Cargo.lock`），`tauri build` 实测产出 `C-DiskCleaner_0.1.7_x64-setup.exe`（4.05 MiB）+ `.msi`（5.87 MiB）+ 成对 `.sig`；**②** `CHANGELOG.md` v0.1.7 定稿（日期 `2026-10-29`、删 `[Unreleased]` 段）；**③** **重写 `README.md`**——原文件是早期版本（状态还停在「待进入 PRD 与 M0 技术验证」、目录结构写「M1 阶段将新增 app/engine」），重写为面向开源用户的版本（一句话定位 / 与两类工具的差异对比 / 7 项功能 / NSIS+MSI 安装指引 + SmartScreen 说明 / 开发命令 / 技术栈表 / 真实目录结构 / 安全与隐私基线 / 贡献指南）；**④** 新建 **`docs/USER_GUIDE.md`**（8 节：快速开始 / 扫描 / 清理 / 保险箱 / 历史与审计 / 设置 / 更新机制 / 常见问题 8 问，全部按真实 UI 文案撰写）（`feature/task-059-release-prep-v017`；**开发轮完成，状态 `testing`**；门禁 check/clippy/fmt 0、`cargo test --workspace` 273 passed + 8 ignored、vitest 89、build 187.46 kB、`tauri build` exit 0；**发版动作（`workflow_dispatch` version=0.1.7）由用户手动执行**）
 
+- [x] 060：占用关闭体验——**①** RmShutdown 连带兄弟进程**核实后不改代码**：任务书要求「`RmRegisterResources` 再注册进程本身（`&[pid]`）」，核实后不采纳——参数类型是 `Option<&[RM_UNIQUE_PROCESS]>`（pid + ProcessStartTime）不是裸 pid；且注册「锁文件的进程」是**冗余**的（`RmGetList` 已通过文件找到它，集合不变）；「连带关闭兄弟进程」是 RM 按 console 进程组的内部行为，task-049b 实测**只注册文件就已经发生**，注册参数既不能开启也不能关闭它；强行注册同名应用还会扩大关闭面并可能触发 mixed fail-closed 让整批都关不掉。已在 `RmSession::register` 加 4 条理由的注释 + 文件头「已知限制」第 4 条补充，并在 USER_GUIDE 写清用户可见行为。**②** RmShutdown **1s 进度反馈**：`shutdown_locking_processes` 加第四参 `on_progress: Option<ProgressCallback>`，内部起 1s ticker 线程（100ms 响应停止，`RmShutdown` 返回后立即停，避免线程泄漏），`commands.rs` 转成 `shutdown://progress` 事件（`{elapsedSecs, expectedMaxSecs:30}`），`Items.tsx` 显示「正在关闭进程… 已等 Xs（最多 30s）」+ 线性进度条，超 30s 补一句「仍在等待系统响应」。**③** `USER_GUIDE` 补 **4.5 跨盘行为**（移入有 copy+remove fallback / 恢复**不支持**跨盘 / 为什么不对称 / 实际影响很小）+ FAQ Q9（跨盘恢复报错怎么办，三步处置）（`feature/task-060-shutdown-experience`；**开发轮完成，状态 `testing`**；门禁 check/clippy/fmt 0、`cargo test --workspace` 275 passed + 8 ignored、vitest 90、build 188.06 kB；**按新流程开发轮不跑 CI、不做真机/安装态冒烟**，移交测试 Agent）
+
 > 注：040~047 的完成明细未回填本清单（历史遗漏），以「最近一次变更」段与 `tasks/040-*.md`~`tasks/047-*.md` 为准。
 > 编号顺延（2026-10-24）：原定 050 的「safe_box 增强」顺延为 **051**，050 让位给发版阻塞级的打包资源路径缺陷。
 
@@ -484,11 +493,11 @@
 ## 下一步计划
 1. v0.1.7 已发布，M2/M3/M4 全部收官。
 2. 本轮决策：代码签名不做 / 品牌图标不做 / G6 不修。
-3. 跨盘恢复 fallback、RmShutdown 连带兄弟进程、RmShutdown 30s 无进度 → 登记为日后新功能点，暂不修。
+3. ~~跨盘恢复 fallback、RmShutdown 连带兄弟进程、RmShutdown 30s 无进度~~ **已由 task-060 处理（2026-10-29）**：兄弟进程连带关闭**核实为 RM 既定行为、不需改代码**（只注册文件就已发生，注册 `rgapplications` 既不能开启也不能关闭它）；30s 无进度**已修**（1s ticker + `shutdown://progress` 事件 + 前端进度条）；跨盘恢复**已文档化**（移入有 fallback、恢复不支持，写明原因与三步处置）。跨盘恢复 fallback 本身**仍未实现**（会引入「复制成功但删除失败 → 两处都有文件」的新失败模式，需单独设计）。
 4. 下一阶段任务派发待用户手动发起。
 
 ## 当前负责人 Agent
-**用户本人**——v0.1.7 已发布，等待用户派发下一阶段任务（本轮只更新文档，不派任务）。
+**测试 Agent（提示词 9）**——`feature/task-060-shutdown-experience` 开发轮已完成、状态 `testing`，待测试轮：独立重跑全部门禁 + 开 PR 触发 CI + 真机冒烟（① 占用关闭时看到「正在关闭进程… 已等 Xs」进度条而不是卡死；② 同一 cmd 窗口里的父子进程被连带关闭；③ 跨盘恢复失败时文件仍在保险箱）+ NSIS 安装态复跑。上一手：DevFullstackRustReact（task-060 开发）。再上一手：DocsKeeper（task-060 派发）。
 
 ## Git 提交记录
 | Commit | 任务 | 说明 |
@@ -883,6 +892,12 @@
 | 241a997 | #task-059 | docs(readme): 重写 README——项目简介/功能列表/安装指引/开发指引/技术栈 |
 | 7eb5392 | #task-059 | docs(guide): 新增用户手册 USER_GUIDE.md（8 节覆盖全功能） |
 | （本次） | #task-059 | docs(state): 任务059完成，v0.1.7 发版准备就绪，待用户手动 workflow_dispatch |
+| 360df74 | #task-059 | merge: task-059 v0.1.7 发版准备——版本号+CHANGELOG 定稿+README+用户手册（--no-ff） |
+| 6e5fb5b | #task-060 | docs(execute): 固化「不注册 rgapplications」的决策依据 + 用户手册说明连带关闭兄弟进程 |
+| 6734cd5 | #task-060 | feat(execute): RmShutdown 1s 进度 ticker + shutdown://progress 事件 + 前端关闭进度条 |
+| 79e2c93 | #task-060 | test(execute): 补 ticker 用例 + 适配四参签名 + 前端进度条用例 |
+| e85444a | #task-060 | docs(guide): 补跨盘行为说明——移入有 fallback、恢复不支持跨盘 + FAQ Q9 |
+| （本次） | #task-060 | docs(state): 任务060完成，占用关闭体验优化（连带兄弟进程 + 30s 进度 + 跨盘文档） |
 
 ---
 变更轨迹：
@@ -1005,3 +1020,4 @@
 - 2026-10-28  task-057  RmRestart 自动重启被关进程（默认关闭 + 设置开关）：**prefs 存储**复用 v1 `settings` 表（键 `prefs.auto_restart_on_close`，不加迁移不加新列），新建 `engine/src/prefs.rs`（get/set UPSERT + Prefs serde camelCase + 5 条单测）；**RmRestart** `shutdown_locking_processes(path, auto_restart: bool)` 签名升级，`RmSession::restart(pid)` 调 windows `RmRestart(handle, pid, None)`，仅对 pid ∈ closable ∧ `bRestartable.as_bool()==true` 调用，总超时 10s，单个失败只 warning；**Tauri** `get_prefs`/`set_prefs` 注册、`cleanup_retry_locked` 在 spawn_blocking 前读 prefs；**UI** Settings「行为偏好」开关（默认关闭 + 灰色说明）+ Items confirm 文案开启时追加自动重启提示。门禁 check/clippy/fmt 0、cargo lib 53（+6）、vitest 85（+4）、build 185.59 kB。**开发轮按新流程不跑 CI/真机/安装态冒烟**，移交测试 Agent
 - 2026-10-29  task-058  M4 收尾：**RmRestart 白名单**（`prefs.restart_whitelist` JSON 存 settings 表；空白名单=不限制，非空 fail-closed——`RmRestart` 无按 pid 参数只能整批重启，故改为「被关闭的可重启进程全部命中才重启」；匹配用映像名 + `*` 通配，且映像名必须在 `RmShutdown` 之前取，否则进程已死查不到）；**safe_box 原子性**（INSERT 提到 rename 之前 + 事务包裹，旧顺序反了才产生孤儿；跨盘 copy/remove 失败清理半成品）；**代码签名评估**（结论当前不做：CA/B 2023-06 强制硬件私钥与 GitHub Actions 天然冲突、EV/OV 需企业实体、Azure Artifact Signing 个人仅限美加；给出三个「该做」触发条件）；**CHANGELOG v0.1.7 草稿**（四段，版本号保持 0.1.6）。门禁 check/clippy/fmt 0、cargo test **273 passed + 8 ignored**（+11）、vitest 89、build 187.46 kB。**开发轮不跑 CI/真机/安装态冒烟**，移交测试 Agent
 - 2026-10-29  task-059  v0.1.7 发版准备（版本号/CHANGELOG/README/用户手册）：版本号 `0.1.6` → `0.1.7`（四处 + lock），`tauri build` 实测 `C-DiskCleaner_0.1.7_x64-setup.exe`（4.05 MiB）+ `.msi`（5.87 MiB）+ 成对 `.sig`；`CHANGELOG.md` v0.1.7 定稿（日期 2026-10-29、删 Unreleased 段）；**重写 `README.md`**（原文件状态停在「待进入 M0」、目录结构写「M1 阶段将新增 app/engine」、启动写「弹出空窗口」，全部失真，重写为开源门面）；新建 **`docs/USER_GUIDE.md`**（8 节 + 8 条 FAQ，按真实 UI 文案撰写，重点说清白名单 fail-closed 语义 / 「已不存在」不算失败 / 卸载不删 %APPDATA%）。门禁 check/fmt 0、cargo test **273 passed + 8 ignored**、vitest 89、build 187.46 kB、tauri build exit 0。**发版由用户手动 workflow_dispatch（version=0.1.7）**
+- 2026-10-29  task-060  占用关闭体验（连带兄弟进程 + 30s 进度 + 跨盘文档）：**兄弟进程**核实为 RM 按 console 进程组的既定行为、**不需改代码**（只注册文件就已发生；注册 `rgapplications` 参数类型是 `RM_UNIQUE_PROCESS` 不是 pid、且注册锁文件进程本身冗余、强行注册同名应用会扩大关闭面并可能触发 mixed fail-closed 让整批都关不掉），已在 `RmSession::register` 写 4 条理由 + USER_GUIDE 说明；**30s 无进度已修**（`shutdown_locking_processes` 第四参 `on_progress` + `spawn_shutdown_ticker` 1s 计时线程 + `shutdown://progress` 事件 + Items 进度条「已等 Xs（最多 30s）」，超 30s 提示仍在等待——`RmShutdown` 无超时参数不可中断，不做假超时）；**跨盘行为已文档化**（USER_GUIDE 4.5：移入有 copy+remove fallback、**恢复不支持跨盘**、原因与影响 + FAQ Q9 三步处置）。门禁 check/clippy/fmt 0、cargo test **275 passed + 8 ignored**（+2）、vitest **90**（+1）、build 188.06 kB。**开发轮不跑 CI/真机/安装态冒烟**，移交测试 Agent
