@@ -6,6 +6,14 @@
 **v0.1.6 发版门禁收官（2026-10-28）**：升级闭环手册由用户真机跑通——装 v0.1.5 → banner 提示「发现新版本 0.1.6」→ 升级 → 重启后 A/B/C 三种方式均确认 0.1.6 → R1–R6 功能回归全过（证据见 `docs/release/v0.1.6-upgrade-verification.md` 末尾结果表）。第三轮 NSIS/MSI 双跑：各 27 条过 26，唯一不通过为 C08（`scripts\` 改名后应用启动即 fail-fast 闪烁退出，未出现「完成+报错」并存，但实现方式与预期的「运行时扫描失败红条」不同）；排除 G6 后 Console 零红错。M2 updater 闭环正式收官。
 
 ## 最近一次变更
+2026-10-29：**task-059 开发完成（v0.1.7 发版准备 + README 重写 + 用户手册），状态 `testing`**（`feature/task-059-release-prep-v017`）：
+  - **① 版本号 `0.1.6` → `0.1.7`**：四处（`package.json` / `app/package.json` / `app/src-tauri/tauri.conf.json` / `app/src-tauri/Cargo.toml`）+ `Cargo.lock` 自动更新。`tauri build` 实测产出 `C-DiskCleaner_0.1.7_x64-setup.exe`（**4.05 MiB**）+ `C-DiskCleaner_0.1.7_x64_en-US.msi`（**5.87 MiB**）+ 成对 `.sig`。**注意**：任务书说「`pnpm --filter app build` 产物文件名含 0.1.7」是错的——vite build 产物是 `dist/index-<hash>.js`，永远不含版本号（task-054 已记录过这个偏差），必须用 `tauri build` 验。
+  - **② `CHANGELOG.md` 定稿**：`## [0.1.7] - 未发布（草稿）` → `## [0.1.7] - 2026-10-29`，删掉草稿说明块与 `## [Unreleased]` 段。内容复核：新增 4 条（自动重启 / 白名单 / 偏好持久化 / 恢复时间可追溯）、修复 1 条（移入失败不再丢文件）、变更 2 条、已知问题 5 条，覆盖任务书要求的全部条目。
+  - **③ `README.md` 重写**：**原文件不是 Tauri 模板**（任务书假设错了），而是早期手写版——但状态停在「立项 / 原始需求草稿已固化，待进入 PRD 与 M0 技术验证」、目录结构写着「以下目录将在 M1 阶段新增：app/ engine/ rules/ scripts/」（实际早已存在）、「本地启动」写着「弹出标题为 C-Disk Cleaner 的**空窗口**」。这些对开源访客是误导性信息，必须重写。新版保留有价值的「一句话定位 / 与大众工具和专业工具的差异 / 安全与隐私基线」，补齐 7 项功能列表、NSIS+MSI 安装指引（含 SmartScreen 绕过与签名评估链接）、开发命令（含 `TAURI_SIGNING_PRIVATE_KEY` 缺失会导致打包失败这一坑）、技术栈表、**真实**目录结构、贡献指南。
+  - **④ 新建 `docs/USER_GUIDE.md`**：8 节 + 8 条 FAQ，**全部按真实 UI 文案撰写**（先 `grep` 了 Dashboard/Items/SafeBox/History/Settings 的实际按钮与提示文字再动笔：「开始扫描」/「再次扫描」/「预览可清理项」/「清理已选」/「已恢复…」/「永久删除」/时间预设「全部·24 小时·3 天·7 天」/「（未选 = 全部 session）」）。重点把三处**容易误解的行为**写清楚：① 白名单的 fail-closed 语义（不是「只重启名单内」）；② 「已不存在」不算失败也不计释放量；③ 卸载不删 `%APPDATA%` 数据。
+  - **门禁**：`cargo check` 0 / `cargo fmt` 0 / **`cargo test --workspace` 273 passed + 8 ignored**（不改业务代码，零回归）/ `pnpm lint` 0 error（2 条既有 warning）/ **vitest 89** / `pnpm build` 187.46 kB / **`tauri build` exit 0**。
+  - **与任务书不符 2 项**：① 版本号路径写 `src-tauri/*`，实际在 `app/src-tauri/*`（workspace 布局，同 task-054）；② README 不是 Tauri 模板而是过时的早期版本（结论一样要重写，但理由不同——不是「模板没内容」而是「内容已失真」）。
+  - **按新流程**：开发轮不跑 CI、不做安装态冒烟；发版动作由用户手动执行。
 2026-10-29：**task-058 开发完成（M4 收尾：白名单 / 原子性 / 签名评估 / CHANGELOG 草稿），状态 `testing`**（`feature/task-058-m4-finishup`）：
   - **① RmRestart 白名单**：`prefs.restart_whitelist` 存 `settings` 表（JSON 数组字符串，`serde(default)` 兜住旧前端不传）。**语义与任务书不同（必须说明）**：任务书要求「白名单非空时只重启名单内的」，但 `RmRestart` **没有按 pid 重启的参数**——一次调用重启本会话内**所有** `bRestartable` 进程（task-057 测试轮已踩过「误把 pid 当 flags」的坑）。所以「只重启名单内」在 RM 机制下**无法实现**，改为 **fail-closed**：空白名单 = 不限制（保持现状）；非空白名单 = 只有被关闭的可重启进程**全部**命中才调 `RmRestart`，只要有一个不在名单内就整批跳过，避免把用户明确排除的进程也拉起来。匹配用 **映像名**（`QueryFullProcessImageNameW`）而非 RM 的 `strAppName`（本地化 FileDescription，中文系统下 `notepad.exe` 显示为「记事本」），支持 `*` 通配。**一个必须注意的实现细节**：映像名要在 `RmShutdown` **之前**取好——进程被杀后 `OpenProcess` 必失败，那时再查只能得到空串，白名单会永远不命中、自动重启静默失效（第一版代码就写错了，已修）。
   - **② `safe_box` 原子性**：根因是**顺序反了**——旧实现先 `fs::rename` 再 `INSERT`，INSERT 失败（磁盘满/约束/库被锁）就留下「文件在 box、DB 无行」的孤儿，`enforce_quota` 下次把它当 purged 永久删除，用户感知「文件凭空消失」。改为 **INSERT 提前到 rename 之前 + 整段包 `unchecked_transaction`**：INSERT 失败时文件根本没动；rename 失败时 `Transaction` 的 Drop 自动 rollback；跨盘 copy 失败 / copy 成功但 remove 失败时先删半成品目标文件再报错。
@@ -433,6 +441,8 @@
 
 - [x] 058：M4 收尾——**①** RmRestart **白名单**（`prefs.restart_whitelist`，JSON 数组存 `settings` 表；支持 `*` 通配；**空=不限制**，非空时 fail-closed：只有被关闭的可重启进程**全部**命中才调 `RmRestart`——因为 `RmRestart` 无按 pid 参数、一次重启整批，「只重启名单内」在 RM 机制下做不到）+ Settings 白名单 textarea；**②** `safe_box` **原子性**：INSERT 提到 rename **之前**并整段包事务（旧实现顺序反了 → rename 成功但 INSERT 失败 → 孤儿文件被 enforce_quota 当 purged，用户感知「文件凭空消失」），跨盘 copy/remove 失败时清理半成品目标文件；**③** 新建 `docs/research/code-signing-evaluation.md`（EV/OV/自签/Store 四方案 + **2023-06 CA/B 规则：私钥必须硬件存储**→与 GitHub Actions 天然冲突 + Azure Artifact Signing 地域限制）→ **结论当前不做**，给出三个「该做」的触发条件；**④** `CHANGELOG.md` 追加 **v0.1.7 草稿**（新增/修复/变更/已知问题四段），**版本号保持 0.1.6 不升**（`feature/task-058-m4-finishup`；**开发轮完成，状态 `testing`**；门禁 check/clippy/fmt 0、`cargo test --workspace` 273 passed + 8 ignored、vitest 89、build 187.46 kB；**按新流程开发轮不跑 CI、不做真机/安装态冒烟**，移交测试 Agent）
 
+- [x] 059：v0.1.7 发版准备 + README/用户手册——**①** 版本号 `0.1.6` → `0.1.7`（`package.json` / `app/package.json` / `app/src-tauri/tauri.conf.json` / `app/src-tauri/Cargo.toml` 四处 + `Cargo.lock`），`tauri build` 实测产出 `C-DiskCleaner_0.1.7_x64-setup.exe`（4.05 MiB）+ `.msi`（5.87 MiB）+ 成对 `.sig`；**②** `CHANGELOG.md` v0.1.7 定稿（日期 `2026-10-29`、删 `[Unreleased]` 段）；**③** **重写 `README.md`**——原文件是早期版本（状态还停在「待进入 PRD 与 M0 技术验证」、目录结构写「M1 阶段将新增 app/engine」），重写为面向开源用户的版本（一句话定位 / 与两类工具的差异对比 / 7 项功能 / NSIS+MSI 安装指引 + SmartScreen 说明 / 开发命令 / 技术栈表 / 真实目录结构 / 安全与隐私基线 / 贡献指南）；**④** 新建 **`docs/USER_GUIDE.md`**（8 节：快速开始 / 扫描 / 清理 / 保险箱 / 历史与审计 / 设置 / 更新机制 / 常见问题 8 问，全部按真实 UI 文案撰写）（`feature/task-059-release-prep-v017`；**开发轮完成，状态 `testing`**；门禁 check/clippy/fmt 0、`cargo test --workspace` 273 passed + 8 ignored、vitest 89、build 187.46 kB、`tauri build` exit 0；**发版动作（`workflow_dispatch` version=0.1.7）由用户手动执行**）
+
 > 注：040~047 的完成明细未回填本清单（历史遗漏），以「最近一次变更」段与 `tasks/040-*.md`~`tasks/047-*.md` 为准。
 > 编号顺延（2026-10-24）：原定 050 的「safe_box 增强」顺延为 **051**，050 让位给发版阻塞级的打包资源路径缺陷。
 
@@ -475,10 +485,10 @@
 2. ~~**差量更新**~~ **不立项**（评估结论：Tauri 2 不支持、自建 6–9 人日、4 MB 包省流量 <2 秒不划算）。
 3. ~~**release profile 瘦身**~~ **不做**（2026-10-28 用户决策）：当前包体积可接受，不为 -20%~35% 再花 1–2 人日。
 4. **G6 豁免（已明确口径）**：设置页首调 `rules_check_update` 走 `ipc.localhost` 红错为 Tauri 2.x `useCustomProtocol` 首调已知项，功能经 postMessage 回退可用。**发版门禁口径：排除 G6 后 Console 零红即过**，G6 本身不阻塞发版、不修代码。
-5. **v0.1.7 发版（待用户手动 `workflow_dispatch`，version 填 `0.1.7`）**：`CHANGELOG.md` 已由 task-058 预写草稿条目，发版时补真实日期并把四处版本号从 `0.1.6` 升到 `0.1.7`。**后续按需迭代**：代码签名购买决策（评估结论当前不做，见 `docs/research/code-signing-evaluation.md` 的三个触发条件）、品牌图标（决策不做）。
+5. **v0.1.7 发版（待用户手动 `workflow_dispatch`，version 填 `0.1.7`）**：版本号已升到 `0.1.7`（四处 + lock）、`CHANGELOG.md` 已定稿（`2026-10-29`）、`tauri build` 已验证产物名。**后续按需迭代**：代码签名购买决策（评估结论当前不做，见 `docs/research/code-signing-evaluation.md` 的三个触发条件）、品牌图标（决策不做）。
 
 ## 当前负责人 Agent
-**测试 Agent（提示词 9）**——`feature/task-058-m4-finishup` 开发轮已完成、状态 `testing`，待测试轮：独立重跑全部门禁 + 开 PR 触发 CI + **重点验白名单三态**（空白名单 notepad 被关后自动重启 / 白名单加 `chrome.exe` 时 notepad 不重启 / 白名单持久化重开仍在）+ safe_box 原子性（可选：临时把 `source_task_id` 改成不存在值验原文件留原位）+ NSIS 安装态复跑。上一手：DevFullstackRustReact（task-058 开发）。再上一手：DevBackendRustReact（task-057 开发）。
+**测试 Agent（提示词 9）**——`feature/task-059-release-prep-v017` 开发轮已完成、状态 `testing`，待测试轮：独立重跑全部门禁 + 开 PR 触发 CI + NSIS 干净目录安装验「已安装应用列表 / exe 属性产品版本显示 0.1.7」+ 冒烟一遍 README 安装指引与 USER_GUIDE 步骤是否与实际界面一致。**发版动作（`workflow_dispatch` version=0.1.7）由用户手动执行**。上一手：DevFullstackRustReact（task-059 开发）。再上一手：Review Lead（task-058 评审通过并合并 `9826c15`）。
 
 ## Git 提交记录
 | Commit | 任务 | 说明 |
@@ -867,6 +877,12 @@
 | 29b32d6 | #task-058 | docs(research): 代码签名技术评估（EV/OV/自签/Store 四方案，结论当前不做） |
 | 85bd0f5 | #task-058 | docs(changelog): 追加 v0.1.7 草稿条目 |
 | （本次） | #task-058 | docs(state): 任务058完成，M4 收尾——白名单/原子性/签名评估/CHANGELOG 草稿就绪 |
+| 9826c15 | #task-058 | merge: task-058 M4 收尾——RmRestart 白名单+safe_box 原子性+签名评估+CHANGELOG（--no-ff） |
+| a12eacf | #task-059 | chore(release): 版本号升级 v0.1.6 → v0.1.7（四处 + Cargo.lock） |
+| e6e40f6 | #task-059 | docs(changelog): v0.1.7 条目定稿（补日期 2026-10-29 + 删 Unreleased 段） |
+| 241a997 | #task-059 | docs(readme): 重写 README——项目简介/功能列表/安装指引/开发指引/技术栈 |
+| 7eb5392 | #task-059 | docs(guide): 新增用户手册 USER_GUIDE.md（8 节覆盖全功能） |
+| （本次） | #task-059 | docs(state): 任务059完成，v0.1.7 发版准备就绪，待用户手动 workflow_dispatch |
 
 ---
 变更轨迹：
@@ -988,3 +1004,4 @@
 - 2026-10-28  task-056  **CI Run #139 红 → 二轮 bugfix → Run #140 success**：Run #139（@`3db6078`）Windows runner 上 `cross_disk_restore_succeeds_across_drives` FAILED——CI 上 `std::fs::rename` 跨卷直接返 EXDEV（os error 17「cannot move file to a different disk drive」），与本机环境（跨卷成功）相反；根因是第一轮 bugfix 把断言翻成「必成功」，锁死了一种非可移植结果。改 `cross_disk_restore_portable_contract`：match Result 两路都验——Ok 验落盘+内容一致+restored，Err(EXDEV) 验行仍 in_box+box 文件原封未动+错误指向跨盘 rename，不丢数据。走 `bugfix/task-056-cross-disk-restore-portable`（`0854600`），本地 cargo test --workspace exit 0、clippy/fmt 0，`--no-ff` 合回 `98e3bfd`；**CI Run #140 conclusion=success** @ `98e3bfd`。新登记第三档：restore 跨盘在多数 Windows 机器实际失败（无 copy+remove fallback），若要真正支持跨盘恢复需另立任务加 fallback。
 - 2026-10-28  task-057  RmRestart 自动重启被关进程（默认关闭 + 设置开关）：**prefs 存储**复用 v1 `settings` 表（键 `prefs.auto_restart_on_close`，不加迁移不加新列），新建 `engine/src/prefs.rs`（get/set UPSERT + Prefs serde camelCase + 5 条单测）；**RmRestart** `shutdown_locking_processes(path, auto_restart: bool)` 签名升级，`RmSession::restart(pid)` 调 windows `RmRestart(handle, pid, None)`，仅对 pid ∈ closable ∧ `bRestartable.as_bool()==true` 调用，总超时 10s，单个失败只 warning；**Tauri** `get_prefs`/`set_prefs` 注册、`cleanup_retry_locked` 在 spawn_blocking 前读 prefs；**UI** Settings「行为偏好」开关（默认关闭 + 灰色说明）+ Items confirm 文案开启时追加自动重启提示。门禁 check/clippy/fmt 0、cargo lib 53（+6）、vitest 85（+4）、build 185.59 kB。**开发轮按新流程不跑 CI/真机/安装态冒烟**，移交测试 Agent
 - 2026-10-29  task-058  M4 收尾：**RmRestart 白名单**（`prefs.restart_whitelist` JSON 存 settings 表；空白名单=不限制，非空 fail-closed——`RmRestart` 无按 pid 参数只能整批重启，故改为「被关闭的可重启进程全部命中才重启」；匹配用映像名 + `*` 通配，且映像名必须在 `RmShutdown` 之前取，否则进程已死查不到）；**safe_box 原子性**（INSERT 提到 rename 之前 + 事务包裹，旧顺序反了才产生孤儿；跨盘 copy/remove 失败清理半成品）；**代码签名评估**（结论当前不做：CA/B 2023-06 强制硬件私钥与 GitHub Actions 天然冲突、EV/OV 需企业实体、Azure Artifact Signing 个人仅限美加；给出三个「该做」触发条件）；**CHANGELOG v0.1.7 草稿**（四段，版本号保持 0.1.6）。门禁 check/clippy/fmt 0、cargo test **273 passed + 8 ignored**（+11）、vitest 89、build 187.46 kB。**开发轮不跑 CI/真机/安装态冒烟**，移交测试 Agent
+- 2026-10-29  task-059  v0.1.7 发版准备（版本号/CHANGELOG/README/用户手册）：版本号 `0.1.6` → `0.1.7`（四处 + lock），`tauri build` 实测 `C-DiskCleaner_0.1.7_x64-setup.exe`（4.05 MiB）+ `.msi`（5.87 MiB）+ 成对 `.sig`；`CHANGELOG.md` v0.1.7 定稿（日期 2026-10-29、删 Unreleased 段）；**重写 `README.md`**（原文件状态停在「待进入 M0」、目录结构写「M1 阶段将新增 app/engine」、启动写「弹出空窗口」，全部失真，重写为开源门面）；新建 **`docs/USER_GUIDE.md`**（8 节 + 8 条 FAQ，按真实 UI 文案撰写，重点说清白名单 fail-closed 语义 / 「已不存在」不算失败 / 卸载不删 %APPDATA%）。门禁 check/fmt 0、cargo test **273 passed + 8 ignored**、vitest 89、build 187.46 kB、tauri build exit 0。**发版由用户手动 workflow_dispatch（version=0.1.7）**
