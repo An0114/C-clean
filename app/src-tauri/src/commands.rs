@@ -711,5 +711,14 @@ pub async fn set_prefs(
         eprintln!("[set_prefs] write theme: {e}");
         return Ok(Envelope::err(INTERNAL));
     }
+    // task-061：自动扫描开关与间隔。间隔非法值由 set_auto_scan_interval 归一化成 daily。
+    if let Err(e) = engine::prefs::set_auto_scan_enabled(&conn, prefs.auto_scan_enabled) {
+        eprintln!("[set_prefs] write auto_scan_enabled: {e}");
+        return Ok(Envelope::err(INTERNAL));
+    }
+    if let Err(e) = engine::prefs::set_auto_scan_interval(&conn, &prefs.auto_scan_interval) {
+        eprintln!("[set_prefs] write auto_scan_interval: {e}");
+        return Ok(Envelope::err(INTERNAL));
+    }
     Ok(Envelope::ok(engine::prefs::Prefs::load(&conn)))
 }

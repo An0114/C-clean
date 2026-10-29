@@ -44,7 +44,19 @@ interface Prefs {
   restartWhitelist: string[];
   // task-061：主题三态。默认 "system"（跟随系统）。
   theme: ThemeMode;
+  // task-061：自动扫描（只扫描不删除）。默认关闭 + daily。
+  autoScanEnabled: boolean;
+  autoScanInterval: ScanInterval;
 }
+
+/** task-061：自动扫描间隔，与 `engine::prefs::{SCAN_DAILY, SCAN_WEEKLY, SCAN_MONTHLY}` 对齐。 */
+type ScanInterval = "daily" | "weekly" | "monthly";
+
+const SCAN_OPTIONS: { value: ScanInterval; label: string }[] = [
+  { value: "daily", label: "每天" },
+  { value: "weekly", label: "每周" },
+  { value: "monthly", label: "每月" },
+];
 
 /** task-061：主题三态。与 `engine::prefs::{THEME_SYSTEM, THEME_LIGHT, THEME_DARK}` 对齐。 */
 type ThemeMode = "system" | "light" | "dark";
@@ -119,6 +131,8 @@ export default function Settings({ onUpdateFound, onThemeChange }: SettingsProps
     restartWhitelist: [],
     // task-061：默认跟随系统（与后端缺行时的默认值一致）。
     theme: "system",
+    autoScanEnabled: false,
+    autoScanInterval: "daily",
   });
   const [prefsSaving, setPrefsSaving] = useState<boolean>(false);
   // task-058：白名单编辑框的原始文本（每行一个进程名），提交时才解析成数组。
@@ -132,10 +146,14 @@ export default function Settings({ onUpdateFound, onThemeChange }: SettingsProps
         // p 可能为 null（IPC 异常 / 旧后端），统一按默认值兜住。
         const wl = p?.restartWhitelist ?? [];
         const th = p?.theme;
+        const si = p?.autoScanInterval;
         setPrefs({
           autoRestartOnClose: Boolean(p?.autoRestartOnClose),
           restartWhitelist: wl,
           theme: th === "light" || th === "dark" || th === "system" ? th : "system",
+          autoScanEnabled: Boolean(p?.autoScanEnabled),
+          autoScanInterval:
+            si === "weekly" || si === "monthly" || si === "daily" ? si : "daily",
         });
         setWhitelistText(wl.join("\n"));
       } catch {
@@ -197,6 +215,41 @@ export default function Settings({ onUpdateFound, onThemeChange }: SettingsProps
       }
     },
     [prefs.theme, savePrefs, onThemeChange]
+  );
+
+  // task-061：自动扫描开关。开启后后台会按间隔静默扫描（只扫描、不删除）。
+  const onToggleAutoScan = useCallback(
+    async (next: boolean) => {
+      setPrefs((p) => ({ ...p, autoScanEnabled: next }));
+      setPrefsSaving(true);
+      try {
+        await savePrefs({ autoScanEnabled: next });
+      } catch (e) {
+        setPrefs((p) => ({ ...p, autoScanEnabled: !next }));
+        setToast({ ok: false, text: `保存设置失败：${String(e)}` });
+      } finally {
+        setPrefsSaving(false);
+      }
+    },
+    [savePrefs]
+  );
+
+  const onChangeScanInterval = useCallback(
+    async (next: ScanInterval) => {
+      const prev = prefs.autoScanInterval;
+      if (prev === next) return;
+      setPrefs((p) => ({ ...p, autoScanInterval: next }));
+      setPrefsSaving(true);
+      try {
+        await savePrefs({ autoScanInterval: next });
+      } catch (e) {
+        setPrefs((p) => ({ ...p, autoScanInterval: prev }));
+        setToast({ ok: false, text: `保存设置失败：${String(e)}` });
+      } finally {
+        setPrefsSaving(false);
+      }
+    },
+    [prefs.autoScanInterval, savePrefs]
   );
 
   // task-058：保存白名单。按行切分 → 去空白 → 丢空行；空结果 = 清空（不限制）。
@@ -708,6 +761,80 @@ export default function Settings({ onUpdateFound, onThemeChange }: SettingsProps
             </span>
           </div>
         </div>
+      </div>
+
+      {/* task-061：自动扫描。MVP 只扫描 + 通知，**绝不自动删除**——安全第一。 */}
+      <h2 style={{ margin: "24px 0 12px", fontSize: 16 }}>自动扫描</h2>
+      <div style={cardStyle}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 600 }}>定期在后台扫描</div>
+            <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 4, lineHeight: 1.5 }}>
+              按设定间隔在后台扫描一遍，完成后发系统通知告诉你「发现多少可清理项」。
+              <b>只扫描，不会自动删除任何文件</b>——要清理仍需你手动确认。默认关闭。
+            </div>
+          </div>
+          <label
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              cursor: prefsSaving ? "wait" : "pointer",
+              whiteSpace: "nowrap",
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={prefs.autoScanEnabled}
+              disabled={prefsSaving}
+              onChange={(e) => onToggleAutoScan(e.target.checked)}
+            />
+            <span style={{ fontSize: 12, color: "var(--text)" }}>
+              {prefs.autoScanEnabled ? "已开启" : "已关闭"}
+            </span>
+          </label>
+        </div>
+
+        <div
+          style={{
+            marginTop: 14,
+            borderTop: "1px solid var(--border)",
+            paddingTop: 14,
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            flexWrap: "wrap",
+          }}
+        >
+          <span style={{ fontSize: 12, color: "var(--text)" }}>扫描间隔：</span>
+          {SCAN_OPTIONS.map((opt) => (
+            <label
+              key={opt.value}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 5,
+                fontSize: 12,
+                color: prefs.autoScanEnabled ? "var(--text)" : "var(--text-muted)",
+                cursor: prefsSaving || !prefs.autoScanEnabled ? "not-allowed" : "pointer",
+              }}
+            >
+              <input
+                type="radio"
+                name="scan-interval"
+                checked={prefs.autoScanInterval === opt.value}
+                disabled={prefsSaving || !prefs.autoScanEnabled}
+                onChange={() => onChangeScanInterval(opt.value)}
+              />
+              {opt.label}
+            </label>
+          ))}
+        </div>
+        {!prefs.autoScanEnabled && (
+          <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 8 }}>
+            先开启上面的开关，间隔选择才会生效。
+          </div>
+        )}
       </div>
     </div>
   );

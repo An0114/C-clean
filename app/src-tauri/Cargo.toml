@@ -22,6 +22,10 @@ tauri-plugin-updater = "2"
 # bugfix/task-035-updater-acl：前端 downloadAndInstall 后调 relaunch()，
 # 必须注册 process 插件后端（此前只加了 JS @tauri-apps/plugin-process，Rust 侧漏注册）。
 tauri-plugin-process = "2"
+# task-061：自动扫描完成后发系统通知（Windows 通知中心）。
+# 用官方插件而不是自己调 WinRT Toast：后者要注册 AppUserModelID、只在安装态可用，
+# 插件把「dev / 安装态」两条路径都处理好了。
+tauri-plugin-notification = "2"
 # generate_context 解析 plugins.updater 配置时需要 serde_json
 serde_json = "1"
 # 链接仓库内 engine 核心库，验证 Rust workspace 链路打通。
