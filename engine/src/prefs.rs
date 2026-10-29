@@ -16,6 +16,52 @@ use rusqlite::Connection;
 
 const KEY_AUTO_RESTART: &str = "prefs.auto_restart_on_close";
 const KEY_RESTART_WHITELIST: &str = "prefs.restart_whitelist";
+const KEY_THEME: &str = "prefs.theme";
+
+/// 主题的合法取值（task-061）。**必须是白名单**：读侧对任何非法值都回落
+/// `system`，避免手改数据库或历史脏数据把界面搞成「既不是深也不是浅」。
+pub const THEME_SYSTEM: &str = "system";
+pub const THEME_LIGHT: &str = "light";
+pub const THEME_DARK: &str = "dark";
+
+/// 归一化主题值：只认三个合法值（大小写不敏感、忽略首尾空白），其余回落 `system`。
+pub fn normalize_theme(raw: &str) -> String {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        THEME_LIGHT => THEME_LIGHT.to_string(),
+        THEME_DARK => THEME_DARK.to_string(),
+        _ => THEME_SYSTEM.to_string(),
+    }
+}
+
+/// 读主题偏好。缺行 / 非法值 → `system`（跟随系统，首次启动的默认行为）。
+pub fn get_theme(conn: &Connection) -> String {
+    let v: Option<String> = conn
+        .query_row(
+            "SELECT value FROM settings WHERE key = ?1",
+            rusqlite::params![KEY_THEME],
+            |r| r.get(0),
+        )
+        .ok();
+    v.map(|s| normalize_theme(&s))
+        .unwrap_or_else(|| THEME_SYSTEM.to_string())
+}
+
+/// 写主题偏好。非法值会被归一化成 `system` 后落库（不报错——用户界面只可能
+/// 传三个值，走到这里是调用方 bug，静默纠正比 500 更友好）。
+pub fn set_theme(conn: &Connection, theme: &str) -> Result<(), String> {
+    let normalized = normalize_theme(theme);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| format!("system time before epoch: {e}"))?
+        .as_millis() as i64;
+    conn.execute(
+        "INSERT INTO settings (key, value, updated_at) VALUES (?1, ?2, ?3)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+        rusqlite::params![KEY_THEME, normalized, now],
+    )
+    .map(|_| ())
+    .map_err(|e| format!("upsert prefs theme: {e}"))
+}
 
 /// 读「关闭占用进程后自动重启」开关。
 ///
@@ -62,6 +108,14 @@ pub struct Prefs {
     /// 否则会把用户已配好的白名单覆盖成空。
     #[serde(default)]
     pub restart_whitelist: Vec<String>,
+    /// 主题：`system` / `light` / `dark`（task-061）。默认 `system`。
+    #[serde(default = "default_theme")]
+    pub theme: String,
+}
+
+/// `serde(default)` 的默认值：跟随系统。
+fn default_theme() -> String {
+    THEME_SYSTEM.to_string()
 }
 
 impl Prefs {
@@ -69,6 +123,7 @@ impl Prefs {
         Self {
             auto_restart_on_close: get_auto_restart(conn),
             restart_whitelist: get_restart_whitelist(conn),
+            theme: get_theme(conn),
         }
     }
 }
@@ -405,5 +460,60 @@ mod tests {
     fn whitelist_rejects_empty_name_list() {
         // 没有可重启进程时不该被当成「允许」——调用方本就会跳过。
         assert!(!whitelist_allows_restart(&["a.exe".to_string()], &[]));
+    }
+
+    // ============ task-061：主题 ============
+
+    #[test]
+    fn theme_defaults_to_system_when_row_missing() {
+        let (_dir, conn) = open_temp();
+        assert_eq!(get_theme(&conn), "system", "缺行必须默认跟随系统");
+        assert_eq!(Prefs::load(&conn).theme, "system");
+    }
+
+    #[test]
+    fn theme_roundtrip_persists() {
+        let (_dir, conn) = open_temp();
+        set_theme(&conn, "dark").unwrap();
+        assert_eq!(get_theme(&conn), "dark");
+        // 再读一次（模拟重开应用）
+        assert_eq!(get_theme(&conn), "dark", "重开应用后主题必须保留");
+        set_theme(&conn, "light").unwrap();
+        assert_eq!(get_theme(&conn), "light");
+        set_theme(&conn, "system").unwrap();
+        assert_eq!(get_theme(&conn), "system");
+    }
+
+    #[test]
+    fn theme_normalizes_illegal_values_to_system() {
+        let (_dir, conn) = open_temp();
+        // 大小写 / 空白都要能归一化
+        assert_eq!(normalize_theme("  DARK "), "dark");
+        assert_eq!(normalize_theme("Light"), "light");
+        // 非法值一律回落 system（不能把界面搞成「既不是深也不是浅」）
+        assert_eq!(normalize_theme("sepia"), "system");
+        assert_eq!(normalize_theme(""), "system");
+
+        // 直接写脏数据，读侧也要兜住
+        conn.execute(
+            "INSERT INTO settings (key, value, updated_at) VALUES ('prefs.theme', 'sepia', 1)",
+            [],
+        )
+        .unwrap();
+        assert_eq!(get_theme(&conn), "system", "脏数据必须回落 system");
+    }
+
+    #[test]
+    fn set_theme_writes_normalized_value() {
+        let (_dir, conn) = open_temp();
+        set_theme(&conn, "  DARK  ").unwrap();
+        let raw: String = conn
+            .query_row(
+                "SELECT value FROM settings WHERE key='prefs.theme'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(raw, "dark", "落库的应是归一化后的值");
     }
 }

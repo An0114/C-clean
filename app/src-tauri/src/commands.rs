@@ -681,5 +681,10 @@ pub async fn set_prefs(
         eprintln!("[set_prefs] write whitelist: {e}");
         return Ok(Envelope::err(INTERNAL));
     }
+    // task-061：主题。非法值由 set_theme 内部归一化成 system（不报错）。
+    if let Err(e) = engine::prefs::set_theme(&conn, &prefs.theme) {
+        eprintln!("[set_prefs] write theme: {e}");
+        return Ok(Envelope::err(INTERNAL));
+    }
     Ok(Envelope::ok(engine::prefs::Prefs::load(&conn)))
 }

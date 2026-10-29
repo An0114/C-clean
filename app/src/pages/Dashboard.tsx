@@ -41,7 +41,7 @@ type ScanStatus = "idle" | "scanning" | "done" | "error";
 const TAIL_UNLISTEN_DELAY_MS = 200;
 
 const cardStyle: React.CSSProperties = {
-  border: "1px solid #e5e7eb",
+  border: "1px solid var(--border)",
   borderRadius: 8,
   padding: "16px 20px",
   background: "#fff",
@@ -50,7 +50,7 @@ const cardStyle: React.CSSProperties = {
 
 const labelStyle: React.CSSProperties = {
   fontSize: 12,
-  color: "#6b7280",
+  color: "var(--text-muted)",
   marginBottom: 8,
 };
 
@@ -185,13 +185,13 @@ export default function Dashboard() {
       style={{
         padding: 24,
         fontFamily: "system-ui, sans-serif",
-        background: "#f9fafb",
+        background: "var(--bg)",
         minHeight: "100vh",
         boxSizing: "border-box",
       }}
     >
       <h1 style={{ margin: "0 0 16px" }}>C-Disk Cleaner</h1>
-      <p style={{ color: "#6b7280", marginTop: 0 }}>清理统计</p>
+      <p style={{ color: "var(--text-muted)", marginTop: 0 }}>清理统计</p>
 
       {/* task-028：开始扫描按钮 + 进度条 */}
       <div style={{ marginBottom: 16 }}>
@@ -210,7 +210,7 @@ export default function Dashboard() {
             <div
               style={{
                 height: 8,
-                background: "#e5e7eb",
+                background: "var(--border)",
                 borderRadius: 4,
                 overflow: "hidden",
               }}
@@ -224,7 +224,7 @@ export default function Dashboard() {
                 }}
               />
             </div>
-            <div style={{ marginTop: 6, fontSize: 12, color: "#374151" }}>
+            <div style={{ marginTop: 6, fontSize: 12, color: "var(--text)" }}>
               {progress.currentPath || "准备中..."} — {progress.scannedItems} 项
             </div>
           </div>
@@ -258,8 +258,8 @@ export default function Dashboard() {
         >
           {[0, 1, 2, 3].map((i) => (
             <div key={i} style={cardStyle}>
-              <div style={{ ...labelStyle, background: "#e5e7eb", height: 12, width: 80 }} />
-              <div style={{ background: "#e5e7eb", height: 28, width: 120, marginTop: 8 }} />
+              <div style={{ ...labelStyle, background: "var(--border)", height: 12, width: 80 }} />
+              <div style={{ background: "var(--border)", height: 28, width: 120, marginTop: 8 }} />
             </div>
           ))}
         </div>
@@ -291,21 +291,21 @@ export default function Dashboard() {
         >
           <div style={cardStyle}>
             <div style={labelStyle}>总释放空间</div>
-            <div style={valueStyle("#111827")}>{formatBytes(data.totalBytesFreed)}</div>
+            <div style={valueStyle("var(--text)")}>{formatBytes(data.totalBytesFreed)}</div>
           </div>
           <div style={cardStyle}>
             <div style={labelStyle}>成功次数</div>
-            <div style={valueStyle("#111827")}>{data.successCount}</div>
+            <div style={valueStyle("var(--text)")}>{data.successCount}</div>
           </div>
           <div style={cardStyle}>
             <div style={labelStyle}>失败次数</div>
-            <div style={valueStyle(data.failedCount > 0 ? "#dc2626" : "#111827")}>
+            <div style={valueStyle(data.failedCount > 0 ? "#dc2626" : "var(--text)")}>
               {data.failedCount}
             </div>
           </div>
           <div style={cardStyle}>
             <div style={labelStyle}>清理轮次</div>
-            <div style={valueStyle("#111827")}>{data.sessionCount}</div>
+            <div style={valueStyle("var(--text)")}>{data.sessionCount}</div>
           </div>
         </div>
       )}
