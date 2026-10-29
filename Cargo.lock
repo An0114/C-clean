@@ -294,7 +294,7 @@ dependencies = [
 
 [[package]]
 name = "cdisk-cleaner"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "engine",
  "serde_json",
