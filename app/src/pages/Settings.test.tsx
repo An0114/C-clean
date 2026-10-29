@@ -161,7 +161,7 @@ describe("Settings 行为偏好（task-057）", () => {
     render(<Settings />);
     // 文案「已开启」应出现
     expect(await screen.findByText("已开启")).toBeInTheDocument();
-    const cb = screen.getByRole("checkbox") as HTMLInputElement;
+    const cb = screen.getAllByRole("checkbox")[0] as HTMLInputElement;
     expect(cb.checked).toBe(true);
   });
 
@@ -190,8 +190,9 @@ describe("Settings 行为偏好（task-057）", () => {
     }) as never);
 
     render(<Settings />);
-    expect(await screen.findByText("已关闭")).toBeInTheDocument();
-    const cb = screen.getByRole("checkbox") as HTMLInputElement;
+    // task-061 起页面有多个「已关闭」（自动重启 + 自动扫描），取第一个（自动重启）。
+    expect((await screen.findAllByText("已关闭")).length).toBeGreaterThan(0);
+    const cb = screen.getAllByRole("checkbox")[0] as HTMLInputElement;
     expect(cb.checked).toBe(false);
 
     fireEvent.click(cb);
@@ -201,7 +202,7 @@ describe("Settings 行为偏好（task-057）", () => {
     // task-058：set_prefs 是「整体覆盖」，前端必须连当前白名单一起提交，
     // 否则会把用户已配好的白名单清空。这里 get_prefs 没给白名单 → 空数组。
     expect(setPrefsPayload).toEqual({
-      prefs: { autoRestartOnClose: true, restartWhitelist: [], theme: "system" },
+      prefs: { autoRestartOnClose: true, restartWhitelist: [], theme: "system", autoScanEnabled: false, autoScanInterval: "daily" },
     });
   });
 });
@@ -268,7 +269,7 @@ describe("Settings 重启白名单（task-058）", () => {
 
     await waitFor(() => expect(setPayload).not.toBeNull());
     expect(setPayload).toEqual({
-      prefs: { autoRestartOnClose: true, restartWhitelist: ["notepad.exe", "code.exe"], theme: "system" },
+      prefs: { autoRestartOnClose: true, restartWhitelist: ["notepad.exe", "code.exe"], theme: "system", autoScanEnabled: false, autoScanInterval: "daily" },
     });
     // 保存后用后端返回值回填（去空白后的真实生效内容）
     await waitFor(() => expect(ta.value).toBe("notepad.exe\ncode.exe"));
@@ -291,7 +292,7 @@ describe("Settings 重启白名单（task-058）", () => {
 
     await waitFor(() => expect(setPayload).not.toBeNull());
     expect(setPayload).toEqual({
-      prefs: { autoRestartOnClose: false, restartWhitelist: [], theme: "system" },
+      prefs: { autoRestartOnClose: false, restartWhitelist: [], theme: "system", autoScanEnabled: false, autoScanInterval: "daily" },
     });
     expect(await screen.findByText("白名单已清空（不限制重启）")).toBeInTheDocument();
     expect(await screen.findByText("当前：不限制")).toBeInTheDocument();
@@ -389,8 +390,128 @@ describe("Settings 外观（task-061）", () => {
     await waitFor(() => expect(payload).not.toBeNull());
     // 整体覆盖语义：其它字段必须一起带上，否则会被清空
     expect(payload).toEqual({
-      prefs: { autoRestartOnClose: false, restartWhitelist: [], theme: "dark" },
+      prefs: { autoRestartOnClose: false, restartWhitelist: [], theme: "dark", autoScanEnabled: false, autoScanInterval: "daily" },
     });
     expect(onThemeChange).toHaveBeenCalledWith("dark");
+  });
+});
+
+// task-061：自动扫描
+describe("Settings 自动扫描（task-061）", () => {
+  function mockScanPrefs(enabled: boolean, interval: string) {
+    mockedInvoke.mockImplementation(((cmd: string) => {
+      if (cmd === "rules_check_update") {
+        return Promise.resolve(
+          ok({
+            status: "upToDate",
+            localVersion: "1.0.0",
+            localSha256: "a".repeat(64),
+            remoteVersion: "1.0.0",
+            remoteSha256: "a".repeat(64),
+            message: "ok",
+          })
+        );
+      }
+      if (cmd === "rules_has_backup") return Promise.resolve(ok(false));
+      if (cmd === "get_prefs") {
+        return Promise.resolve(
+          ok({
+            autoRestartOnClose: false,
+            restartWhitelist: [],
+            theme: "system",
+            autoScanEnabled: enabled,
+            autoScanInterval: interval,
+          })
+        );
+      }
+      return Promise.resolve(ok(null));
+    }) as never);
+  }
+
+  it("默认关闭：开关不勾，间隔选项禁用并提示先开开关", async () => {
+    mockScanPrefs(false, "daily");
+
+    render(<Settings />);
+    expect(await screen.findByText("定期在后台扫描")).toBeInTheDocument();
+
+    const boxes = screen.getAllByRole("checkbox") as HTMLInputElement[];
+    // 第一个是自动重启，第二个才是自动扫描
+    const scanBox = boxes[boxes.length - 1];
+    await waitFor(() => expect(scanBox.checked).toBe(false));
+
+    // 间隔单选全部禁用
+    const intervals = screen.getAllByRole("radio").filter((r) =>
+      ["每天", "每周", "每月"].includes(r.closest("label")?.textContent ?? "")
+    ) as HTMLInputElement[];
+    expect(intervals.length).toBe(3);
+    expect(intervals.every((r) => r.disabled)).toBe(true);
+
+    expect(screen.getByText(/先开启上面的开关/)).toBeInTheDocument();
+  });
+
+  it("开启后间隔可选；切换间隔提交 set_prefs 且带全字段", async () => {
+    let payload: unknown = null;
+    mockedInvoke.mockImplementation(((cmd: string, args: unknown) => {
+      if (cmd === "rules_check_update") {
+        return Promise.resolve(
+          ok({
+            status: "upToDate",
+            localVersion: "1.0.0",
+            localSha256: "a".repeat(64),
+            remoteVersion: "1.0.0",
+            remoteSha256: "a".repeat(64),
+            message: "ok",
+          })
+        );
+      }
+      if (cmd === "rules_has_backup") return Promise.resolve(ok(false));
+      if (cmd === "get_prefs") {
+        return Promise.resolve(
+          ok({
+            autoRestartOnClose: false,
+            restartWhitelist: [],
+            theme: "system",
+            autoScanEnabled: true,
+            autoScanInterval: "daily",
+          })
+        );
+      }
+      if (cmd === "set_prefs") {
+        payload = args;
+        return Promise.resolve(
+          ok({
+            autoRestartOnClose: false,
+            restartWhitelist: [],
+            theme: "system",
+            autoScanEnabled: true,
+            autoScanInterval: "weekly",
+          })
+        );
+      }
+      return Promise.resolve(ok(null));
+    }) as never);
+
+    render(<Settings />);
+    await screen.findByText("定期在后台扫描");
+
+    // 开启态下间隔可选
+    const weekly = screen
+      .getAllByRole("radio")
+      .find((r) => r.closest("label")?.textContent === "每周") as HTMLInputElement;
+    await waitFor(() => expect(weekly.disabled).toBe(false));
+
+    fireEvent.click(weekly);
+    await waitFor(() => expect(payload).not.toBeNull());
+
+    // 整体覆盖：五个字段都要在，少一个就会被清空
+    expect(payload).toEqual({
+      prefs: {
+        autoRestartOnClose: false,
+        restartWhitelist: [],
+        theme: "system",
+        autoScanEnabled: true,
+        autoScanInterval: "weekly",
+      },
+    });
   });
 });
