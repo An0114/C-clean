@@ -30,6 +30,10 @@
 //!    调用方若发现相邻进程被波及，原因在这里。集成用例
 //!    `shutdown_only_touches_registered_path` 给每个 holder 独立 console，
 //!    以便把「只关注册资源」这一性质单独测出来。
+//!    **task-060 补充**：这不是「没注册进程本身」导致的——RM 的关闭粒度是
+//!    console 进程组，注册 `rgapplications` 既不会开启也不会关闭这个行为
+//!    （详见 [`RmSession::register`] 的注释）。confirm 文案里「同一控制台内的
+//!    相关进程可能一并关闭」就是对这个事实的如实告知。
 //! 5. task-057 起，本模块在 `shutdown_locking_processes(path, auto_restart)` 里
 //!    按需对 `bRestartable==TRUE` 的进程调 `RmRestart`（默认 false，由设置页开关控制）。
 
@@ -511,6 +515,29 @@ impl RmSession {
         Ok(Self { handle })
     }
 
+    /// 只注册**文件路径**，不注册 `rgapplications`（task-060 核实后的结论）。
+    ///
+    /// 任务书曾提议「`RmRegisterResources` 再注册进程本身（`&[pid]`），让
+    /// `RmShutdown` 连带关闭兄弟进程」。核实后**不采纳**，理由四条：
+    ///
+    /// 1. **参数类型不是 pid**。`RmRegisterResources` 第二组是
+    ///    `Option<&[RM_UNIQUE_PROCESS]>`（`{ dwProcessId, ProcessStartTime }`），
+    ///    传裸 pid 编译不过；要正确构造还得额外调 `GetProcessTimes` 拿启动时间。
+    /// 2. **注册锁文件的进程是冗余的**。`RmGetList` 已经通过「文件被谁占用」把它
+    ///    枚举出来了，再按进程注册一遍不会让结果集合变大，`RmShutdown` 的行为
+    ///    完全一致——零收益。
+    /// 3. **连带关闭兄弟进程已经在发生**，且与本参数无关。见文件头「已知限制」第 4 条：
+    ///    task-049b 实测，两个共用 console 的 `powershell.exe`，只对 A 的文件调
+    ///    `RmShutdown`，B 也退出。这是 RM 按 console 进程组的内部行为，**注册参数
+    ///    控制不了**（既不能开启也不能关闭）。
+    /// 4. **强行注册有负面风险**。若把「同名应用」注册进去，`RmGetList` 会返回
+    ///    所有同名进程（跨用户、跨无关任务），扩大关闭面；而其中只要有一个命中
+    ///    护栏（受保护进程），mixed fail-closed 会让**整批都不关**，反而把原本
+    ///    能关的也关不掉——功能倒退。
+    ///
+    /// 因此保持「只注册一个文件」，让 `RmShutdown` 的作用域严格等于「占用这个
+    /// 文件的进程（及其 console 兄弟）」。若将来要收窄连带范围，只能放弃 RM、
+    /// 改用逐进程 `TerminateProcess`，代价是丢掉「请求式关闭、给用户保存机会」。
     fn register(&self, path: &str) -> Result<(), String> {
         use windows::core::PCWSTR;
         use windows::Win32::System::RestartManager::RmRegisterResources;
