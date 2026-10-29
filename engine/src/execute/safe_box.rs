@@ -157,24 +157,56 @@ impl<'conn> Deleter for SafeBoxDeleter<'conn> {
         let rel = format!("{ts}_{file_name}");
         let box_path = self.box_dir.join(&rel);
 
-        // 4. rename；跨盘 rename 失败时 fallback copy+remove。
+        // 4. 先开事务并写行，**再**动文件（task-058）。
+        //
+        // task-016 遗留的孤儿根因就是顺序反了：旧实现先 rename 再 INSERT，
+        // 一旦 INSERT 失败（磁盘满 / 约束 / 库被锁），文件已经在 box 目录里
+        // 而 DB 无行——下次 `enforce_quota` 扫到它只会当孤儿标 purged，
+        // 用户感知是「文件凭空消失」。
+        //
+        // 现在把 INSERT 提到 rename 之前，并且整段包在事务里：
+        // - INSERT 失败 → 事务未提交、文件**还没动**，直接返回 Err，无孤儿；
+        // - rename 失败 → `?` 提前返回，`Transaction` 的 Drop 自动 rollback，
+        //   刚写的行消失，文件仍在原位（rename 失败本身不移动文件）；
+        // - 跨盘 copy 成功但 remove 失败 → 删掉已 copy 的目标文件再报错。
+        let tx = self
+            .conn
+            .unchecked_transaction()
+            .map_err(|e| format!("begin tx for {src}: {e}"))?;
+
+        let now = ts as i64;
+        let expires_at = now + 7 * 24 * 3600; // 7 天后过期（后续 TTL 任务用）
+        tx.execute(
+            "INSERT INTO safe_box
+             (original_path, safe_rel_path, size_bytes, quarantined_at, expires_at, status, source_task_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'in_box', ?6)",
+            params![src, rel, size as i64, now, expires_at, self.source_task_id],
+        )
+        .map_err(|e| format!("insert safe_box row for {src}: {e}"))?;
+
+        // 5. rename；跨盘 rename 失败时 fallback copy+remove。
         match fs::rename(src_path, &box_path) {
             Ok(()) => {}
             Err(e) if is_cross_device(&e) => {
-                fs::copy(src_path, &box_path)
-                    .and_then(|_| fs::remove_file(src_path))
-                    .map_err(|e2| {
-                        // copy+remove 的 remove 阶段也要分类（文件被占用时 remove 会失败）
-                        match crate::execute::error_kind::classify_io_error(&e2) {
-                            crate::execute::error_kind::DeleteFailureKind::SharingViolation => {
-                                format!("FILE_IN_USE: {src}")
-                            }
-                            crate::execute::error_kind::DeleteFailureKind::PermissionDenied => {
-                                format!("PERMISSION_DENIED: {src}")
-                            }
-                            _ => format!("copy+remove fallback {src} -> {:?}: {e2}", box_path),
+                if let Err(e2) = fs::copy(src_path, &box_path) {
+                    // copy 失败：box_path 可能已被创建为不完整文件，删掉再报错。
+                    let _ = fs::remove_file(&box_path);
+                    return Err(format!("copy fallback {src} -> {:?}: {e2}", box_path));
+                }
+                if let Err(e2) = fs::remove_file(src_path) {
+                    // copy 成功但 remove 失败：源文件还在，box 里那份是重复的。
+                    // 必须删掉目标，否则 enforce_quota 会把它当正常条目占配额。
+                    let _ = fs::remove_file(&box_path);
+                    return Err(match crate::execute::error_kind::classify_io_error(&e2) {
+                        crate::execute::error_kind::DeleteFailureKind::SharingViolation => {
+                            format!("FILE_IN_USE: {src}")
                         }
-                    })?;
+                        crate::execute::error_kind::DeleteFailureKind::PermissionDenied => {
+                            format!("PERMISSION_DENIED: {src}")
+                        }
+                        _ => format!("copy+remove fallback {src} -> {:?}: {e2}", box_path),
+                    });
+                }
             }
             // task-019：rename 失败按 errno 分类，给前端明确的 FILE_IN_USE / PERMISSION_DENIED 信号。
             Err(e) => {
@@ -185,6 +217,8 @@ impl<'conn> Deleter for SafeBoxDeleter<'conn> {
                     crate::execute::error_kind::DeleteFailureKind::PermissionDenied => {
                         Err(format!("PERMISSION_DENIED: {src}"))
                     }
+                    // NotFound：源文件本来就不在（竞态）。行已写进事务，这里要显式
+                    // rollback 语义——`?` 返回后 Transaction Drop 会回滚，无需手动删。
                     crate::execute::error_kind::DeleteFailureKind::NotFound => Ok(false),
                     crate::execute::error_kind::DeleteFailureKind::Unknown => {
                         Err(format!("rename {src} -> {:?}: {e}", box_path))
@@ -193,19 +227,11 @@ impl<'conn> Deleter for SafeBoxDeleter<'conn> {
             }
         }
 
-        // 5. 写 safe_box 行
-        let now = ts as i64;
-        let expires_at = now + 7 * 24 * 3600; // 7 天后过期（后续 TTL 任务用）
-        self.conn
-            .execute(
-                "INSERT INTO safe_box
-                 (original_path, safe_rel_path, size_bytes, quarantined_at, expires_at, status, source_task_id)
-                 VALUES (?1, ?2, ?3, ?4, ?5, 'in_box', ?6)",
-                params![src, rel, size as i64, now, expires_at, self.source_task_id],
-            )
-            .map_err(|e| format!("insert safe_box row: {e}"))?;
+        // 6. 文件已就位 → 提交事务（行与文件此时一致）。
+        tx.commit()
+            .map_err(|e| format!("commit safe_box tx for {src}: {e}"))?;
 
-        // 5 步全过 = 文件真的从原位置移走了。
+        // 全部成功 = 文件真的从原位置移走了。
         Ok(true)
     }
 
