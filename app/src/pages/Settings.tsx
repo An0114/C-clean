@@ -40,6 +40,8 @@ interface RollbackResult {
 // task-057：用户偏好（与 engine::prefs::Prefs serde camelCase 对齐）。
 interface Prefs {
   autoRestartOnClose: boolean;
+  // task-058：重启白名单（进程映像名，支持 `*` 通配）。空数组 = 不限制。
+  restartWhitelist: string[];
 }
 
 type Phase =
@@ -99,34 +101,77 @@ export default function Settings({ onUpdateFound }: SettingsProps) {
   const [appLocalVersion, setAppLocalVersion] = useState<string>("");
 
   // task-057：用户偏好（默认 false，与后端 fail-closed 一致）。
-  const [prefs, setPrefs] = useState<Prefs>({ autoRestartOnClose: false });
+  const [prefs, setPrefs] = useState<Prefs>({
+    autoRestartOnClose: false,
+    restartWhitelist: [],
+  });
   const [prefsSaving, setPrefsSaving] = useState<boolean>(false);
+  // task-058：白名单编辑框的原始文本（每行一个进程名），提交时才解析成数组。
+  const [whitelistText, setWhitelistText] = useState<string>("");
+  const [whitelistSaving, setWhitelistSaving] = useState<boolean>(false);
 
   useEffect(() => {
     (async () => {
       try {
         const p = await api<Prefs>("get_prefs", {});
-        setPrefs({ autoRestartOnClose: Boolean(p.autoRestartOnClose) });
+        // p 可能为 null（IPC 异常 / 旧后端），统一按默认值兜住。
+        const wl = p?.restartWhitelist ?? [];
+        setPrefs({ autoRestartOnClose: Boolean(p?.autoRestartOnClose), restartWhitelist: wl });
+        setWhitelistText(wl.join("\n"));
       } catch {
-        // 读失败保持默认 false（fail-closed），不打扰用户。
+        // 读失败保持默认（fail-closed），不打扰用户。
       }
     })();
   }, []);
 
-  const onToggleAutoRestart = useCallback(async (next: boolean) => {
-    // 乐观更新：先切 UI，写库失败再回滚。
-    setPrefs((p) => ({ ...p, autoRestartOnClose: next }));
-    setPrefsSaving(true);
+  const onToggleAutoRestart = useCallback(
+    async (next: boolean) => {
+      // 乐观更新：先切 UI，写库失败再回滚。
+      setPrefs((p) => ({ ...p, autoRestartOnClose: next }));
+      setPrefsSaving(true);
+      try {
+        // task-058：必须把**当前白名单一起提交**——后端 set_prefs 是「整体覆盖」，
+        // 只传 autoRestartOnClose 会把用户配好的白名单清空。
+        await api<Prefs>("set_prefs", {
+          prefs: { autoRestartOnClose: next, restartWhitelist: prefs.restartWhitelist },
+        });
+      } catch (e) {
+        // 回滚 UI。
+        setPrefs((p) => ({ ...p, autoRestartOnClose: !next }));
+        setToast({ ok: false, text: `保存设置失败：${String(e)}` });
+      } finally {
+        setPrefsSaving(false);
+      }
+    },
+    [prefs.restartWhitelist]
+  );
+
+  // task-058：保存白名单。按行切分 → 去空白 → 丢空行；空结果 = 清空（不限制）。
+  const onSaveWhitelist = useCallback(async () => {
+    const list = whitelistText
+      .split("\n")
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+
+    setWhitelistSaving(true);
     try {
-      await api<Prefs>("set_prefs", { prefs: { autoRestartOnClose: next } });
+      const saved = await api<Prefs>("set_prefs", {
+        prefs: { autoRestartOnClose: prefs.autoRestartOnClose, restartWhitelist: list },
+      });
+      const wl = saved?.restartWhitelist ?? list;
+      setPrefs((p) => ({ ...p, restartWhitelist: wl }));
+      // 用后端归一化后的结果回填（去空白 / 小写），让用户看到真实生效的内容。
+      setWhitelistText(wl.join("\n"));
+      setToast({
+        ok: true,
+        text: wl.length === 0 ? "白名单已清空（不限制重启）" : `白名单已保存（${wl.length} 条）`,
+      });
     } catch (e) {
-      // 回滚 UI。
-      setPrefs((p) => ({ ...p, autoRestartOnClose: !next }));
-      setToast({ ok: false, text: `保存设置失败：${String(e)}` });
+      setToast({ ok: false, text: `保存白名单失败：${String(e)}` });
     } finally {
-      setPrefsSaving(false);
+      setWhitelistSaving(false);
     }
-  }, []);
+  }, [whitelistText, prefs.autoRestartOnClose]);
 
   useEffect(() => {
     (async () => {
@@ -510,6 +555,51 @@ export default function Settings({ onUpdateFound }: SettingsProps) {
               {prefs.autoRestartOnClose ? "已开启" : "已关闭"}
             </span>
           </label>
+        </div>
+
+        {/* task-058：重启白名单。语义是 fail-closed（见下方说明），不是「只重启这些」 */}
+        <div style={{ marginTop: 16, borderTop: "1px solid #f3f4f6", paddingTop: 16 }}>
+          <div style={{ fontSize: 13, color: "#111827", fontWeight: 600 }}>
+            重启白名单
+          </div>
+          <div style={{ fontSize: 12, color: "#6b7280", marginTop: 4, lineHeight: 1.6 }}>
+            每行一个进程映像名（如 <code>notepad.exe</code>），支持 <code>*</code> 通配（如 <code>*.exe</code>）。
+            <br />
+            <b>留空 = 不限制</b>（所有可重启进程都会被拉起）。
+            <br />
+            填了内容后，只有「被关闭的可重启进程<b>全部</b>在此列表中」才会自动重启——
+            系统接口一次只能重启整批、无法逐个挑选，所以只要有一个不在名单内就整批不重启，
+            避免把您明确排除的进程也拉起来。
+          </div>
+          <textarea
+            aria-label="重启白名单"
+            value={whitelistText}
+            onChange={(e) => setWhitelistText(e.target.value)}
+            disabled={whitelistSaving}
+            rows={4}
+            placeholder={"notepad.exe\n*.exe"}
+            style={{
+              marginTop: 8,
+              width: "100%",
+              boxSizing: "border-box",
+              fontFamily: "monospace",
+              fontSize: 12,
+              padding: "6px 8px",
+              borderRadius: 4,
+              border: "1px solid #d1d5db",
+              resize: "vertical",
+            }}
+          />
+          <div style={{ marginTop: 8, display: "flex", alignItems: "center", gap: 8 }}>
+            <button onClick={onSaveWhitelist} disabled={whitelistSaving}>
+              {whitelistSaving ? "保存中…" : "保存白名单"}
+            </button>
+            <span style={{ fontSize: 11, color: "#9ca3af" }}>
+              {prefs.restartWhitelist.length === 0
+                ? "当前：不限制"
+                : `当前生效 ${prefs.restartWhitelist.length} 条`}
+            </span>
+          </div>
         </div>
       </div>
     </div>

@@ -1,18 +1,21 @@
-//! 用户偏好存储（task-057）。
+//! 用户偏好存储（task-057 / task-058）。
 //!
 //! 复用 v1 已有的 `settings(key,value,updated_at)` 表，不加新列、不加迁移。
 //! 键名统一带 `prefs.` 前缀，避免与未来其它设置混用。
 //!
-//! 目前只存一个开关：
+//! 目前存两项：
 //! - `prefs.auto_restart_on_close`（`"1"` / `"0"`）：是否在 RmShutdown 之后
 //!   对 bRestartable 进程调 RmRestart。**默认 false**（新用户首次读不到行时
 //!   返回 false），符合产品约束「默认关闭」。
+//! - `prefs.restart_whitelist`（JSON 数组字符串，如 `["notepad.exe","code*.exe"]`）：
+//!   重启白名单。**默认空数组 = 不限制**（task-058）。
 //!
 //! 所有函数都是同步纯 SQLite 操作，由调用方（Tauri 命令）持有连接。
 
 use rusqlite::Connection;
 
 const KEY_AUTO_RESTART: &str = "prefs.auto_restart_on_close";
+const KEY_RESTART_WHITELIST: &str = "prefs.restart_whitelist";
 
 /// 读「关闭占用进程后自动重启」开关。
 ///
@@ -46,18 +49,166 @@ pub fn set_auto_restart(conn: &Connection, on: bool) -> Result<(), String> {
 }
 
 /// 给前端用的偏好快照（serde camelCase）。
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+///
+/// task-058 起不再是 `Copy`（含 `Vec<String>`），调用方如需复制请显式 `clone()`。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Prefs {
     pub auto_restart_on_close: bool,
+    /// 重启白名单（进程映像名，支持 `*` 通配）。空 = 不限制。
+    ///
+    /// `serde(default)`：旧前端不传该字段时按空数组处理，避免整个 `set_prefs`
+    /// 因反序列化失败而 500。**注意**：前端每次 `set_prefs` 都必须带上当前值，
+    /// 否则会把用户已配好的白名单覆盖成空。
+    #[serde(default)]
+    pub restart_whitelist: Vec<String>,
 }
 
 impl Prefs {
     pub fn load(conn: &Connection) -> Self {
         Self {
             auto_restart_on_close: get_auto_restart(conn),
+            restart_whitelist: get_restart_whitelist(conn),
         }
     }
+}
+
+// ===================== task-058：重启白名单 =====================
+
+/// 读重启白名单。缺行 / JSON 损坏 / 非字符串数组 → 空 Vec（= 不限制，保守）。
+pub fn get_restart_whitelist(conn: &Connection) -> Vec<String> {
+    let raw: Option<String> = conn
+        .query_row(
+            "SELECT value FROM settings WHERE key = ?1",
+            rusqlite::params![KEY_RESTART_WHITELIST],
+            |r| r.get(0),
+        )
+        .ok();
+    let Some(raw) = raw else { return Vec::new() };
+
+    match serde_json::from_str::<Vec<String>>(&raw) {
+        Ok(v) => normalize_whitelist(&v),
+        Err(e) => {
+            // 脏数据不能让「重启行为」变成不可预期的：直接当成空（不限制）并留日志。
+            eprintln!("[prefs] restart_whitelist 解析失败，按空处理: {e}");
+            Vec::new()
+        }
+    }
+}
+
+/// 写重启白名单。
+///
+/// 空列表 → **删除该行**（回到「不限制」的默认态），而不是存 `[]`——
+/// 这样「用户从没配过」和「用户清空了」在存储层是同一个状态，读侧逻辑更简单。
+pub fn set_restart_whitelist(conn: &Connection, list: &[String]) -> Result<(), String> {
+    let normalized = normalize_whitelist(list);
+
+    if normalized.is_empty() {
+        conn.execute(
+            "DELETE FROM settings WHERE key = ?1",
+            rusqlite::params![KEY_RESTART_WHITELIST],
+        )
+        .map_err(|e| format!("delete prefs restart_whitelist: {e}"))?;
+        return Ok(());
+    }
+
+    let json = serde_json::to_string(&normalized)
+        .map_err(|e| format!("serialize restart_whitelist: {e}"))?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| format!("system time before epoch: {e}"))?
+        .as_millis() as i64;
+    conn.execute(
+        "INSERT INTO settings (key, value, updated_at) VALUES (?1, ?2, ?3)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+        rusqlite::params![KEY_RESTART_WHITELIST, json, now],
+    )
+    .map(|_| ())
+    .map_err(|e| format!("upsert prefs restart_whitelist: {e}"))
+}
+
+/// 归一化白名单：去首尾空白、丢空行、**统一小写**（Windows 进程名不区分大小写）。
+///
+/// 不去重——去重对匹配结果无影响，但会让用户看到的顺序和输入不一致；
+/// 保留原顺序、保留重复项（`["a","a"]` 与 `["a"]` 语义相同，无副作用）。
+fn normalize_whitelist(list: &[String]) -> Vec<String> {
+    list.iter()
+        .map(|s| s.trim().to_lowercase())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// `*` 通配匹配（仅支持 `*`，不支持 `?` / 字符类——够用且好推理）。
+///
+/// 语义：`*` 匹配任意长度（含空）的字符序列，其余字符按字面比较。
+/// 例：`notepad.exe` 精确匹配；`*.exe` 匹配任意 exe；`code*` 匹配 `code.exe` / `codeserver.exe`。
+pub fn wildcard_match(pattern: &str, name: &str) -> bool {
+    // 两侧都按小写比（调用方可能传未归一化的串）。
+    let p = pattern.trim().to_lowercase();
+    let n = name.trim().to_lowercase();
+
+    if p == "*" {
+        return true;
+    }
+    if !p.contains('*') {
+        return p == n;
+    }
+
+    let parts: Vec<&str> = p.split('*').collect();
+    let mut rest: &str = &n;
+
+    for (idx, part) in parts.iter().enumerate() {
+        if part.is_empty() {
+            continue;
+        }
+        if idx == 0 {
+            // 首段必须以它开头（说明 pattern 不以 * 开头）
+            if !rest.starts_with(part) {
+                return false;
+            }
+            rest = &rest[part.len()..];
+        } else {
+            match rest.find(part) {
+                Some(pos) => rest = &rest[pos + part.len()..],
+                None => return false,
+            }
+        }
+    }
+
+    // pattern 不以 * 结尾时，必须已经吃到字符串末尾
+    if !p.ends_with('*') && !rest.is_empty() {
+        return false;
+    }
+    true
+}
+
+/// 判断「被关闭的可重启进程」是否**全部**落在白名单内。
+///
+/// # 为什么是「全部」而不是「任一」
+///
+/// `RmRestart` **没有按 pid 重启的参数**——一次调用会把本会话内所有
+/// `bRestartable==TRUE` 的进程全部拉起（见 `locking.rs` 的注释与 task-057
+/// 测试轮修的 flags 误用 bug）。所以「只重启白名单内的那几个」在 RM 机制下
+/// 无法实现。唯一安全的做法是 **fail-closed**：
+///
+/// - 白名单为空 → 不限制（保持 task-057 现状）；
+/// - 白名单非空 → 只有被关闭的可重启进程**全部**命中白名单，才调 `RmRestart`；
+///   只要有一个不在名单内，就整体跳过——否则一调就会把用户明确排除的进程也拉起来。
+///
+/// `names` 为空（没有可重启进程）时返回 `false`：调用方本来就会跳过，语义上
+/// 「没有东西可重启」不该被当成「允许重启」。
+pub fn whitelist_allows_restart(whitelist: &[String], names: &[String]) -> bool {
+    let wl = normalize_whitelist(whitelist);
+    if wl.is_empty() {
+        return true; // 空 = 不限制
+    }
+    if names.is_empty() {
+        return false;
+    }
+    names.iter().all(|name| {
+        let n = name.trim().to_lowercase();
+        wl.iter().any(|pat| wildcard_match(pat, &n))
+    })
 }
 
 #[cfg(test)]
@@ -126,5 +277,133 @@ mod tests {
         set_auto_restart(&conn, true).unwrap();
         let p2 = Prefs::load(&conn);
         assert!(p2.auto_restart_on_close);
+    }
+
+    // ============ task-058：重启白名单 ============
+
+    #[test]
+    fn whitelist_defaults_to_empty_when_row_missing() {
+        let (_dir, conn) = open_temp();
+        assert!(
+            get_restart_whitelist(&conn).is_empty(),
+            "缺行必须返回空 Vec（= 不限制）"
+        );
+        assert!(Prefs::load(&conn).restart_whitelist.is_empty());
+    }
+
+    #[test]
+    fn whitelist_roundtrip_persists_and_normalizes() {
+        let (_dir, conn) = open_temp();
+        set_restart_whitelist(
+            &conn,
+            &[" Notepad.EXE ".to_string(), String::new(), "code*".into()],
+        )
+        .unwrap();
+
+        let got = get_restart_whitelist(&conn);
+        assert_eq!(
+            got,
+            vec!["notepad.exe".to_string(), "code*".to_string()],
+            "应去空白、丢空行、统一小写"
+        );
+        // 再读一次（模拟重开应用）：必须仍在
+        assert_eq!(get_restart_whitelist(&conn), got);
+    }
+
+    #[test]
+    fn whitelist_empty_write_removes_row() {
+        let (_dir, conn) = open_temp();
+        set_restart_whitelist(&conn, &["a.exe".into()]).unwrap();
+        assert_eq!(get_restart_whitelist(&conn).len(), 1);
+
+        // 写空列表 → 删行（回到默认态），不是存 []
+        set_restart_whitelist(&conn, &[]).unwrap();
+        assert!(get_restart_whitelist(&conn).is_empty());
+        let rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM settings WHERE key='prefs.restart_whitelist'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(rows, 0, "空列表应删除该行");
+    }
+
+    #[test]
+    fn whitelist_corrupt_json_falls_back_to_empty() {
+        let (_dir, conn) = open_temp();
+        conn.execute(
+            "INSERT INTO settings (key, value, updated_at) VALUES ('prefs.restart_whitelist', 'not-json', 1)",
+            [],
+        )
+        .unwrap();
+        assert!(
+            get_restart_whitelist(&conn).is_empty(),
+            "脏数据必须降级为空（不限制），不能崩"
+        );
+    }
+
+    #[test]
+    fn wildcard_match_basics() {
+        assert!(wildcard_match("notepad.exe", "notepad.exe"));
+        assert!(wildcard_match("NOTEPAD.EXE", "notepad.exe"), "不区分大小写");
+        assert!(!wildcard_match("notepad.exe", "notepad2.exe"));
+
+        assert!(wildcard_match("*.exe", "chrome.exe"));
+        assert!(wildcard_match("*.exe", "code.exe"));
+        assert!(!wildcard_match("*.exe", "chrome.dll"));
+
+        assert!(wildcard_match("code*", "code.exe"));
+        assert!(wildcard_match("code*", "codeserver.exe"));
+        assert!(!wildcard_match("code*", "vscode.exe"));
+
+        assert!(wildcard_match("*", "anything.exe"), "* 匹配一切");
+        assert!(wildcard_match("*note*", "mynotepad.exe"));
+        assert!(
+            !wildcard_match("note*exe", "notepad.dll"),
+            "尾部字面量不匹配"
+        );
+    }
+
+    #[test]
+    fn whitelist_allows_restart_three_states() {
+        let names = vec!["notepad.exe".to_string()];
+
+        // ① 空白名单 = 不限制 → 允许
+        assert!(whitelist_allows_restart(&[], &names));
+
+        // ② 白名单命中 → 允许
+        assert!(whitelist_allows_restart(
+            &["notepad.exe".to_string()],
+            &names
+        ));
+        assert!(whitelist_allows_restart(&["*.exe".to_string()], &names));
+
+        // ③ 白名单不命中 → 不允许（fail-closed，绝不连带重启名单外的）
+        assert!(!whitelist_allows_restart(
+            &["chrome.exe".to_string()],
+            &names
+        ));
+    }
+
+    #[test]
+    fn whitelist_requires_all_names_to_match() {
+        // RmRestart 是全有或全无：只要有一个不在名单内就必须整体跳过。
+        let names = vec!["notepad.exe".to_string(), "chrome.exe".to_string()];
+        assert!(!whitelist_allows_restart(
+            &["notepad.exe".to_string()],
+            &names
+        ));
+        assert!(whitelist_allows_restart(
+            &["notepad.exe".to_string(), "chrome.exe".to_string()],
+            &names
+        ));
+        assert!(whitelist_allows_restart(&["*".to_string()], &names));
+    }
+
+    #[test]
+    fn whitelist_rejects_empty_name_list() {
+        // 没有可重启进程时不该被当成「允许」——调用方本就会跳过。
+        assert!(!whitelist_allows_restart(&["a.exe".to_string()], &[]));
     }
 }
