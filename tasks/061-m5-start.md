@@ -183,3 +183,189 @@ DevAgent 交付物（后续执行结果）：
 4. 本任务文档本身**由 DocsKeeper 在派发时**单独提交一次：
    `docs(task): 新增任务061-M5 起步（主题切换+趋势图+自动扫描） (#task-061)`，
    该提交只含 `tasks/061-m5-start.md` 一个文件，落在 `feature/task-061-m5-start` 分支最前端。
+
+---
+
+## 实现备注
+
+> 执行日期：2026-10-30　分支：`feature/task-061-m5-start`（基线 `8dac082`，从 main `3b2a961` 拉出）
+
+### 1. 实际改动文件清单
+
+| 文件 | 类型 | 改动 |
+|---|---|---|
+| `engine/src/prefs.rs` | 后端 | `theme` 三态（`normalize_theme`/`get_theme`/`set_theme`）+ 自动扫描三键（`auto_scan_enabled`/`auto_scan_interval`/`last_auto_scan_at`）+ `interval_secs` + `auto_scan_due` 纯函数 + `read_setting`/`write_setting` helper；`Prefs` 加三字段；10 条单测 |
+| `engine/src/audit_log/stats.rs` | 后端 | `TrendPoint` + `cleanup_stats_trend(conn, days)` |
+| `app/src-tauri/src/auto_scan.rs` | 新建 | 后台轮询线程 + 复用 ScanOrchestrator + 系统通知 + `human_bytes` |
+| `app/src-tauri/src/commands.rs` | Tauri（**白名单缺口**） | `set_prefs` 写 theme/auto_scan 三键；新增 `cleanup_stats_trend` 命令 |
+| `app/src-tauri/src/lib.rs` | Tauri（**白名单缺口**） | `mod auto_scan` + `.plugin(notification)` + setup 里 `auto_scan::spawn` + 注册新命令 |
+| `app/src-tauri/Cargo.toml` | 依赖（**白名单缺口**） | `tauri-plugin-notification = "2"` |
+| `app/src-tauri/capabilities/default.json` | 权限（**白名单缺口**） | `notification:default` |
+| `app/src/App.tsx` | 前端 | `THEME_TOKENS` + 三态 state + matchMedia 监听 + prefs 校准 + 根 div 注入 CSS 变量 + `onThemeChange` 传给 Settings |
+| `app/src/pages/Settings.tsx` | 前端 | `Prefs` 加三字段 + `savePrefs` 统一提交 helper + 外观三态 UI + 自动扫描开关/间隔 UI |
+| `app/src/pages/Dashboard.tsx` | 前端 | 颜色改 `var()` + `TrendChart` 组件（手写 SVG 柱状图） |
+| `engine/tests/cleanup_stats_trend.rs` | 新建测试 | 5 条 |
+| `app/src/App.test.tsx` / `app/src/pages/Settings.test.tsx` | 测试 | 3 + 5 条 |
+
+### 2. 主题实现方式：纯内联 CSS 变量（不新增 .css）
+
+本项目原本**没有任何 `.css` 文件**，101 个颜色全写在内联 style 里。所以主题走 CSS 变量：
+
+```tsx
+const THEME_TOKENS = {
+  light: { bg: "#f9fafb", surface: "#ffffff", text: "#111827", muted: "#6b7280", border: "#e5e7eb" },
+  dark:  { bg: "#0f172a", surface: "#1e293b", text: "#f1f5f9", muted: "#94a3b8", border: "#334155" },
+};
+
+// 根 div 上挂变量
+<div style={{ ...themeVars, background: tokens.bg, color: tokens.text }}>
+
+// 子元素用 var()
+<div style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+```
+
+三个理由：
+1. **不新增文件**（保持零 css，也不进构建产物）；
+2. **变量作用域就是根 div**，切换时只改根节点的值，所有 `var()` 自动跟随，组件不必知道当前深浅；
+3. **不需要给元素加 class**（内联 style 用 class 覆盖不了，只能靠 `!important`，很难维护）。
+
+**跟随系统的实现**：`matchMedia("(prefers-color-scheme: dark)")` + `addEventListener("change")`，用户在 Windows 设置里切主题不用重启应用。
+
+**防闪烁**：`localStorage["cclean:theme"]` 只做**首屏同步读取**（避免「先浅色渲染再跳深色」），**真值仍在 DB**——启动后 `get_prefs` 校准一次，DB 为准。
+
+**⚠️ 适配范围只有 3 页**：App 外壳 / Dashboard / Settings。Items（26 色）/ SafeBox（19 色）/ History（8 色）**不在本任务白名单内**，深色下仍是浅色底。已在设置页文案里如实写明「部分页面仍在适配中」，并记入遗留问题。**这不是遗漏，是白名单边界决定的。**
+
+### 3. 趋势图实现方式：手写 SVG 柱状图（不引 recharts）
+
+需求只是「每天一根柱子 + 顶部标峰值 + 首尾标日期」，为此引 100KB+ 的图表库不划算（前端产物一直在 190 kB 上下，本任务后是 195 kB）。
+
+**为什么柱状不用折线**：数据是「每日聚合」的离散量。折线会把「某天没清理」画成一条穿过它的斜线，视觉上像「那天也有量」；柱状能直观表达「哪天有、哪天没有」。
+
+**后端三个设计点**：
+
+| 决策 | 理由 |
+|---|---|
+| **只返回有记录的日期**，缺失由前端补 0 | SQLite 没有 `generate_series`，后端补零要写递归 CTE 或手工循环，可读性明显变差；而「哪几天没数据」本来就是画图时最清楚的事 |
+| 按 **本地时区**分组（`'localtime'`） | 用户看的是日历上的「10 月 29 日」，不是 UTC 日期 |
+| `days` 夹到 `1..=365` | 传 0 或负数会让 `WHERE started_at >= now` 变成「查未来」，静默返回空——夹一下比让调用方自己保证更稳 |
+
+前端三种状态：加载中 / 空数据「暂无清理记录」/ 失败「趋势数据加载失败，请稍后重试」（失败不影响上方卡片）。
+
+### 4. 自动扫描触发方式：Tauri 后台轮询线程（不用 schtasks）
+
+任务书给了两个选项（`schtasks` / Tauri 后台定时器），**选后者**。理由：`schtasks` 要管理员权限、会在系统里留一个计划任务，卸载时容易残留（用户卸载后还定时跑，是很糟的体验）；而且它没法读我们的 prefs，间隔改了还要同步删建任务。
+
+**结构**：
+
+```rust
+// auto_scan.rs
+const INITIAL_DELAY: Duration = 60s;      // 避开启动高峰
+const TICK: Duration = 30 * 60s;          // 轮询间隔
+
+pub fn spawn(app: AppHandle) {
+    std::thread::spawn(move || {
+        sleep(INITIAL_DELAY);
+        loop {
+            tick_once(&app);              // 读 prefs → 判断到期 → 扫 → 通知
+            sleep(TICK);
+        }
+    });
+}
+```
+
+**为什么轮询而不是「精确 sleep 到下次扫描」**：用户随时可能改间隔/开关，精确 sleep 会在改动后错位；改系统时间、机器休眠唤醒后也会漂移。而一次轮询成本就是一条 SQLite 查询，可以忽略。
+
+**到期判断抽成纯函数**（可单测）：
+
+```rust
+pub fn auto_scan_due(enabled: bool, interval: &str, last_at: i64, now: i64) -> bool {
+    if !enabled { return false; }
+    if last_at <= 0 { return true; }          // 从没扫过 → 立即到期
+    now - last_at >= interval_secs(interval)
+}
+```
+
+`last_at <= 0 → 立即到期` 是有意的：用户刚打开开关时应该马上看到效果，而不是等一整天。
+
+**与手动扫描互斥**：复用 `ProgressState` 内部的 Mutex，后台用 **`try_lock`**——拿不到说明用户正在扫，本轮直接跳过。不能用 `lock()`：那会阻塞用户操作；也不能并发写 `scan_session`。
+
+**只扫描不删除**：调 `ScanOrchestrator::run_all`（与 `scan_start` 同一条链路），**不调** `cleanup_execute`。扫完统计 `cleanup_item` 的行数与总大小，写进通知。
+
+**失败也写 `last_auto_scan_at`**：否则扫描一直失败会每 30 分钟重试轰炸一次。
+
+### 5. 为什么装了 notification 插件（超白名单）
+
+任务书要求「扫描完成发系统通知」，但项目**没有 notification 插件**。要发通知必须：
+- `Cargo.toml` 加 `tauri-plugin-notification`；
+- `lib.rs` 注册 `.plugin(...)`；
+- `capabilities/default.json` 加 `notification:default`；
+- `lib.rs` 加 `mod auto_scan` + setup 里起线程。
+
+**这 4 个文件都在白名单外，属于「任务书前提缺失」导致的必然超范围。**
+
+为什么不自己调 WinRT Toast：要注册 AppUserModelID、且**只在安装态可用**（dev 下弹不出来），调试成本高；官方插件把 dev/安装态两条路径都处理好了。
+
+### 6. `cargo test` / `pnpm` 通过输出
+
+```
+cargo test --workspace  →  passed=291  failed=0  ignored=8
+pnpm --filter app test  →  9 files / 98 passed
+```
+
+`291 = 275（task-060 基线）+ 16`，新增明细：
+
+| 用例 | 位置 | 覆盖 |
+|---|---|---|
+| `theme_defaults_to_system_when_row_missing` | prefs.rs | 缺行默认 system |
+| `theme_roundtrip_persists` | prefs.rs | 存读一致 + 重开保留 |
+| `theme_normalizes_illegal_values_to_system` | prefs.rs | 大小写/空白/非法值/脏数据回落 |
+| `set_theme_writes_normalized_value` | prefs.rs | 落库是归一化后的值 |
+| `auto_scan_defaults_off_and_daily` | prefs.rs | 开关默认 false + 间隔默认 daily |
+| `auto_scan_roundtrip_persists` | prefs.rs | 存读一致 |
+| `auto_scan_interval_normalizes_illegal_to_daily` | prefs.rs | 三档归一化 + 脏数据回落 |
+| `interval_secs_maps_three_tiers` | prefs.rs | 86400 / 7×86400 / 30×86400 |
+| `auto_scan_due_three_states` | prefs.rs | 关闭/从未扫/未到期/到期 四态 |
+| `last_auto_scan_at_defaults_to_zero_and_roundtrips` | prefs.rs | 内部时间戳读写 |
+| `trend_returns_one_point_per_day` | cleanup_stats_trend.rs | **3 天 3 个点 + 升序 + 数值对应**（验收 9） |
+| `trend_sums_multiple_tasks_on_same_day` | 同上 | 同日多条求和 |
+| `trend_excludes_rows_outside_window` | 同上 | 窗口外排除 |
+| `trend_empty_table_returns_empty_vec` | 同上 | 空表返回空 |
+| `trend_clamps_days_to_valid_range` | 同上 | 0/负数/超大值 |
+| `human_bytes_units` | auto_scan.rs | 通知文案的字节格式化（**发现并修了一个 bug**：负数分支用了未 clamp 的原值，会打印 "-1 B"） |
+| 主题三态 3 条 + 趋势 3 条 + 自动扫描 2 条 | 前端 | 见测试文件 |
+
+**`pnpm build`**：`195.04 kB │ gzip 62.65 kB`（基线 188.06，+7 kB 来自主题/趋势图/自动扫描 UI）。
+
+### 7. 真机 / 安装态冒烟 / CI
+
+| 项 | 状态 | 说明 |
+|---|---|---|
+| 主题三态切换 + 重开保留 | **移交测试 Agent** | 按新流程开发轮不做 GUI/真机 |
+| 趋势图有数据/空数据两态 | **移交测试 Agent** | 同上 |
+| 自动扫描触发 + 通知弹出 + 只扫不删 | **移交测试 Agent** | 需等 60s 后触发；**通知在安装态才正常显示**，dev 下可能静默 |
+| CDP Console 零红（排除 G6） | **移交测试 Agent** | 同上 |
+| NSIS 安装态复跑 | **移交测试 Agent** | 同上 |
+| CI（PR + 五道闸） | **移交测试 Agent** | 开发分支不跑 CI；**未建 PR** |
+
+开发轮替代验证：`auto_scan_due` 的四态单测覆盖「什么时候该扫」的全部边界；`cleanup_stats_trend` 的 5 条覆盖聚合正确性；前端用例覆盖「事件 → state → 文案」。
+
+### 8. 与任务书不符的偏差（3 项）
+
+1. **白名单漏 4 个必改文件**（`Cargo.toml` / `lib.rs` / `capabilities/default.json` / 新建 `auto_scan.rs`）。自动扫描必须有后台线程 + 系统通知，这是任务书「前提缺失」导致的必然超范围。见 §5。
+2. **不用 `schtasks`**，用 Tauri 后台轮询线程。理由见 §4（schtasks 要管理员权限、卸载残留、改间隔要重建任务）。
+3. **主题只适配 3 页**（App 外壳 / Dashboard / Settings）。Items/SafeBox/History 共 53 个硬编码颜色且不在白名单内，深色下仍浅色。见 §2。
+
+### 9. 遗留问题
+
+- **Items / SafeBox / History 三页的主题适配**：需要在 `App.tsx` 的 token 之外，把这三页的 53 个颜色逐个换成 `var()`。属纯体力活，但改动面大（3 个文件、53 处），建议单独派一个任务。
+- **自动扫描的通知在 dev 下可能不弹**：Windows 通知需要 AppUserModelID，通常只有安装态才注册好。测试轮请以 NSIS 安装态为准。
+- **后台扫描与「用户正在清理」不互斥**：目前只与「手动扫描」互斥（共享 `ProgressState`）。如果后台扫描时用户正在执行清理，两边都会读写 DB，理论上可能冲突（扫描只 INSERT `scan_session`/`cleanup_item`，清理读写 `cleanup_task`/`safe_box`，表不重叠，实际风险低）。若要严格串行，需再加一把「全局操作锁」。
+- **`auto_scan` 线程永不退出**：随进程结束而结束，没有 join 点。这是有意的（后台任务），但意味着测试里不能直接断言它停了。
+- **`emit_done` 目前是死代码**（`#[allow(dead_code)]`）：仪表盘还没监听 `auto-scan://done` 刷新数据。留着是为了下个任务接上。
+
+### 三句话结论
+
+1. 三个功能都落地了，但**主题只覆盖 3 页**——这是白名单边界决定的（另 3 页 53 个硬编码颜色不许动），已在 UI 里如实告知并记入遗留。
+2. 自动扫描选了「后台轮询 + try_lock 互斥 + 只扫不删」，不用 `schtasks`（要管理员权限、卸载残留）；为此必须装 notification 插件，超了 4 个白名单外文件，属任务书前提缺失。
+3. 趋势图手写 SVG（不引图表库）、后端只返回有记录的日期（缺失由前端补 0）——都是为「195 kB 产物 + 简单可读」做的取舍。
+
