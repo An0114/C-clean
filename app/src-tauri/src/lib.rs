@@ -49,6 +49,8 @@ pub fn run() {
                 // 降级为「关闭窗口即退出」——但要在日志里说清楚。
                 eprintln!("[tray] 创建托盘失败，将退化为「关闭即退出」: {e}");
             }
+            // task-064：保险箱 7 天自动 purge（启动跑一次 + 之后每 6 小时）。
+            spawn_safe_box_purge(app.handle().clone());
             Ok(())
         })
         // task-062：拦截关闭 → 隐藏到托盘。
@@ -163,4 +165,44 @@ fn show_main_window(app: &tauri::AppHandle) {
         let _ = w.unminimize();
         let _ = w.set_focus();
     }
+}
+
+// ===================== task-064：保险箱 7 天自动 purge =====================
+
+/// 每 6 小时检查一次过期条目。
+///
+/// **为什么不是每小时**：过期判定粒度是「7 天」，6 小时精度绰绰有余；
+/// 每小时跑一次只是白耗 IO（要扫 safe_box 表 + 可能删文件）。
+///
+/// **为什么不在前端触发**：purge 必须**用户不打开应用时也能发生**——否则
+/// 「7 天后自动删除」变成「7 天后第一次打开应用时删除」，与 PRD 不符。
+/// 但 Tauri 进程不常驻（用户关了窗口只是隐藏到托盘，退出后进程就没了），
+/// 所以严格意义上「到点必删」需要计划任务——**本期按「应用运行期间定期检查 +
+/// 启动时补一次」实现**，已记入遗留问题。
+fn spawn_safe_box_purge(app: tauri::AppHandle) {
+    use tauri::Manager;
+
+    std::thread::spawn(move || loop {
+        let paths = app.state::<paths::AppPaths>();
+        match engine::db::conn::open(&paths.data_root) {
+            Ok(conn) => {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0);
+                let r = engine::execute::safe_box::purge_expired(&conn, &paths.box_dir, now);
+                if !r.is_noop() {
+                    eprintln!(
+                        "[auto-purge] 已永久删除 {} 条（失败 {}，释放 {} 字节）",
+                        r.purged, r.failed, r.bytes_freed
+                    );
+                    for e in &r.errors {
+                        eprintln!("[auto-purge] {e}");
+                    }
+                }
+            }
+            Err(e) => eprintln!("[auto-purge] open db: {e}"),
+        }
+        std::thread::sleep(std::time::Duration::from_secs(6 * 3600));
+    });
 }
