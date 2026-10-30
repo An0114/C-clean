@@ -28,8 +28,12 @@ use std::path::Path;
 ///
 /// 两侧各有一份而不是共享常量：提权 exe 刻意不依赖 engine（零依赖、编译秒级），
 /// 共享要引一个 common crate，收益不抵复杂度。代价是「改一处要改两处」，
-/// 所以这里有单测 `whitelist_matches_elevation_binary` 做一致性提醒。
-pub const ALLOWED_COMMANDS: &[&str] = &["create_restore_point"];
+/// 所以 `engine/tests/elevation_whitelist.rs` 直接 `include_str!` 读提权 exe 源码
+/// 做一致性断言——漏同步会在 CI 里红，不会拖到运行期才发现「命令被静默拒绝」。
+///
+/// task-065：加 `dism_analyze` / `dism_cleanup`。注意**这两条命令没有参数通道**
+/// （DISM 参数在提权 exe 里是硬编码常量），`/ResetBase` 无法传入。
+pub const ALLOWED_COMMANDS: &[&str] = &["create_restore_point", "dism_analyze", "dism_cleanup"];
 
 /// 提权 exe 的退出码约定（与 `elevation/src/main.rs` 同步）。
 pub mod exit_codes {
