@@ -25,9 +25,14 @@ const EXPECTED = {
   "../../scripts/scan_prefetch.ps1": "scripts/scan_prefetch.ps1",
   "../../scripts/scan_browser_cache.ps1": "scripts/scan_browser_cache.ps1",
   "../../scripts/scan_dev_cache.ps1": "scripts/scan_dev_cache.ps1",
+  // task-062：提权 exe 随安装包部署到安装目录根（与主 exe 同级）。
+  // 源文件由 scripts/build-elevation.mjs 在 beforeBuildCommand 阶段产出。
+  "binaries/cclean-elevation.exe": "cclean-elevation.exe",
 };
 
-const ALLOWED_PREFIXES = ["rules/", "scripts/"];
+// task-062：提权 exe 落在安装目录**根**（与主 exe 同级），所以多一个空前缀。
+// 它不能进 rules/ 或 scripts/——那两个目录是 AppPaths 给规则/脚本用的。
+const ALLOWED_PREFIXES = ["rules/", "scripts/", ""];
 
 function readConf() {
   return JSON.parse(fs.readFileSync(CONF_PATH, "utf8"));
@@ -41,25 +46,25 @@ test("bundle.resources 必须是映射对象（数组式会让资源落到 _up_ 
   );
 });
 
-test("映射条数恰好 7 条，且源 → 目标与契约完全一致", () => {
+test("映射条数恰好 8 条，且源 → 目标与契约完全一致", () => {
   const { resources } = readConf().bundle;
   const actual = Object.entries(resources).sort(([a], [b]) => a.localeCompare(b));
   const expected = Object.entries(EXPECTED).sort(([a], [b]) => a.localeCompare(b));
-  assert.equal(actual.length, 7, `期望 7 条资源映射，实际 ${actual.length} 条`);
+  assert.equal(actual.length, 8, `期望 8 条资源映射，实际 ${actual.length} 条`);
   assert.deepEqual(
     actual,
     expected,
-    "资源映射与契约不一致：规则库 2 个 json + 5 个 scan_*.ps1，目标路径必须逐字对齐"
+    "资源映射与契约不一致：规则库 2 个 json + 5 个 scan_*.ps1 + 1 个提权 exe，目标路径必须逐字对齐"
   );
 });
 
-test("每条目标路径必须以 rules/ 或 scripts/ 开头（AppPaths 只认这两个前缀）", () => {
+test("每条目标路径必须以 rules/ 或 scripts/ 开头，或是根目录的提权 exe", () => {
   const { resources } = readConf().bundle;
   for (const [src, dest] of Object.entries(resources)) {
     assert.equal(typeof dest, "string", `${src} 的目标路径必须是字符串`);
     assert.ok(
       ALLOWED_PREFIXES.some((p) => dest.startsWith(p)),
-      `${src} → ${dest}：目标必须落在 rules/ 或 scripts/ 下`
+      `${src} → ${dest}：目标必须落在 rules/ 或 scripts/ 下（或为根目录的 cclean-elevation.exe）`
     );
   }
 });

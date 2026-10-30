@@ -99,3 +99,9 @@ packages/
 # 注：上方 src-tauri/gen/ 因含斜杠被锚定在仓库根，匹配不到 app/src-tauri/gen/，
 # 故在此显式追加锚定路径；app/src-tauri/target/ 已由全局 target/ 规则覆盖。
 app/src-tauri/gen/
+
+# ---------- task-062：提权 exe 的构建产物 ----------
+# scripts/build-elevation.mjs 在 beforeBuildCommand 阶段把 target/release/cclean-elevation.exe
+# 复制到这里，供 bundle.resources 打包。**是构建产物，不入库**——
+# 换台机器 clone 下来跑一次 tauri build（或 node scripts/build-elevation.mjs）即可生成。
+app/src-tauri/binaries/

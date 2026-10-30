@@ -28,4 +28,11 @@ windows = { version = "0.58", features = [
     # task-049b：护栏按「PID → 映像文件名」判定，需要 OpenProcess /
     # QueryFullProcessImageNameW（与系统语言无关）。评审 Bug #1。
     "Win32_System_Threading",
+    # task-062：提权 exe 用 ShellExecuteExW("runas") 拉起，需要 UI_Shell；
+    # 等进程 + 取退出码需要 Threading（WaitForSingleObject / GetExitCodeProcess）。
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+    # SHELLEXECUTEINFOW 结构体里有 hkeyClass 字段，windows crate 因此把它
+    # gate 在 Win32_System_Registry 后面（不加这个 feature 结构体不可见）。
+    "Win32_System_Registry",
 ] }
