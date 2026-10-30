@@ -929,3 +929,37 @@ pub fn set_autostart_enabled(
     let actual = mgr.is_enabled().unwrap_or(enabled);
     Ok(Envelope::ok(actual))
 }
+
+// ===================== task-065：WinSxS 组件存储（C 模块） =====================
+
+/// `winsxs_analyze`：跑 `dism /online /cleanup-image /analyzecomponentstore`。
+///
+/// **会弹 UAC**（DISM 必须管理员权限，实测非提权返回错误 740）。所以只能由用户
+/// 主动点「分析」触发，绝不能在页面加载时自动跑。
+///
+/// # 为什么失败走 `Err(String)` 而不是信封
+///
+/// DISM 的失败原因（退出码 + 输出尾部）必须让用户看到，但 `Envelope` 的
+/// `message` 是 `&'static str`、`data` 被出参类型钉死，动态文本塞不进去。
+/// 这与本文件里 `engine::db::conn::open(...).map_err(|e| e.to_string())?` 的
+/// 处理方式一致：**环境/权限类失败走 `Err`，业务判定失败才走信封**。
+#[tauri::command]
+pub async fn winsxs_analyze(
+    paths: tauri::State<'_, AppPaths>,
+) -> Result<Envelope<engine::scan::winsxs::WinsxsAnalysis>, String> {
+    let exe = locate_elevation_exe(&paths).ok_or_else(|| {
+        eprintln!("[winsxs_analyze] 提权 exe 未找到");
+        "提权组件缺失，无法分析组件存储（请重新安装）".to_string()
+    })?;
+
+    let analysis = engine::scan::winsxs::analyze(&exe).map_err(|e| {
+        eprintln!("[winsxs_analyze] {e}");
+        e
+    })?;
+
+    eprintln!(
+        "[winsxs_analyze] reclaimable={}B packages={} recommended={}",
+        analysis.reclaimable_bytes, analysis.reclaimable_packages, analysis.recommended_cleanup
+    );
+    Ok(Envelope::ok(analysis))
+}

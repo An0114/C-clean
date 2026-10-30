@@ -61,6 +61,13 @@ pub struct ElevatedResult {
     /// `create_restore_point` 专用：系统分配的还原点序列号。
     #[serde(default)]
     pub sequence_number: Option<i64>,
+    /// `dism_*` 命令专用：DISM 的完整 stdout+stderr（OEM 解码后的原文）。
+    ///
+    /// 提权 exe 只负责「跑 + 原样带回」，**不解释语义**——解析在
+    /// [`crate::scan::winsxs`] 里做，那样解析逻辑能单测，也能随 DISM
+    /// 输出格式变化单独迭代，不用重新打包提权 exe。
+    #[serde(default)]
+    pub output: Option<String>,
 }
 
 impl ElevatedResult {
@@ -70,6 +77,7 @@ impl ElevatedResult {
             exit_code,
             message: message.into(),
             sequence_number: None,
+            output: None,
         }
     }
 }

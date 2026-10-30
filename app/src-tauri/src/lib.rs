@@ -91,7 +91,9 @@ pub fn run() {
             // task-062：托盘 / 自启
             commands::quit_app,
             commands::get_autostart_enabled,
-            commands::set_autostart_enabled
+            commands::set_autostart_enabled,
+            // task-065：WinSxS 组件存储（C 模块）
+            commands::winsxs_analyze
         ])
         .run(tauri::generate_context!())
         .expect("error while running C-Disk Cleaner");
