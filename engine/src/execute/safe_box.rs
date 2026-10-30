@@ -716,6 +716,120 @@ pub struct PurgeManyResult {
     pub errors: Vec<String>,
 }
 
+// ===================== task-064：7 天自动 purge =====================
+
+/// 自动 purge 的结果（返回给调用方打日志 / 前端提示）。
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PurgeExpiredResult {
+    /// 成功永久删除的条数。
+    pub purged: usize,
+    /// 失败条数（磁盘删不掉 / DB 写失败）。
+    pub failed: usize,
+    /// 这些条目占用的字节数（成功删掉的那部分）。
+    pub bytes_freed: u64,
+    /// 失败原因（`id=<id>: <err>`），便于排查。
+    pub errors: Vec<String>,
+}
+
+impl PurgeExpiredResult {
+    /// 本轮有没有真的干活（没有过期项时调用方不必打日志）。
+    pub fn is_noop(&self) -> bool {
+        self.purged == 0 && self.failed == 0
+    }
+}
+
+/// 永久删除所有 `expires_at < now` 的保险箱条目（PRD §396「7 天后自动 purge」）。
+///
+/// # 为什么逐条而不是一条批量 DELETE
+///
+/// 每条都要写 `audit_log`（`action='auto_purge'`）——用户必须能查到「哪些文件被
+/// 系统自动删掉了」。一条批量 DELETE 只能记一行汇总，等于把审计粒度丢了。
+///
+/// # 为什么 `now` 是参数而不是函数内取
+///
+/// 单测要能构造「昨天过期 / 明天过期」而不用真的等一天。
+///
+/// # 失败语义
+///
+/// **单条失败不影响其它条**：磁盘删不掉（被占用）就记 failed 并**保留 DB 行**，
+/// 下轮再试。绝不能「文件没删掉就把行删了」——那样文件变成永久孤儿，用户
+/// 再也找不到它。
+pub fn purge_expired(conn: &Connection, box_dir: &Path, now: i64) -> PurgeExpiredResult {
+    let mut result = PurgeExpiredResult::default();
+
+    // 1. 先把过期候选捞出来（一次查询，避免边删边查）。
+    let candidates: Vec<(i64, String, String, i64)> = {
+        let mut stmt = match conn.prepare(
+            "SELECT id, original_path, safe_rel_path, size_bytes FROM safe_box
+             WHERE status='in_box' AND expires_at < ?1",
+        ) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("[purge_expired] prepare: {e}");
+                result.failed += 1;
+                result.errors.push(format!("prepare: {e}"));
+                return result;
+            }
+        };
+        let rows = stmt.query_map([now], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)));
+        match rows {
+            Ok(iter) => iter.filter_map(|r| r.ok()).collect(),
+            Err(e) => {
+                eprintln!("[purge_expired] query: {e}");
+                result.failed += 1;
+                result.errors.push(format!("query: {e}"));
+                return result;
+            }
+        }
+    };
+
+    // 2. 逐条：删文件 → 删行 → 写审计。
+    for (id, original_path, rel, size) in candidates {
+        let box_abs = box_dir.join(&rel);
+        match fs::remove_file(&box_abs) {
+            Ok(()) => {}
+            // 文件已经不在了（用户手动删过 / 上次 purge 删了文件没删行）→ 继续删行。
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => {
+                // 文件删不掉（被占用）→ **保留 DB 行**，下轮重试。
+                result.failed += 1;
+                result
+                    .errors
+                    .push(format!("id={id}: remove {box_abs:?}: {e}"));
+                continue;
+            }
+        }
+
+        if let Err(e) = conn.execute("DELETE FROM safe_box WHERE id=?1", [id]) {
+            result.failed += 1;
+            result.errors.push(format!("id={id}: delete row: {e}"));
+            continue;
+        }
+
+        let detail = serde_json::json!({
+            "safe_box_id": id,
+            "safe_rel_path": rel,
+            "size_bytes": size,
+            "reason": "expired_7d",
+        })
+        .to_string();
+        // 审计写失败不影响「已经删掉了」这个事实，只记日志。
+        if let Err(e) = conn.execute(
+            "INSERT INTO audit_log (ts, actor, action, target, detail, result)
+             VALUES (?1, 'system', 'auto_purge', ?2, ?3, 'success')",
+            params![now, original_path, detail],
+        ) {
+            eprintln!("[purge_expired] audit_log id={id}: {e}");
+        }
+
+        result.purged += 1;
+        result.bytes_freed += size.max(0) as u64;
+    }
+
+    result
+}
+
 /// 批量永久删除：循环调 [`purge_item`]，单个失败不中断，收集 errors。
 ///
 /// - 空 slice 直接返默认空结果；

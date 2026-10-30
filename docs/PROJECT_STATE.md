@@ -6,6 +6,13 @@
 **v0.1.7 已发布（2026-10-29）**：M2（updater 闭环）/ M3（banner 下载进度）/ M4（RmRestart + 白名单 + 保险箱原子性）全部收官。本轮拍板：代码签名不做、品牌图标不做、G6 不修；跨盘恢复 fallback / RmShutdown 连带兄弟进程 / RmShutdown 30s 无进度三项登记为日后新功能点，暂不修。进入下一开发阶段，任务派发待用户手动发起。
 
 ## 最近一次变更
+2026-10-30：**task-064 开发完成（P0 收尾：7 天 purge + 风险徽标 + 全选 L1），状态 `testing`**（`feature/task-064-purage-badge-l1all`）：
+  - **① 保险箱 7 天自动 purge**：`safe_box::purge_expired(conn, box_dir, now)`。**逐条处理而非一条批量 DELETE**——每条都要写 `audit_log action='auto_purge'`，用户必须能查到「哪些文件被系统自动删了」；批量 DELETE 只能记一行汇总，等于把审计粒度丢了。**失败语义**：文件删不掉（被占用）→ 记 failed 并**保留 DB 行**，下轮重试——绝不能「文件没删掉就把行删了」，那会让文件变成永久孤儿。文件已不存在但行过期 → 仍删行（用户手动删过文件的场景）。`expires_at == now` **不算**过期（严格 `<`）。**触发时机**：`lib.rs` 起线程，启动跑一次 + 之后每 6 小时（7 天粒度不需要每小时，每小时只是白耗 IO）。
+  - **② 风险徽标/影响说明**：`PendingItem` 加 `risk_level`。**此前根本没返回这个字段**——前端只能「所有项一视同仁」，既做不了「全选 L1」，也说不清「删了会怎样」。`RISK_META` 四色（L0 灰 / L1 绿 / L2 黄 / L3 红），颜色走 CSS 变量以适配深色主题；hover 说明用 `title` 原生 tooltip（比自绘省事，且不会被表格 `overflow` 裁掉）。未知等级有 fallback，后端将来加等级不会崩。
+  - **③ 全选 L1 一键按钮**：只勾**本页** L1（跨页全选要把所有页拉下来，按钮会变慢，而且用户看不到被选中的项）；**L2/L3 一律不选**——L2 是「需逐项确认」，自动全选等于绕过这道设计。按钮旁沿用「已选 N 项，共 X」统计；本页无 L1 时按钮禁用并给 title 说明。
+  - **门禁**：`cargo check` 0 / `clippy -D warnings` 0 / `fmt` 0 / **`cargo test --workspace` 334 passed + 8 ignored**（+6：purge 六态）/ `pnpm lint` 0 error / **vitest 104 passed（9 files，+3）** / `pnpm build` **201.48 kB │ gzip 64.95 kB**。
+  - **与任务书不符 3 项**：① 白名单漏了 `engine/src/execute/list_pending.rs`（`risk_level` 必须在这里加，否则前端拿不到）；② purge 触发点写「`engine/src/lib.rs` 或 `main.rs`」——engine 没有「启动」概念，实际在 `app/src-tauri/src/lib.rs` 的 setup 里起线程；③ 徽标与全选 L1 都在 `Items.tsx` 一个文件里，无法拆成两个原子提交，合并为一次 `feat(ui)`。
+  - **按新流程**：开发轮不跑 CI、不做真机/安装态冒烟，移交测试 Agent。
 2026-10-30：**task-063 开发完成（报告导出 + 前后对比 + 环形图 + 取消扫描），状态 `testing`**（`feature/task-063-report-dashboard`）：
   - **① 报告导出**：`engine/src/report/mod.rs` 三件事——`drive_usage()`、`build_html`/`build_csv`、`write_report`。**零依赖字符串拼接**（模板只有「标题 + 3 个数字 + 一张表」，引 askama/tera 不划算）。HTML 单文件、CSS 全内联，双击可开；CSV **必须带 UTF-8 BOM**——不带 BOM 时中文 Windows 的 Excel 会按 ANSI 读，中文路径全乱码，这是「CSV 打不开」的真实原因。**安全**：所有路径/错误消息过 `html_escape`，否则文件名里一个 `<script>` 就能在报告里执行。落盘 `%APPDATA%\com.and0114.cclean\reports\`。
   - **② 前后空间对比**：`ExecuteSummary` 加 `disk_before_bytes`/`disk_after_bytes`（`Option`，查不到显示「—」而不是 0——0 GB 会让人以为盘空了）。`execute_items` 开头/结尾各查一次；盘符**从第一条 item 的路径推断**（写死 "C" 会让清 D 盘时数字对不上）。`released_bytes` 用**饱和减法**：清理期间用户又写入会导致「后 > 前」，此时算 0 而不是负数。前端结果条显示「清理前 X → 清理后 Y，实际释放 Z」。
@@ -482,6 +489,8 @@
 
 - [x] 063：报告导出 + 前后对比 + 环形图 + 取消扫描——**① 清理报告导出**：新建 `engine/src/report/mod.rs`（**零依赖字符串拼接**，不引 askama/tera——模板只有「标题 + 3 个数字 + 一张表」）；HTML 单文件（CSS 全内联，双击可开）+ CSV（**带 UTF-8 BOM**，否则 Excel 中文路径全乱码）；落盘 `data_root/reports/cleanup-report-<ts>.{html,csv}`；所有外部文本过 `html_escape`（**文件名里带 `<script>` 会 XSS**）；**② 前后空间对比**：`ExecuteSummary` 加 `disk_before_bytes`/`disk_after_bytes`，`execute_items` 开头/结尾各查一次（盘符从第一条 item 路径推断，不写死 C）；`DriveSnapshot::released_bytes` 用**饱和减法**（清理期间用户写入导致「后 > 前」时算 0 而非负数）；前端显示「清理前 X → 清理后 Y，实际释放 Z」；**③ 仪表盘环形图**：`drive_usage()`（`GetDiskFreeSpaceExW`，用 `total_free` 而非 `free_to_caller` 算已用）+ 手写 SVG 圆环（`strokeDasharray` 画弧 + `rotate(-90)` 起点在 12 点），≥70% 橙、≥85% 红并提示「空间紧张」；**④ 取消扫描**：`ScanOrchestrator` 加 `Arc<AtomicBool>` cancel + `with_cancel()`，`run_all` **每个脚本开始前**检查（脚本粒度，不 kill 正在跑的 ps1）；`ScanCancelState` 全局单例，`scan_start` 每轮**复位**（否则上次的取消会让新扫描一启动就停），`scan_cancel` 立即返回不阻塞；已扫描结果保留在 DB（`cleanup_item` 行不删）（`feature/task-063-report-dashboard`；**开发轮完成，状态 `testing`**；门禁 check/clippy/fmt 0、`cargo test --workspace` 328 passed + 8 ignored、vitest 101、build 199.87 kB；按新流程开发轮不跑 CI、不做真机/安装态冒烟，移交测试 Agent）
 
+- [x] 064：**P0 收尾**——**① 保险箱 7 天自动 purge**：`safe_box::purge_expired(conn, box_dir, now)` **逐条**处理（不是一条批量 DELETE——每条都要写 `audit_log action='auto_purge'`，用户必须能查「哪些被系统自动删了」，批量只能记一行汇总等于丢审计粒度）；**单条失败保留 DB 行**下轮重试（绝不能「文件没删掉就删行」，否则文件成永久孤儿）；文件已不存在但行过期 → 仍删行；`expires_at == now` 不算过期（严格 `<`）。触发：`lib.rs` 起线程**启动跑一次 + 每 6 小时**（7 天粒度不需要每小时）；**② 风险徽标/影响说明**：`PendingItem` 加 `risk_level`（此前没返回，前端只能「所有项一视同仁」——既做不了全选 L1，也说不清「删了会怎样」）；`RISK_META` 四色（L0 灰 / L1 绿 / L2 黄 / L3 红，颜色走 CSS 变量适配深色）+ `title` 原生 tooltip（比自绘省事且不会被表格 overflow 裁掉）；未知等级有 fallback 不崩；**③ 全选 L1 一键按钮**：只勾**本页** L1（跨页全选要把所有页拉下来，按钮会变慢且用户看不到被选中项）；L2/L3 一律不选（L2 需逐项确认，自动全选等于绕过「需确认」这道设计）；按钮旁沿用「已选 N 项，共 X」统计；本页无 L1 时按钮禁用并给 title 说明（`feature/task-064-purage-badge-l1all`；**开发轮完成，状态 `testing`**；门禁 check/clippy/fmt 0、`cargo test --workspace` 334 passed + 8 ignored、vitest 104、build 201.48 kB；按新流程开发轮不跑 CI、不做真机/安装态冒烟，移交测试 Agent）
+
 > 注：040~047 的完成明细未回填本清单（历史遗漏），以「最近一次变更」段与 `tasks/040-*.md`~`tasks/047-*.md` 为准。
 > 编号顺延（2026-10-24）：原定 050 的「safe_box 增强」顺延为 **051**，050 让位给发版阻塞级的打包资源路径缺陷。
 
@@ -505,10 +514,10 @@
 1. v0.1.7 已发布，M2/M3/M4 全部收官。
 2. 本轮决策：代码签名不做 / 品牌图标不做 / G6 不修。
 3. **2026-10-29 用户最新决策**：跨盘恢复 fallback、RmShutdown 连带兄弟进程、RmShutdown 30s 无进度这三个功能**维持现状**，等开发任务基本结束后再决定是否改进；非必要默认不做改进，若有需要向用户提出再决策。
-4. **P0 第 5 项：保险箱 purge + 风险徽标 + 全选 L1（task-064，收尾 P0）**——之后进 M1 模块（C WinSxS / D 大文件 / E 重复文件 / F 注册表，均可基于 task-062 的 `engine::elevation::run_elevated` 扩展命令白名单）。M5 其余候选（P1-2/P1-3/P1-4/P1-7/P1-8/P2-1/P2-2/P2-4）与 Items/SafeBox/History 三页主题适配继续排队。
+4. **P0 全部清完，进入 M1 业务模块缺口——C 模块 WinSxS 清理（task-065）**。M1 其余：D 大文件地图 / E 重复文件 / F 注册表健康，均可基于 task-062 的 `engine::elevation::run_elevated` 扩展命令白名单（当前白名单只有 `create_restore_point`）。遗留：Items/SafeBox/History 三页深色适配待补；purge 严格「到点必删」需计划任务（当前是「运行期间定期 + 启动补一次」）。
 
 ## 当前负责人 Agent
-**测试 Agent（提示词 9）**——`feature/task-063-report-dashboard` 开发轮已完成、状态 `testing`，待测试轮：独立重跑全部门禁 + 开 PR 触发 CI + **真机冒烟重点**（① 清理后结果条显示「清理前 X → 清理后 Y，实际释放 Z」；② 「导出 HTML 报告」生成文件可直接打开、CSS 正常；③ 「导出 CSV」Excel 打开中文不乱码（BOM）；④ 仪表盘 C 盘环形图比例正确、≥85% 变红；⑤ 扫描中点「取消扫描」→ 按钮变「正在停止…」→ 当前脚本跑完后停止、已扫到的项仍在列表里）+ NSIS 安装态复跑（报告落 `%APPDATA%\com.and0114.cclean\reports\`，安装目录只读也能写）。上一手：DevFullstackRustReact（task-063 开发）。再上一手：DocsKeeper（task-063 派发）。
+**测试 Agent（提示词 9）**——`feature/task-064-purage-badge-l1all` 开发轮已完成、状态 `testing`，待测试轮：独立重跑全部门禁 + 开 PR 触发 CI + **真机冒烟重点**（① 保险箱页顶部显示「保留 7 天…自动永久删除」提示；② Items 每行有 L0-L3 四色徽标，hover 出说明；③ 点「全选 L1（安全）」只勾 L1，L2/L3 保持不勾，统计显示「已选 N 项，共 X」；④ 造一条 `expires_at` 已过期的 safe_box 行 + 磁盘文件，重启应用后行与文件都消失、`audit_log` 有 `auto_purge`）+ NSIS 安装态复跑。上一手：DevFullstackRustReact（task-064 开发）。再上一手：DocsKeeper（task-064 派发）。
 
 ## Git 提交记录
 | Commit | 任务 | 说明 |
@@ -930,6 +939,11 @@
 | 1165b14 | #task-063 | feat(scan): 取消扫描按钮（cancellation token + 脚本粒度停止） |
 | 23d1332 | #task-063 | fix(report): 修正 doc 注释缩进（clippy doc_lazy_continuation） |
 | （本次） | #task-063 | docs(state): 任务063完成，报告导出+前后对比+环形图+取消扫描就绪 |
+| 62cb7cd | #task-063 | merge: task-063 清理报告导出+前后对比+C盘环形图+取消扫描（--no-ff） |
+| d4d56c2 | #task-064 | feat(safe_box): 7 天自动 purge（启动跑一次 + 每 6 小时，逐条审计） |
+| 8d68b9b | #task-064 | feat(ui): 风险徽标/影响说明 + 全选 L1 一键按钮 |
+| 99e200a | #task-064 | test(ui): 补风险徽标/tooltip 与全选 L1 用例 |
+| （本次） | #task-064 | docs(state): 任务064完成，P0 收尾——purge/徽标/全选L1 就绪 |
 
 ---
 变更轨迹：
@@ -1056,3 +1070,4 @@
 - 2026-10-30  task-061  M5 起步（主题/趋势图/自动扫描）：**主题三态**（`prefs.theme`，纯内联 CSS 变量不新增 css 文件，matchMedia 跟随系统，localStorage 防闪烁 + DB 为真值，本期只适配 App/Dashboard/Settings 三页）；**趋势图**（`cleanup_stats_trend` 按本地时区分天 SUM，只返回有记录日期、前端补 0，days 夹 1..=365；仪表盘手写 SVG 柱状图，空/失败各有占位）；**自动扫描**（`prefs.auto_scan_enabled`+`interval`+`last_auto_scan_at`，`auto_scan_due` 纯函数，后台 60s 后起、每 30 分钟轮询，**只扫描不删除**，完成发系统通知，与手动扫描 try_lock 互斥）。新增 `tauri-plugin-notification` + `notification:default` 权限。门禁 check/clippy/fmt 0、cargo test **291 passed + 8 ignored**（+16）、vitest **98**（+8）、build 195.04 kB。**开发轮不跑 CI/真机/安装态冒烟**，移交测试 Agent
 - 2026-10-30  task-062  提权 exe 底座 + 系统还原点 + 托盘常驻（v0.2.0 起步）：**提权 exe**（`elevation/` 从 stub 填实，零依赖手写 `SRSetRestorePointW` FFI，命令白名单只有 `create_restore_point`，退出码 + 临时 JSON 回传；主进程用 `ShellExecuteExW` + `SEE_MASK_NOCLOSEPROCESS`，`build-elevation.mjs` 在 beforeBuildCommand 编译并随包部署，**NSIS 4.05→4.22 MiB 证明进包**）；**系统还原点**（`needs_restore_point` 只对 L2 触发、全 L1 不弹 UAC；名称 `C-clean cleanup #id UTC时间`，手写 civil_from_days；失败 2007 → 前端 confirm → `skipRestorePoint` 重调；成功写 audit_log）；**托盘常驻**（Tauri 2 无 `tauri-plugin-tray`，用内置 `tray-icon` feature；CloseRequested → prevent_close + hide；右键三项 + 左键唤出；「退出」走 emit → 前端 confirm → `quit_app`；开机自启用 autostart 插件，状态以注册表为准）。门禁 check/clippy/fmt 0、cargo test **316 passed + 8 ignored**（+25）、vitest **101**（+3）、build 196.96 kB、tauri build exit 0。**开发轮不跑 CI/真机/安装态冒烟**，移交测试 Agent
 - 2026-10-30  task-063  报告导出+前后对比+环形图+取消扫描：**报告**（`report/mod.rs` 零依赖拼接；HTML 单文件 CSS 内联 + CSV 带 UTF-8 BOM 防 Excel 乱码；路径全过 `html_escape` 防 XSS；落 `%APPDATA%\...\reports\`）；**前后对比**（`ExecuteSummary` 加 disk_before/after，盘符从 item 路径推断不写死 C，`released_bytes` 饱和减法防负数）；**环形图**（`GetDiskFreeSpaceExW` + 手写 SVG 圆环，u128 算百分比防溢出，≥85% 变红）；**取消扫描**（`Arc<AtomicBool>` + 脚本粒度检查，`scan_start` 每轮复位标志，已扫描结果保留）。门禁 check/clippy/fmt 0、cargo test **328 passed + 8 ignored**（+12）、vitest **101**、build 199.87 kB。**开发轮不跑 CI/真机/安装态冒烟**，移交测试 Agent
+- 2026-10-30  task-064  P0 收尾（7天purge/风险徽标/全选L1）：**purge**（`purge_expired` 逐条处理+逐条 audit_log，文件删不掉保留 DB 行下轮重试，`expires_at==now` 不算过期；启动跑一次+每 6 小时）；**风险徽标**（`PendingItem` 加 `risk_level`——此前根本没返回，前端无法区分 L1/L2；四色走 CSS 变量 + `title` 原生 tooltip + 未知等级 fallback）；**全选 L1**（只勾本页 L1，L2/L3 一律不选；无 L1 时按钮禁用）。门禁 check/clippy/fmt 0、cargo test **334 passed + 8 ignored**（+6）、vitest **104**（+3）、build 201.48 kB。**P0 全部清完**，下一步进 M1（C 模块 WinSxS）。**开发轮不跑 CI/真机/安装态冒烟**，移交测试 Agent

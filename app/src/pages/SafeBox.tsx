@@ -380,6 +380,25 @@ export default function SafeBox() {
 
   return (
     <div>
+      {/* task-064：7 天自动 purge 提示。放在最顶上——用户进来第一眼就该知道
+          「这里的东西不是永久的」，避免以为保险箱是长期存档。 */}
+      <div
+        style={{
+          marginBottom: 12,
+          padding: "8px 12px",
+          borderRadius: 6,
+          fontSize: 12,
+          lineHeight: 1.6,
+          background: "var(--bg)",
+          border: "1px solid var(--border)",
+          color: "var(--text-muted)",
+        }}
+      >
+        <b style={{ color: "var(--text)" }}>保险箱保留 7 天</b>
+        ：移入的文件在 <b>7 天后自动永久删除（不可恢复）</b>。需要留的就点「恢复」，
+        想马上腾空间的用「删除」。
+      </div>
+
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
         {/* 注意：`load` 的第一个形参是 page，直接 `onClick={load}` 会把 click 事件当 page 传下去
             （event 是 object → 后端 u32 反序列化失败 / 渲染对象崩树），必须包一层空调用。 */}
