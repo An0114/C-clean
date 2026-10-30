@@ -283,6 +283,126 @@ fn unix_millis() -> u128 {
         .unwrap_or(0)
 }
 
+/// 从累计字节里切出「新增的完整行」，返回 `(行列表, 新游标)`。
+///
+/// 为什么按**字节**而不是 `&str`：进度文件是提权进程边跑边写的，读到的那一刻
+/// 末尾可能是**半个多字节字符**。先 `from_utf8_lossy` 会插入 U+FFFD 改变字节
+/// 长度，游标算术随之失效（下次切片位置全错）。所以只在「最后一个 `\n` 之前」
+/// 这段确定完整的字节上做解码。
+///
+/// 空行会被丢掉：DISM 输出里空行比正文还多，转发给 UI 只是噪音。
+pub fn drain_complete_lines(content: &[u8], cursor: usize) -> (Vec<String>, usize) {
+    let start = cursor.min(content.len());
+    let slice = &content[start..];
+    let Some(pos) = slice.iter().rposition(|&b| b == b'\n') else {
+        // 还没有完整的行（或者一个字节都没新增）
+        return (Vec::new(), start);
+    };
+    let text = String::from_utf8_lossy(&slice[..pos]);
+    let lines: Vec<String> = text
+        .split('\n')
+        // Windows 换行：`\r` 已经不算分隔符（我们只按 `\n` 切），这里剥掉
+        .map(|l| l.trim_end_matches('\r').to_string())
+        .filter(|l| !l.trim().is_empty())
+        .collect();
+    (lines, start + pos + 1)
+}
+
+/// 轮询进度文件，把新增的完整行通过 `on_line(序号, 行内容)` 抛出去。
+///
+/// 为什么轮询文件而不是管道：提权进程的 stdout 在主进程 `ShellExecuteExW` 下
+/// 拿不到（那是 `CreateProcess` 的能力）。提权 exe 把 DISM 的输出按行落盘，
+/// 主进程侧 tail 这个文件，就是「跨提权边界转发进度」的最简可靠做法。
+fn tail_progress(
+    path: &Path,
+    stop: &std::sync::atomic::AtomicBool,
+    on_line: &(dyn Fn(u64, &str) + Sync),
+) {
+    use std::sync::atomic::Ordering;
+
+    let mut cursor = 0usize;
+    let mut seq = 0u64;
+
+    loop {
+        // 先看停止标志、再读一次：退出前保证「最后写进去的行」也被读出来，
+        // 否则最后一屏 DISM 输出（含成功/失败结论）会丢。
+        let finished = stop.load(Ordering::Relaxed);
+
+        if let Ok(bytes) = std::fs::read(path) {
+            // 文件被重建（提权 exe 用 File::create 截断）：游标必须归零，
+            // 否则会一直停在「越界」状态再也读不到东西。
+            if bytes.len() < cursor {
+                cursor = 0;
+            }
+            let (lines, next) = drain_complete_lines(&bytes, cursor);
+            cursor = next;
+            for line in lines {
+                on_line(seq, &line);
+                seq += 1;
+            }
+        }
+
+        if finished {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+}
+
+/// 拉起提权 exe 执行命令，**同时**把它的进度实时转发出去。
+///
+/// 与 [`run_elevated`] 的区别只有一个：多传一个 `--progress <path>`，
+/// 并在等待期间开一个 tail 线程把进度文件的新增行抛给 `on_line`。
+///
+/// `on_line` 在**后台线程**里被调用，所以要求 `Sync`；它必须自己保证线程安全
+/// （通常就是 emit 一个 Tauri 事件 / 往 `Arc<Mutex<Vec>>` 里 push）。
+///
+/// 用 `std::thread::scope` 而不是 `'static` 线程：`on_line` 常常借用调用方的
+/// 局部变量（比如 `&AppHandle`），要求 `'static` 会逼调用方去 `clone` 一堆东西。
+pub fn run_elevated_streaming(
+    exe_path: &Path,
+    cmd: &str,
+    args: &[(&str, &str)],
+    on_line: &(dyn Fn(u64, &str) + Sync),
+) -> Result<ElevatedResult, String> {
+    validate_command(cmd)?;
+
+    if !exe_path.exists() {
+        return Err(format!("提权 exe 不存在: {}", exe_path.display()));
+    }
+
+    let stamp = format!("{}-{}", std::process::id(), unix_millis());
+    let result_path = std::env::temp_dir().join(format!("cclean-elev-{stamp}.json"));
+    let progress_path = std::env::temp_dir().join(format!("cclean-progress-{stamp}.log"));
+    let _ = std::fs::remove_file(&result_path);
+    let _ = std::fs::remove_file(&progress_path);
+
+    let mut all_args: Vec<(&str, &str)> = args.to_vec();
+    let progress_str = progress_path.to_string_lossy().to_string();
+    let result_str = result_path.to_string_lossy().to_string();
+    all_args.push(("--progress", progress_str.as_str()));
+    all_args.push(("--result", result_str.as_str()));
+    let args_string = build_args_string(&all_args);
+
+    let stop = std::sync::atomic::AtomicBool::new(false);
+    let exit = std::thread::scope(|s| {
+        let tail = s.spawn(|| tail_progress(&progress_path, &stop, on_line));
+        let exit = shell_execute_and_wait(exe_path, &args_string);
+        // 无论成功失败都要停 tail，否则 scope 结束时 join 会一直等下去。
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        let _ = tail.join();
+        exit
+    });
+
+    let exit_code = exit?;
+
+    let raw = std::fs::read_to_string(&result_path).unwrap_or_default();
+    let _ = std::fs::remove_file(&result_path);
+    let _ = std::fs::remove_file(&progress_path);
+
+    Ok(parse_result_json(&raw, exit_code))
+}
+
 #[cfg(windows)]
 fn shell_execute_and_wait(exe_path: &Path, args_string: &str) -> Result<i32, String> {
     use windows::core::{HSTRING, PCWSTR};
@@ -468,5 +588,52 @@ mod tests {
             name.encode_utf16().count() < 200,
             "名称过长会被系统截断: {name}"
         );
+    }
+
+    // ============ task-065：进度文件 tail ============
+
+    #[test]
+    fn drain_returns_only_complete_lines() {
+        // 只有到 `\n` 才算一行：末尾半行要留到下次（DISM 会边跑边写）
+        let (lines, next) = drain_complete_lines(b"a\nb\nc", 0);
+        assert_eq!(lines, vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(next, 4, "游标必须停在最后一个 \\n 之后");
+
+        // 续读：拿到剩下那半行 + 后续
+        let (lines2, next2) = drain_complete_lines(b"a\nb\nc\nd\n", next);
+        assert_eq!(lines2, vec!["c".to_string(), "d".to_string()]);
+        assert_eq!(next2, 8);
+    }
+
+    #[test]
+    fn drain_skips_blank_lines_and_strips_cr() {
+        // DISM 输出空行极多，且换行是 \r\n；空行转发给 UI 只是噪音
+        let (lines, _) = drain_complete_lines(b"a\r\n\r\n  \r\nb\r\n", 0);
+        assert_eq!(lines, vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn drain_handles_no_newline_yet() {
+        let (lines, next) = drain_complete_lines(b"partial", 0);
+        assert!(lines.is_empty());
+        assert_eq!(next, 0, "没有完整行时游标不动");
+    }
+
+    #[test]
+    fn drain_is_byte_safe_on_partial_utf8() {
+        // 「清」的 UTF-8 是 E6 B8 85；只写了一半（E6 B8）时不能被当完整字符解，
+        // 也不能因为非法 UTF-8 而 panic。整行不完整 → 这一行先不吐。
+        let bytes = b"line1\n\xE6\xB8";
+        let (lines, next) = drain_complete_lines(bytes, 0);
+        assert_eq!(lines, vec!["line1".to_string()]);
+        assert_eq!(next, 6);
+    }
+
+    #[test]
+    fn drain_resets_when_file_shrinks() {
+        // 提权 exe 用 File::create 截断重建进度文件：游标越界时必须能自愈
+        let (lines, next) = drain_complete_lines(b"x\n", 999);
+        assert!(lines.is_empty(), "越界游标不该读出错乱内容");
+        assert_eq!(next, 2);
     }
 }

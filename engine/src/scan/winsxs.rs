@@ -30,6 +30,15 @@ use crate::elevation;
 
 /// 提权 exe 命令名。**必须与 `elevation/src/main.rs` 的 `ALLOWED_COMMANDS` 一致**。
 pub const DISM_ANALYZE_CMD: &str = "dism_analyze";
+/// 清理命令名（同上）。
+pub const DISM_CLEANUP_CMD: &str = "dism_cleanup";
+
+/// 清理进度事件名。
+///
+/// 定义在 engine 而不是 Tauri 层：事件名是**两侧共用的契约**（Rust emit、
+/// 前端 listen），各写一份迟早漂移成 `winsxs://progress` / `winsxs:progress`
+/// 这种拼写差异，然后进度条永远不动还查不出原因。
+pub const WINSXS_PROGRESS_EVENT: &str = "winsxs://progress";
 
 /// WinSxS 分析结果。
 ///
@@ -254,4 +263,109 @@ pub fn tail_lines(text: &str, n: usize) -> String {
         .collect();
     let start = lines.len().saturating_sub(n);
     lines[start..].join(" / ")
+}
+
+// ===================== 清理（task-065 单元 2 续） =====================
+
+/// 清理进度事件载荷。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WinsxsProgress {
+    /// 行序号（从 0 开始，单调递增）。前端用它做 key，也用来判断「有没有新行」。
+    pub seq: u64,
+    /// DISM 输出的一行（已去掉空行）。
+    pub line: String,
+}
+
+/// WinSxS 清理结果。
+///
+/// 为什么 DISM 失败也返回 `Ok`（`ok: false`）而不是 `Err`：失败时**输出尾部是
+/// 唯一线索**（「错误: 740」/「组件存储损坏」），返回 Err 会把它丢掉，用户只看到
+/// 一句「清理失败」无从下手。真正的「没能执行」（UAC 被拒 / 提权 exe 缺失）
+/// 才走 [`WinsxsCleanupError`]。
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WinsxsCleanupResult {
+    /// DISM 退出码是否为 0。
+    pub ok: bool,
+    /// 提权 exe 报告的退出码。
+    pub exit_code: i32,
+    /// 清理前建成的系统还原点序号；跳过了还原点时为 `None`。
+    pub restore_point_seq: Option<i64>,
+    /// DISM 输出尾部（最多 12 行，失败原因一定在尾部）。
+    pub output_tail: String,
+    /// 转发出去多少行进度。
+    pub line_count: u64,
+}
+
+/// 清理失败的两类「没能执行」。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WinsxsCleanupError {
+    /// 还原点没建成（系统还原被关闭 / 磁盘空间不足 / 用户拒了 UAC）。
+    ///
+    /// 单独一类是因为前端要据此弹「是否继续清理？」——用户在确认框点继续后
+    /// 带 `skip_restore_point=true` 重调。
+    RestorePoint(String),
+    /// 提权链路本身失败（UAC 被取消 / 提权 exe 不存在 / 白名单拒绝）。
+    Elevation(String),
+}
+
+impl std::fmt::Display for WinsxsCleanupError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::RestorePoint(m) => write!(f, "系统还原点创建失败：{m}"),
+            Self::Elevation(m) => write!(f, "提权执行失败：{m}"),
+        }
+    }
+}
+
+/// 跑一次 DISM 组件存储清理。
+///
+/// # 顺序（不可颠倒）
+///
+/// 1. **先建系统还原点**——`/StartComponentCleanup` 会删掉旧版本组件，
+///    不可逆，必须在动手之前留退路。`skip_restore_point=false` 时建不成
+///    就直接返回 [`WinsxsCleanupError::RestorePoint`]（fail-closed）。
+/// 2. 再跑 DISM，边跑边把输出行抛给 `on_line`。
+///
+/// # 为什么这里没有 `/ResetBase` 参数
+///
+/// 参数在提权 exe 里是硬编码常量（`elevation::dism::Action::Cleanup::args`），
+/// 本函数连传参的口子都没有——**不是「传了会被拒」，而是「没法传」**。
+pub fn cleanup(
+    conn: &rusqlite::Connection,
+    exe_path: &Path,
+    skip_restore_point: bool,
+    on_line: &(dyn Fn(u64, &str) + Sync),
+) -> Result<WinsxsCleanupResult, WinsxsCleanupError> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    let restore_point_seq = if skip_restore_point {
+        // 用户已经在「还原点创建失败，是否继续清理？」里点了继续。
+        // 不建还原点，但**不掩盖事实**：结果里 restore_point_seq = None。
+        None
+    } else {
+        Some(
+            elevation::ensure_restore_point(conn, exe_path)
+                .map_err(WinsxsCleanupError::RestorePoint)?,
+        )
+    };
+
+    // 行数统计放在闭包里做，而不是事后数 output：DISM 的输出可能被 tail_lines
+    // 截断，事后数出来的不是「实际转发给用户的行数」。
+    let counter = AtomicU64::new(0);
+    let r = elevation::run_elevated_streaming(exe_path, DISM_CLEANUP_CMD, &[], &|seq, line| {
+        counter.fetch_add(1, Ordering::Relaxed);
+        on_line(seq, line);
+    })
+    .map_err(WinsxsCleanupError::Elevation)?;
+
+    let raw = r.output.unwrap_or_default();
+    Ok(WinsxsCleanupResult {
+        ok: r.ok,
+        exit_code: r.exit_code,
+        restore_point_seq,
+        output_tail: tail_lines(&raw, 12),
+        line_count: counter.load(Ordering::Relaxed),
+    })
 }
