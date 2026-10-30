@@ -42,7 +42,30 @@ interface Prefs {
   autoRestartOnClose: boolean;
   // task-058：重启白名单（进程映像名，支持 `*` 通配）。空数组 = 不限制。
   restartWhitelist: string[];
+  // task-061：主题三态。默认 "system"（跟随系统）。
+  theme: ThemeMode;
+  // task-061：自动扫描（只扫描不删除）。默认关闭 + daily。
+  autoScanEnabled: boolean;
+  autoScanInterval: ScanInterval;
 }
+
+/** task-061：自动扫描间隔，与 `engine::prefs::{SCAN_DAILY, SCAN_WEEKLY, SCAN_MONTHLY}` 对齐。 */
+type ScanInterval = "daily" | "weekly" | "monthly";
+
+const SCAN_OPTIONS: { value: ScanInterval; label: string }[] = [
+  { value: "daily", label: "每天" },
+  { value: "weekly", label: "每周" },
+  { value: "monthly", label: "每月" },
+];
+
+/** task-061：主题三态。与 `engine::prefs::{THEME_SYSTEM, THEME_LIGHT, THEME_DARK}` 对齐。 */
+type ThemeMode = "system" | "light" | "dark";
+
+const THEME_OPTIONS: { value: ThemeMode; label: string; hint: string }[] = [
+  { value: "system", label: "跟随系统", hint: "随 Windows 的深浅色设置自动切换" },
+  { value: "light", label: "浅色", hint: "始终使用浅色界面" },
+  { value: "dark", label: "深色", hint: "始终使用深色界面" },
+];
 
 type Phase =
   | "loading"
@@ -52,10 +75,10 @@ type Phase =
   | "error";
 
 const cardStyle: React.CSSProperties = {
-  border: "1px solid #e5e7eb",
+  border: "1px solid var(--border)",
   borderRadius: 8,
   padding: "20px 24px",
-  background: "#fff",
+  background: "var(--surface)",
   maxWidth: 560,
 };
 
@@ -64,13 +87,13 @@ const rowStyle: React.CSSProperties = {
   justifyContent: "space-between",
   padding: "6px 0",
   fontSize: 13,
-  color: "#374151",
+  color: "var(--text)",
 };
 
 const monoStyle: React.CSSProperties = {
   fontFamily: "monospace",
   fontSize: 12,
-  color: "#6b7280",
+  color: "var(--text-muted)",
 };
 
 /**
@@ -81,9 +104,11 @@ const monoStyle: React.CSSProperties = {
  */
 interface SettingsProps {
   onUpdateFound?: (version: string) => void;
+  /** task-061：主题切换后通知外层立刻应用（不必重读 prefs / 重启）。 */
+  onThemeChange?: (theme: ThemeMode) => void;
 }
 
-export default function Settings({ onUpdateFound }: SettingsProps) {
+export default function Settings({ onUpdateFound, onThemeChange }: SettingsProps) {
   const [phase, setPhase] = useState<Phase>("loading");
   const [info, setInfo] = useState<CheckUpdateResult | null>(null);
   const [msg, setMsg] = useState<string>("");
@@ -104,6 +129,10 @@ export default function Settings({ onUpdateFound }: SettingsProps) {
   const [prefs, setPrefs] = useState<Prefs>({
     autoRestartOnClose: false,
     restartWhitelist: [],
+    // task-061：默认跟随系统（与后端缺行时的默认值一致）。
+    theme: "system",
+    autoScanEnabled: false,
+    autoScanInterval: "daily",
   });
   const [prefsSaving, setPrefsSaving] = useState<boolean>(false);
   // task-058：白名单编辑框的原始文本（每行一个进程名），提交时才解析成数组。
@@ -116,7 +145,16 @@ export default function Settings({ onUpdateFound }: SettingsProps) {
         const p = await api<Prefs>("get_prefs", {});
         // p 可能为 null（IPC 异常 / 旧后端），统一按默认值兜住。
         const wl = p?.restartWhitelist ?? [];
-        setPrefs({ autoRestartOnClose: Boolean(p?.autoRestartOnClose), restartWhitelist: wl });
+        const th = p?.theme;
+        const si = p?.autoScanInterval;
+        setPrefs({
+          autoRestartOnClose: Boolean(p?.autoRestartOnClose),
+          restartWhitelist: wl,
+          theme: th === "light" || th === "dark" || th === "system" ? th : "system",
+          autoScanEnabled: Boolean(p?.autoScanEnabled),
+          autoScanInterval:
+            si === "weekly" || si === "monthly" || si === "daily" ? si : "daily",
+        });
         setWhitelistText(wl.join("\n"));
       } catch {
         // 读失败保持默认（fail-closed），不打扰用户。
@@ -124,17 +162,29 @@ export default function Settings({ onUpdateFound }: SettingsProps) {
     })();
   }, []);
 
+  /**
+   * task-061：统一提交入口。
+   *
+   * 后端 `set_prefs` 是**整体覆盖**语义——任何一处保存漏传字段，都会把那个字段
+   * 静默清空（task-058 就踩过：只传 autoRestartOnClose 把白名单冲掉了）。
+   * 所以所有保存都必须走这里把 patch 合并到当前 prefs 上，禁止手拼对象。
+   */
+  const savePrefs = useCallback(
+    async (patch: Partial<Prefs>): Promise<Prefs | null> => {
+      const next: Prefs = { ...prefs, ...patch };
+      const saved = await api<Prefs>("set_prefs", { prefs: next });
+      return saved ?? null;
+    },
+    [prefs]
+  );
+
   const onToggleAutoRestart = useCallback(
     async (next: boolean) => {
       // 乐观更新：先切 UI，写库失败再回滚。
       setPrefs((p) => ({ ...p, autoRestartOnClose: next }));
       setPrefsSaving(true);
       try {
-        // task-058：必须把**当前白名单一起提交**——后端 set_prefs 是「整体覆盖」，
-        // 只传 autoRestartOnClose 会把用户配好的白名单清空。
-        await api<Prefs>("set_prefs", {
-          prefs: { autoRestartOnClose: next, restartWhitelist: prefs.restartWhitelist },
-        });
+        await savePrefs({ autoRestartOnClose: next });
       } catch (e) {
         // 回滚 UI。
         setPrefs((p) => ({ ...p, autoRestartOnClose: !next }));
@@ -143,7 +193,63 @@ export default function Settings({ onUpdateFound }: SettingsProps) {
         setPrefsSaving(false);
       }
     },
-    [prefs.restartWhitelist]
+    [savePrefs]
+  );
+
+  // task-061：主题切换。先本地应用（不卡顿），再落库；失败回滚并提示。
+  const onSaveTheme = useCallback(
+    async (next: ThemeMode) => {
+      const prev = prefs.theme;
+      if (prev === next) return;
+      setPrefs((p) => ({ ...p, theme: next }));
+      onThemeChange?.(next);
+      setPrefsSaving(true);
+      try {
+        await savePrefs({ theme: next });
+      } catch (e) {
+        setPrefs((p) => ({ ...p, theme: prev }));
+        onThemeChange?.(prev);
+        setToast({ ok: false, text: `保存主题失败：${String(e)}` });
+      } finally {
+        setPrefsSaving(false);
+      }
+    },
+    [prefs.theme, savePrefs, onThemeChange]
+  );
+
+  // task-061：自动扫描开关。开启后后台会按间隔静默扫描（只扫描、不删除）。
+  const onToggleAutoScan = useCallback(
+    async (next: boolean) => {
+      setPrefs((p) => ({ ...p, autoScanEnabled: next }));
+      setPrefsSaving(true);
+      try {
+        await savePrefs({ autoScanEnabled: next });
+      } catch (e) {
+        setPrefs((p) => ({ ...p, autoScanEnabled: !next }));
+        setToast({ ok: false, text: `保存设置失败：${String(e)}` });
+      } finally {
+        setPrefsSaving(false);
+      }
+    },
+    [savePrefs]
+  );
+
+  const onChangeScanInterval = useCallback(
+    async (next: ScanInterval) => {
+      const prev = prefs.autoScanInterval;
+      if (prev === next) return;
+      setPrefs((p) => ({ ...p, autoScanInterval: next }));
+      setPrefsSaving(true);
+      try {
+        await savePrefs({ autoScanInterval: next });
+      } catch (e) {
+        setPrefs((p) => ({ ...p, autoScanInterval: prev }));
+        setToast({ ok: false, text: `保存设置失败：${String(e)}` });
+      } finally {
+        setPrefsSaving(false);
+      }
+    },
+    [prefs.autoScanInterval, savePrefs]
   );
 
   // task-058：保存白名单。按行切分 → 去空白 → 丢空行；空结果 = 清空（不限制）。
@@ -155,9 +261,7 @@ export default function Settings({ onUpdateFound }: SettingsProps) {
 
     setWhitelistSaving(true);
     try {
-      const saved = await api<Prefs>("set_prefs", {
-        prefs: { autoRestartOnClose: prefs.autoRestartOnClose, restartWhitelist: list },
-      });
+      const saved = await savePrefs({ restartWhitelist: list });
       const wl = saved?.restartWhitelist ?? list;
       setPrefs((p) => ({ ...p, restartWhitelist: wl }));
       // 用后端归一化后的结果回填（去空白 / 小写），让用户看到真实生效的内容。
@@ -171,7 +275,7 @@ export default function Settings({ onUpdateFound }: SettingsProps) {
     } finally {
       setWhitelistSaving(false);
     }
-  }, [whitelistText, prefs.autoRestartOnClose]);
+  }, [whitelistText, savePrefs]);
 
   useEffect(() => {
     (async () => {
@@ -333,7 +437,7 @@ export default function Settings({ onUpdateFound }: SettingsProps) {
       )}
 
       {phase === "loading" && (
-        <div style={{ color: "#6b7280", fontSize: 13 }}>加载中...</div>
+        <div style={{ color: "var(--text-muted)", fontSize: 13 }}>加载中...</div>
       )}
 
       {phase === "error" && (
@@ -440,7 +544,7 @@ export default function Settings({ onUpdateFound }: SettingsProps) {
                 borderRadius: 6,
                 border: "1px solid #16a34a",
                 background: phase === "applying" ? "#bbf7d0" : "#16a34a",
-                color: "#fff",
+                color: "var(--surface)",
                 cursor:
                   phase === "checking" || phase === "applying"
                     ? "not-allowed"
@@ -459,9 +563,9 @@ export default function Settings({ onUpdateFound }: SettingsProps) {
               style={{
                 padding: "6px 14px",
                 borderRadius: 6,
-                border: "1px solid #9ca3af",
-                background: "#f3f4f6",
-                color: "#374151",
+                border: "1px solid var(--border)",
+                background: "var(--border)",
+                color: "var(--text)",
                 cursor:
                   phase === "checking" || phase === "applying" || rollingBack
                     ? "not-allowed"
@@ -518,7 +622,7 @@ export default function Settings({ onUpdateFound }: SettingsProps) {
                 borderRadius: 6,
                 border: "1px solid #16a34a",
                 background: appPhase === "downloading" ? "#bbf7d0" : "#16a34a",
-                color: "#fff",
+                color: "var(--surface)",
                 cursor:
                   appPhase === "checking" || appPhase === "downloading"
                     ? "not-allowed"
@@ -531,15 +635,71 @@ export default function Settings({ onUpdateFound }: SettingsProps) {
         </div>
       </div>
 
+      {/* task-061：外观（主题三态）。放在行为偏好之前——用户先调外观再调行为更顺手。 */}
+      <h2 style={{ margin: "24px 0 12px", fontSize: 16 }}>外观</h2>
+      <div style={cardStyle}>
+        <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>主题</div>
+        <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 12, lineHeight: 1.6 }}>
+          选择后立即生效，并记住你的选择。默认跟随 Windows 的深浅色设置。
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {THEME_OPTIONS.map((opt) => (
+            <label
+              key={opt.value}
+              style={{
+                display: "flex",
+                alignItems: "flex-start",
+                gap: 8,
+                cursor: prefsSaving ? "wait" : "pointer",
+                padding: "8px 10px",
+                borderRadius: 6,
+                border:
+                  prefs.theme === opt.value
+                    ? "1px solid var(--text)"
+                    : "1px solid var(--border)",
+                background:
+                  prefs.theme === opt.value ? "var(--bg)" : "transparent",
+              }}
+            >
+              <input
+                type="radio"
+                name="theme"
+                checked={prefs.theme === opt.value}
+                disabled={prefsSaving}
+                onChange={() => onSaveTheme(opt.value)}
+                style={{ marginTop: 2 }}
+              />
+              <span>
+                <span style={{ fontSize: 13, color: "var(--text)" }}>{opt.label}</span>
+                <span
+                  style={{
+                    display: "block",
+                    fontSize: 11,
+                    color: "var(--text-muted)",
+                    marginTop: 2,
+                  }}
+                >
+                  {opt.hint}
+                </span>
+              </span>
+            </label>
+          ))}
+        </div>
+        <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 12, lineHeight: 1.6 }}>
+          注：当前版本已适配「仪表盘」与「设置」页；「清理 / 保险箱 / 历史」三页仍是浅色，
+          深色主题下会出现明暗混排。适配工作排在后续版本。
+        </div>
+      </div>
+
       {/* task-057：行为偏好卡片——默认关闭，新用户看不到任何自动重启行为 */}
       <h2 style={{ margin: "24px 0 12px", fontSize: 16 }}>行为偏好</h2>
       <div style={cardStyle}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <div>
-            <div style={{ fontSize: 13, color: "#111827", fontWeight: 600 }}>
+            <div style={{ fontSize: 13, color: "var(--text)", fontWeight: 600 }}>
               自动重启被关闭的进程
             </div>
-            <div style={{ fontSize: 12, color: "#6b7280", marginTop: 4, lineHeight: 1.5 }}>
+            <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 4, lineHeight: 1.5 }}>
               清理被占用的文件时，若系统支持（Restart Manager 标记为可重启），
               关闭后自动把进程重新拉起。默认关闭。
             </div>
@@ -551,18 +711,18 @@ export default function Settings({ onUpdateFound }: SettingsProps) {
               disabled={prefsSaving}
               onChange={(e) => onToggleAutoRestart(e.target.checked)}
             />
-            <span style={{ fontSize: 12, color: "#374151" }}>
+            <span style={{ fontSize: 12, color: "var(--text)" }}>
               {prefs.autoRestartOnClose ? "已开启" : "已关闭"}
             </span>
           </label>
         </div>
 
         {/* task-058：重启白名单。语义是 fail-closed（见下方说明），不是「只重启这些」 */}
-        <div style={{ marginTop: 16, borderTop: "1px solid #f3f4f6", paddingTop: 16 }}>
-          <div style={{ fontSize: 13, color: "#111827", fontWeight: 600 }}>
+        <div style={{ marginTop: 16, borderTop: "1px solid var(--border)", paddingTop: 16 }}>
+          <div style={{ fontSize: 13, color: "var(--text)", fontWeight: 600 }}>
             重启白名单
           </div>
-          <div style={{ fontSize: 12, color: "#6b7280", marginTop: 4, lineHeight: 1.6 }}>
+          <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 4, lineHeight: 1.6 }}>
             每行一个进程映像名（如 <code>notepad.exe</code>），支持 <code>*</code> 通配（如 <code>*.exe</code>）。
             <br />
             <b>留空 = 不限制</b>（所有可重启进程都会被拉起）。
@@ -586,7 +746,7 @@ export default function Settings({ onUpdateFound }: SettingsProps) {
               fontSize: 12,
               padding: "6px 8px",
               borderRadius: 4,
-              border: "1px solid #d1d5db",
+              border: "1px solid var(--border)",
               resize: "vertical",
             }}
           />
@@ -594,13 +754,87 @@ export default function Settings({ onUpdateFound }: SettingsProps) {
             <button onClick={onSaveWhitelist} disabled={whitelistSaving}>
               {whitelistSaving ? "保存中…" : "保存白名单"}
             </button>
-            <span style={{ fontSize: 11, color: "#9ca3af" }}>
+            <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
               {prefs.restartWhitelist.length === 0
                 ? "当前：不限制"
                 : `当前生效 ${prefs.restartWhitelist.length} 条`}
             </span>
           </div>
         </div>
+      </div>
+
+      {/* task-061：自动扫描。MVP 只扫描 + 通知，**绝不自动删除**——安全第一。 */}
+      <h2 style={{ margin: "24px 0 12px", fontSize: 16 }}>自动扫描</h2>
+      <div style={cardStyle}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 600 }}>定期在后台扫描</div>
+            <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 4, lineHeight: 1.5 }}>
+              按设定间隔在后台扫描一遍，完成后发系统通知告诉你「发现多少可清理项」。
+              <b>只扫描，不会自动删除任何文件</b>——要清理仍需你手动确认。默认关闭。
+            </div>
+          </div>
+          <label
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              cursor: prefsSaving ? "wait" : "pointer",
+              whiteSpace: "nowrap",
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={prefs.autoScanEnabled}
+              disabled={prefsSaving}
+              onChange={(e) => onToggleAutoScan(e.target.checked)}
+            />
+            <span style={{ fontSize: 12, color: "var(--text)" }}>
+              {prefs.autoScanEnabled ? "已开启" : "已关闭"}
+            </span>
+          </label>
+        </div>
+
+        <div
+          style={{
+            marginTop: 14,
+            borderTop: "1px solid var(--border)",
+            paddingTop: 14,
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            flexWrap: "wrap",
+          }}
+        >
+          <span style={{ fontSize: 12, color: "var(--text)" }}>扫描间隔：</span>
+          {SCAN_OPTIONS.map((opt) => (
+            <label
+              key={opt.value}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 5,
+                fontSize: 12,
+                color: prefs.autoScanEnabled ? "var(--text)" : "var(--text-muted)",
+                cursor: prefsSaving || !prefs.autoScanEnabled ? "not-allowed" : "pointer",
+              }}
+            >
+              <input
+                type="radio"
+                name="scan-interval"
+                checked={prefs.autoScanInterval === opt.value}
+                disabled={prefsSaving || !prefs.autoScanEnabled}
+                onChange={() => onChangeScanInterval(opt.value)}
+              />
+              {opt.label}
+            </label>
+          ))}
+        </div>
+        {!prefs.autoScanEnabled && (
+          <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 8 }}>
+            先开启上面的开关，间隔选择才会生效。
+          </div>
+        )}
       </div>
     </div>
   );

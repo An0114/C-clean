@@ -280,3 +280,66 @@ describe("App 更新 banner", () => {
     expect(btn).toBeDisabled();
   });
 });
+
+// task-061：仪表盘趋势图
+describe("仪表盘趋势图（task-061）", () => {
+  /** 区分命令的 mock：stats 给固定值，trend 由参数决定。 */
+  function mockDashboard(trend: unknown) {
+    mockedInvoke.mockImplementation(((cmd: string) => {
+      if (cmd === "audit_log_stats") {
+        return Promise.resolve(
+          ok({ totalBytesFreed: 0, successCount: 0, failedCount: 0, sessionCount: 0 })
+        );
+      }
+      if (cmd === "cleanup_stats_trend") return Promise.resolve(ok(trend));
+      if (cmd === "get_prefs") return Promise.resolve(ok({ theme: "light" }));
+      return Promise.resolve(ok(null));
+    }) as never);
+  }
+
+  it("有数据时显示标题、首尾日期与峰值", async () => {
+    mockDashboard([
+      { day: "2026-10-27", bytesFreed: 1024 * 1024 },
+      { day: "2026-10-28", bytesFreed: 2 * 1024 * 1024 },
+      { day: "2026-10-29", bytesFreed: 512 * 1024 },
+    ]);
+
+    render(<App />);
+
+    expect(await screen.findByText(/最近 30 天释放趋势/)).toBeInTheDocument();
+    // 峰值取最大那天（2 MB）
+    expect(screen.getByText(/峰值 2\.0 MB/)).toBeInTheDocument();
+    // 首尾日期各出现一次
+    expect(screen.getByText("2026-10-27")).toBeInTheDocument();
+    expect(screen.getByText("2026-10-29")).toBeInTheDocument();
+    // 三个柱子（rect 有 title）
+    expect(screen.getByLabelText(/最近 30 天释放趋势柱状图/)).toBeInTheDocument();
+  });
+
+  it("空数据时显示「暂无清理记录」占位", async () => {
+    mockDashboard([]);
+
+    render(<App />);
+
+    expect(await screen.findByText("暂无清理记录")).toBeInTheDocument();
+  });
+
+  it("趋势接口失败时显示失败占位，不影响卡片", async () => {
+    mockedInvoke.mockImplementation(((cmd: string) => {
+      if (cmd === "audit_log_stats") {
+        return Promise.resolve(
+          ok({ totalBytesFreed: 0, successCount: 0, failedCount: 0, sessionCount: 0 })
+        );
+      }
+      if (cmd === "cleanup_stats_trend") return Promise.reject(new Error("boom"));
+      if (cmd === "get_prefs") return Promise.resolve(ok({ theme: "light" }));
+      return Promise.resolve(ok(null));
+    }) as never);
+
+    render(<App />);
+
+    expect(await screen.findByText(/趋势数据加载失败/)).toBeInTheDocument();
+    // 卡片仍在
+    expect(screen.getByText("总释放空间")).toBeInTheDocument();
+  });
+});

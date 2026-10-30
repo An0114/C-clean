@@ -41,7 +41,7 @@ type ScanStatus = "idle" | "scanning" | "done" | "error";
 const TAIL_UNLISTEN_DELAY_MS = 200;
 
 const cardStyle: React.CSSProperties = {
-  border: "1px solid #e5e7eb",
+  border: "1px solid var(--border)",
   borderRadius: 8,
   padding: "16px 20px",
   background: "#fff",
@@ -50,7 +50,7 @@ const cardStyle: React.CSSProperties = {
 
 const labelStyle: React.CSSProperties = {
   fontSize: 12,
-  color: "#6b7280",
+  color: "var(--text-muted)",
   marginBottom: 8,
 };
 
@@ -185,13 +185,13 @@ export default function Dashboard() {
       style={{
         padding: 24,
         fontFamily: "system-ui, sans-serif",
-        background: "#f9fafb",
+        background: "var(--bg)",
         minHeight: "100vh",
         boxSizing: "border-box",
       }}
     >
       <h1 style={{ margin: "0 0 16px" }}>C-Disk Cleaner</h1>
-      <p style={{ color: "#6b7280", marginTop: 0 }}>清理统计</p>
+      <p style={{ color: "var(--text-muted)", marginTop: 0 }}>清理统计</p>
 
       {/* task-028：开始扫描按钮 + 进度条 */}
       <div style={{ marginBottom: 16 }}>
@@ -210,7 +210,7 @@ export default function Dashboard() {
             <div
               style={{
                 height: 8,
-                background: "#e5e7eb",
+                background: "var(--border)",
                 borderRadius: 4,
                 overflow: "hidden",
               }}
@@ -224,7 +224,7 @@ export default function Dashboard() {
                 }}
               />
             </div>
-            <div style={{ marginTop: 6, fontSize: 12, color: "#374151" }}>
+            <div style={{ marginTop: 6, fontSize: 12, color: "var(--text)" }}>
               {progress.currentPath || "准备中..."} — {progress.scannedItems} 项
             </div>
           </div>
@@ -258,8 +258,8 @@ export default function Dashboard() {
         >
           {[0, 1, 2, 3].map((i) => (
             <div key={i} style={cardStyle}>
-              <div style={{ ...labelStyle, background: "#e5e7eb", height: 12, width: 80 }} />
-              <div style={{ background: "#e5e7eb", height: 28, width: 120, marginTop: 8 }} />
+              <div style={{ ...labelStyle, background: "var(--border)", height: 12, width: 80 }} />
+              <div style={{ background: "var(--border)", height: 28, width: 120, marginTop: 8 }} />
             </div>
           ))}
         </div>
@@ -291,24 +291,146 @@ export default function Dashboard() {
         >
           <div style={cardStyle}>
             <div style={labelStyle}>总释放空间</div>
-            <div style={valueStyle("#111827")}>{formatBytes(data.totalBytesFreed)}</div>
+            <div style={valueStyle("var(--text)")}>{formatBytes(data.totalBytesFreed)}</div>
           </div>
           <div style={cardStyle}>
             <div style={labelStyle}>成功次数</div>
-            <div style={valueStyle("#111827")}>{data.successCount}</div>
+            <div style={valueStyle("var(--text)")}>{data.successCount}</div>
           </div>
           <div style={cardStyle}>
             <div style={labelStyle}>失败次数</div>
-            <div style={valueStyle(data.failedCount > 0 ? "#dc2626" : "#111827")}>
+            <div style={valueStyle(data.failedCount > 0 ? "#dc2626" : "var(--text)")}>
               {data.failedCount}
             </div>
           </div>
           <div style={cardStyle}>
             <div style={labelStyle}>清理轮次</div>
-            <div style={valueStyle("#111827")}>{data.sessionCount}</div>
+            <div style={valueStyle("var(--text)")}>{data.sessionCount}</div>
           </div>
         </div>
       )}
+
+      {/* task-061：最近 30 天释放量趋势 */}
+      <TrendChart />
     </main>
+  );
+}
+
+// ===================== task-061：趋势图 =====================
+//
+// 实现方式：**手写 SVG 柱状图**，不引 recharts / chart.js。
+// 理由：需求只是「每天一根柱子 + 顶部标峰值 + 首尾标日期」，
+// 引一个 100KB+ 的图表库不划算（本项目前端产物体积一直在 190 kB 上下）。
+//
+// 为什么用柱状而不是折线：数据是「每日聚合」的离散量，柱状能直观表达
+// 「哪天有清理、哪天没有」；折线会把「没数据的那天」画成一条斜线，误导。
+
+interface TrendPoint {
+  day: string;
+  bytesFreed: number;
+}
+
+const TREND_DAYS = 30;
+
+function TrendChart() {
+  const [points, setPoints] = useState<TrendPoint[] | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await api<TrendPoint[]>("cleanup_stats_trend", { days: TREND_DAYS });
+        setPoints(Array.isArray(r) ? r : []);
+      } catch {
+        // 读失败不打扰用户：图表区显示占位，卡片数据照常
+        setFailed(true);
+        setPoints([]);
+      }
+    })();
+  }, []);
+
+  const box: React.CSSProperties = { ...cardStyle, marginTop: 12 };
+  const title = (
+    <div style={{ ...labelStyle, marginBottom: 8 }}>最近 {TREND_DAYS} 天释放趋势</div>
+  );
+
+  if (points === null) {
+    return (
+      <div style={box}>
+        {title}
+        <div style={{ fontSize: 12, color: "var(--text-muted)" }}>加载中…</div>
+      </div>
+    );
+  }
+
+  if (points.length === 0) {
+    return (
+      <div style={box}>
+        {title}
+        <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+          {failed ? "趋势数据加载失败，请稍后重试" : "暂无清理记录"}
+        </div>
+      </div>
+    );
+  }
+
+  // SVG 坐标系：固定 viewBox，宽度靠 CSS 拉伸（柱宽随之缩放，文字用固定字号
+  // 会一起被拉变形，所以文字用 SVG 内的 <text> + 不缩放的外层容器承载）。
+  const W = 600;
+  const H = 120;
+  const PAD_BOTTOM = 4;
+  const max = Math.max(...points.map((p) => p.bytesFreed), 1);
+  const slot = W / points.length;
+  const barW = Math.max(2, slot * 0.7);
+
+  return (
+    <div style={box}>
+      {title}
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+        <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{points[0].day}</span>
+        <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
+          峰值 {formatBytes(max)}
+        </span>
+        <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
+          {points[points.length - 1].day}
+        </span>
+      </div>
+      <svg
+        viewBox={`0 0 ${W} ${H}`}
+        preserveAspectRatio="none"
+        role="img"
+        aria-label={`最近 ${TREND_DAYS} 天释放趋势柱状图`}
+        style={{ width: "100%", height: 120, display: "block" }}
+      >
+        {/* 基线 */}
+        <line
+          x1={0}
+          y1={H - PAD_BOTTOM}
+          x2={W}
+          y2={H - PAD_BOTTOM}
+          stroke="var(--border)"
+          strokeWidth={1}
+        />
+        {points.map((p, i) => {
+          const h = Math.max(
+            p.bytesFreed > 0 ? 2 : 0,
+            (p.bytesFreed / max) * (H - PAD_BOTTOM)
+          );
+          return (
+            <rect
+              key={p.day}
+              x={i * slot + (slot - barW) / 2}
+              y={H - PAD_BOTTOM - h}
+              width={barW}
+              height={h}
+              fill={p.bytesFreed > 0 ? "#10b981" : "transparent"}
+              rx={1}
+            >
+              <title>{`${p.day}：${formatBytes(p.bytesFreed)}`}</title>
+            </rect>
+          );
+        })}
+      </svg>
+    </div>
   );
 }

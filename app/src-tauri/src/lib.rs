@@ -4,6 +4,7 @@
 //! sessionId 计数器用简单的 `Mutex<i64>` State 注入（task-004）。
 //! debt-cleanup-003：AppPaths 在 setup 内构造并 manage，所有命令从 State 取路径。
 
+mod auto_scan;
 mod commands;
 pub mod paths;
 pub mod progress;
@@ -22,6 +23,8 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         // bugfix/task-035-updater-acl：为前端 relaunch() 提供 process 插件后端。
         .plugin(tauri_plugin_process::init())
+        // task-061：自动扫描完成后发系统通知（Windows 通知中心）。
+        .plugin(tauri_plugin_notification::init())
         .manage(std::sync::Mutex::new(0_i64))
         // task-007：在 setup 闭包里拿 AppHandle，构造全局进度 State 并注入。
         // debt-cleanup-003：构造 AppPaths（data_root/rules_dir/scripts_dir/box_dir）并注入。
@@ -29,6 +32,9 @@ pub fn run() {
             let paths = paths::AppPaths::from_app(app.handle())?;
             app.manage(paths);
             app.manage(progress::ProgressState::new(app.handle().clone()));
+            // task-061：起后台自动扫描线程（默认关闭，读 prefs 决定是否真的扫）。
+            // 只在这里 spawn 一次；线程内部轮询，不做精确定时（理由见 auto_scan.rs）。
+            auto_scan::spawn(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -50,6 +56,7 @@ pub fn run() {
             commands::rules_rollback,
             commands::audit_log_list,
             commands::audit_log_stats,
+            commands::cleanup_stats_trend,
             commands::cleanup_list_pending,
             commands::get_prefs,
             commands::set_prefs

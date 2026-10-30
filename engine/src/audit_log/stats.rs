@@ -70,3 +70,66 @@ pub fn cleanup_stats(
         session_count: task_rows,
     })
 }
+
+// ===================== task-061：每日趋势 =====================
+
+/// 趋势图的一个数据点。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrendPoint {
+    /// 日期，`YYYY-MM-DD`（**本地时区**，用户看的是自己日历上的「那天」）。
+    pub day: String,
+    /// 当天释放的总字节数。
+    pub bytes_freed: i64,
+}
+
+/// 最近 `days` 天（含今天）的每日释放量，按日期**升序**。
+///
+/// # 设计取舍
+///
+/// - **只返回有记录的日期**，缺失的日期由前端补 0。理由：后端补零要生成完整
+///   日期序列，SQLite 没有 `generate_series`，得写递归 CTE 或手工循环，可读性
+///   明显变差；而「哪几天没有数据」本来就是前端画图时最清楚的事。
+/// - **按本地时区分组**（`'localtime'`）：用户看的是「10 月 29 日」这个日历概念，
+///   不是 UTC 日期。跨时区用户可能看到「同一次清理落在不同天」，这是预期行为。
+/// - `days` 会被夹到 `1..=365`：传 0 或负数会让 `WHERE started_at >= now` 变成
+///   「未来」，静默返回空；夹一下比让调用方自己保证更稳。
+pub fn cleanup_stats_trend(
+    conn: &rusqlite::Connection,
+    days: i64,
+) -> Result<Vec<TrendPoint>, String> {
+    let span = days.clamp(1, 365);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    // 从「span 天前的 00:00（本地）」开始算，而不是「now - span*86400」——
+    // 后者会把今天截掉半天，导致今天的柱状图偏低。
+    let since = now - span * 86_400;
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT date(started_at, 'unixepoch', 'localtime') AS day,
+                    COALESCE(SUM(freed_bytes), 0) AS bytes
+             FROM cleanup_task
+             WHERE started_at >= ?1
+             GROUP BY day
+             ORDER BY day ASC",
+        )
+        .map_err(|e| format!("cleanup_stats_trend prepare: {e}"))?;
+
+    let rows = stmt
+        .query_map(params![since], |r| {
+            Ok(TrendPoint {
+                day: r.get(0)?,
+                bytes_freed: r.get(1)?,
+            })
+        })
+        .map_err(|e| format!("cleanup_stats_trend query: {e}"))?;
+
+    let mut out = Vec::new();
+    for it in rows {
+        out.push(it.map_err(|e| format!("cleanup_stats_trend row: {e}"))?);
+    }
+    Ok(out)
+}

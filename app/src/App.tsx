@@ -4,6 +4,7 @@
 import { Component, useEffect, useRef, useState, type ReactNode } from "react";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
+import { api } from "./utils/invoke";
 import Dashboard from "./pages/Dashboard";
 import History from "./pages/History";
 import Items from "./pages/Items";
@@ -23,13 +24,77 @@ import {
 
 type Tab = "dashboard" | "items" | "safebox" | "history" | "settings";
 
+// ===================== task-061：主题 =====================
+//
+// 实现方式：**纯内联 CSS 变量**，不引 index.css。
+// 根 div 上定义 `--bg` / `--surface` / `--text` / `--text-muted` / `--border`，
+// 子元素用 `var(--xxx)` 取值。好处：
+// - 不新增构建产物 / 文件（本项目原本没有任何 .css，保持零 CSS 文件）；
+// - 变量作用域就是根 div，切换时只改根节点的值，所有 `var()` 自动跟随；
+// - 组件不需要知道当前是深还是浅。
+//
+// **本期适配范围（必须如实告知）**：App 外壳 / Dashboard / Settings 三处。
+// Items / SafeBox / History 三页的颜色是硬编码的（且不在本任务白名单内），
+// 深色下仍是浅色底——属已知的「部分页面未适配」，已记入遗留问题。
+// 语义色（错误红 / 成功绿 / 蓝色 banner / 橙色警告）**不跟随主题**：
+// 它们是状态色，深浅底都需要保持可辨识。
+
+type ThemeMode = "system" | "light" | "dark";
+
+interface ThemeTokens {
+  bg: string;
+  surface: string;
+  text: string;
+  muted: string;
+  border: string;
+}
+
+const THEME_TOKENS: Record<"light" | "dark", ThemeTokens> = {
+  light: {
+    bg: "#f9fafb",
+    surface: "#ffffff",
+    text: "#111827",
+    muted: "#6b7280",
+    border: "#e5e7eb",
+  },
+  dark: {
+    bg: "#0f172a",
+    surface: "#1e293b",
+    text: "#f1f5f9",
+    muted: "#94a3b8",
+    border: "#334155",
+  },
+};
+
+/** 本地缓存键：只用于**首屏防闪烁**（同步可读），真值仍以 DB prefs 为准。 */
+const THEME_CACHE_KEY = "cclean:theme";
+
+function readCachedTheme(): ThemeMode {
+  try {
+    const v = localStorage.getItem(THEME_CACHE_KEY);
+    if (v === "light" || v === "dark" || v === "system") return v;
+  } catch {
+    // 隐私模式 / 禁用存储：退回默认
+  }
+  return "system";
+}
+
+function writeCachedTheme(t: ThemeMode): void {
+  try {
+    localStorage.setItem(THEME_CACHE_KEY, t);
+  } catch {
+    // 缓存失败只影响首屏防闪烁，不影响功能
+  }
+}
+
 const tabBtnStyle = (active: boolean): React.CSSProperties => ({
   padding: "6px 14px",
   marginRight: 8,
   borderRadius: 6,
-  border: "1px solid #e5e7eb",
-  background: active ? "#111827" : "#fff",
-  color: active ? "#fff" : "#111827",
+  border: "1px solid var(--border)",
+  // 选中态用「深底白字」在浅色下清晰、在深色下也够对比，所以两套主题共用同一逻辑。
+  background: active ? "var(--text)" : "var(--surface)",
+  color: active ? "var(--surface)" : "var(--text)",
   cursor: "pointer",
   fontSize: 13,
 });
@@ -86,6 +151,19 @@ class ErrorBoundary extends Component<
 
 export default function App() {
   const [tab, setTab] = useState<Tab>("dashboard");
+
+  // task-061：主题。
+  // - `themeMode` 是用户选择（system/light/dark），真值在 DB prefs；
+  // - 初值取 localStorage 缓存，避免「先浅色渲染再跳深色」的闪烁；
+  // - `systemDark` 跟随 `prefers-color-scheme` 实时变化（用户改系统主题时不用重启）。
+  const [themeMode, setThemeMode] = useState<ThemeMode>(readCachedTheme);
+  const [systemDark, setSystemDark] = useState<boolean>(() => {
+    try {
+      return window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false;
+    } catch {
+      return false;
+    }
+  });
   // task-036：启动时自动 check 一次应用更新（不弹窗、不阻塞）。
   // 无更新 / 网络失败都静默；有更新才在顶部 banner 提示。
   const [update, setUpdate] = useState<Update | null>(null);
@@ -110,6 +188,32 @@ export default function App() {
     bytes: 0,
     ema: 0,
   });
+  // task-061：跟随系统主题的实时变化（用户在 Windows 设置里切换时不需重启应用）。
+  useEffect(() => {
+    const mq = window.matchMedia?.("(prefers-color-scheme: dark)");
+    if (!mq) return;
+    const onChange = (e: MediaQueryListEvent) => setSystemDark(e.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+
+  // task-061：启动时用 DB 里的真值校准（localStorage 只是缓存，可能过期）。
+  // 读失败就保持缓存值——不打扰用户，也不会因为读不到 prefs 就强制浅色。
+  useEffect(() => {
+    (async () => {
+      try {
+        const p = await api<{ theme?: string }>("get_prefs", {});
+        const t = p?.theme;
+        if (t === "light" || t === "dark" || t === "system") {
+          setThemeMode(t);
+          writeCachedTheme(t);
+        }
+      } catch {
+        // 静默：IPC 未就绪 / 旧后端无此字段，保持缓存值
+      }
+    })();
+  }, []);
+
   useEffect(() => {
     (async () => {
       try {
@@ -200,12 +304,30 @@ export default function App() {
   // task-055 单元 2：下载百分比走 utils 纯函数（total 未知时返回 0，不除零）。
   const downloadPercent = computePercent(download.downloaded, download.total);
 
+  // task-061：把「三态选择」解析成实际深浅，再取对应 token。
+  const resolvedTheme: "light" | "dark" =
+    themeMode === "system" ? (systemDark ? "dark" : "light") : themeMode;
+  const tokens = THEME_TOKENS[resolvedTheme];
+
+  // 主题变量：挂到根 div 上，子元素用 var(--xxx) 取值。
+  // 用 CSSProperties 断言是因为 React 的类型定义不认自定义属性名。
+  const themeVars = {
+    "--bg": tokens.bg,
+    "--surface": tokens.surface,
+    "--text": tokens.text,
+    "--text-muted": tokens.muted,
+    "--border": tokens.border,
+  } as React.CSSProperties;
+
   return (
     <div
+      data-theme={resolvedTheme}
       style={{
+        ...themeVars,
         padding: 24,
         fontFamily: "system-ui, sans-serif",
-        background: "#f9fafb",
+        background: tokens.bg,
+        color: tokens.text,
         minHeight: "100vh",
         boxSizing: "border-box",
       }}
@@ -238,7 +360,7 @@ export default function App() {
                     : `发现新版本 v${update.version}`}
             </div>
             {bannerPhase === "idle" && update.body && (
-              <div style={{ fontSize: 12, color: "#374151", marginTop: 4 }}>
+              <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 4 }}>
                 {update.body}
               </div>
             )}
@@ -345,7 +467,16 @@ export default function App() {
         {tab === "items" && <Items />}
         {tab === "safebox" && <SafeBox />}
         {tab === "history" && <History />}
-        {tab === "settings" && <Settings onUpdateFound={handleManualUpdateFound} />}
+        {tab === "settings" && (
+          <Settings
+            onUpdateFound={handleManualUpdateFound}
+            // task-061：设置页改主题后立刻通知 App 应用（不用等重启，也不用重读 prefs）。
+            onThemeChange={(t) => {
+              setThemeMode(t);
+              writeCachedTheme(t);
+            }}
+          />
+        )}
       </ErrorBoundary>
     </div>
   );

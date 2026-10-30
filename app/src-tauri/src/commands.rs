@@ -610,6 +610,31 @@ pub async fn audit_log_stats(
     }
 }
 
+/// `audit_log.trend`：最近 N 天每日释放量（task-061 趋势图数据源）。
+///
+/// `days` 由前端传（默认 30），engine 侧会夹到 1..=365。
+/// 只返回**有记录**的日期，缺失日期由前端补 0（理由见 `cleanup_stats_trend` 注释）。
+#[tauri::command]
+pub async fn cleanup_stats_trend(
+    days: Option<i64>,
+    paths: tauri::State<'_, AppPaths>,
+) -> Result<Envelope<Vec<engine::audit_log::stats::TrendPoint>>, String> {
+    let conn = match engine::db::conn::open(&paths.data_root) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[cleanup_stats_trend] open db: {e}");
+            return Ok(Envelope::err(INTERNAL));
+        }
+    };
+    match engine::audit_log::stats::cleanup_stats_trend(&conn, days.unwrap_or(30)) {
+        Ok(points) => Ok(Envelope::ok(points)),
+        Err(e) => {
+            eprintln!("[cleanup_stats_trend] trend: {e}");
+            Ok(Envelope::err(INTERNAL))
+        }
+    }
+}
+
 /// `cleanup.listPending`：分页列出 cleanup_item 表中所有待清理项（size 倒序）。
 ///
 /// task-052 G2：入参由 `limit/offset` 改为 `page/page_size`，返回
@@ -679,6 +704,20 @@ pub async fn set_prefs(
     // 一起写成功才算保存成功；任一步失败都返回 INTERNAL 让前端回滚 UI。
     if let Err(e) = engine::prefs::set_restart_whitelist(&conn, &prefs.restart_whitelist) {
         eprintln!("[set_prefs] write whitelist: {e}");
+        return Ok(Envelope::err(INTERNAL));
+    }
+    // task-061：主题。非法值由 set_theme 内部归一化成 system（不报错）。
+    if let Err(e) = engine::prefs::set_theme(&conn, &prefs.theme) {
+        eprintln!("[set_prefs] write theme: {e}");
+        return Ok(Envelope::err(INTERNAL));
+    }
+    // task-061：自动扫描开关与间隔。间隔非法值由 set_auto_scan_interval 归一化成 daily。
+    if let Err(e) = engine::prefs::set_auto_scan_enabled(&conn, prefs.auto_scan_enabled) {
+        eprintln!("[set_prefs] write auto_scan_enabled: {e}");
+        return Ok(Envelope::err(INTERNAL));
+    }
+    if let Err(e) = engine::prefs::set_auto_scan_interval(&conn, &prefs.auto_scan_interval) {
+        eprintln!("[set_prefs] write auto_scan_interval: {e}");
         return Ok(Envelope::err(INTERNAL));
     }
     Ok(Envelope::ok(engine::prefs::Prefs::load(&conn)))
