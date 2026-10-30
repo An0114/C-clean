@@ -31,6 +31,8 @@ pub struct OrchestratorSummary {
     pub scripts_succeeded: Vec<String>,
     /// 失败的脚本文件名（含文件不存在 / run_script 报错）。
     pub scripts_failed: Vec<String>,
+    /// task-063：是否被用户取消（true 时 `scripts_*` 只反映取消前跑完的部分）。
+    pub cancelled: bool,
 }
 
 /// orchestrator 级错误：5 个脚本全部失败。
@@ -46,6 +48,14 @@ pub struct ScanOrchestrator<'conn, 'emitter> {
     session_id: i64,
     conn: &'conn Connection,
     emitter: &'emitter dyn ProgressEmitter,
+    /// task-063：取消标志。`scan_cancel` 命令把它置 true，`run_all` 在每个脚本
+    /// 开始前检查——**脚本粒度**取消（不打断正在跑的 ps1 子进程）。
+    ///
+    /// 为什么不做进程级中断：要 kill 正在跑的 PowerShell 子进程，得把 pid 从
+    /// `ScanRunner` 一路传出来并调 `TerminateProcess`，而且 ps1 已经写入 DB 的
+    /// 部分结果还得回滚。脚本粒度取消已经能让用户「立刻看到停止」，
+    /// 代价是当前脚本会跑完（通常几秒）。
+    cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl<'conn, 'emitter> ScanOrchestrator<'conn, 'emitter> {
@@ -59,7 +69,19 @@ impl<'conn, 'emitter> ScanOrchestrator<'conn, 'emitter> {
             session_id,
             conn,
             emitter,
+            cancel: None,
         }
+    }
+
+    /// task-063：挂上取消标志。不调用则行为与之前完全一致（不可取消）。
+    pub fn with_cancel(mut self, cancel: std::sync::Arc<std::sync::atomic::AtomicBool>) -> Self {
+        self.cancel = Some(cancel);
+        self
+    }
+
+    /// 是否已被请求取消。
+    fn is_cancelled(&self) -> bool {
+        cancel_requested(&self.cancel)
     }
 
     /// 在 `scripts_dir` 下串跑硬编码的 5 个 ps1。
@@ -82,6 +104,13 @@ impl<'conn, 'emitter> ScanOrchestrator<'conn, 'emitter> {
         let total = SCRIPTS.len();
 
         for (idx, name) in SCRIPTS.iter().enumerate() {
+            // task-063：每个脚本开始前检查取消。已扫描到的结果保留在 DB 里
+            // （cleanup_item 的行不删），前端刷新就能看到。
+            if self.is_cancelled() {
+                eprintln!("[orchestrator] 用户取消扫描，停在脚本 {name} 之前");
+                summary.cancelled = true;
+                break;
+            }
             // 第 idx 个脚本分到的百分比区间 [from, to]（5 个脚本时依次是 0-20/20-40/.../80-100）。
             let from = (idx * 100 / total) as u8;
             let to = ((idx + 1) * 100 / total) as u8;
@@ -137,5 +166,49 @@ impl<'conn, 'emitter> ScanOrchestrator<'conn, 'emitter> {
             current_path: label.to_string(),
             scanned_items,
         });
+    }
+}
+
+/// task-063：读取消标志。没有标志（未挂载）时视为「不取消」。
+///
+/// 抽成自由函数是为了能直接单测——`ScanOrchestrator` 的构造需要真实
+/// `Connection` + `ProgressEmitter`，为测一个布尔判断去搭那套太重。
+fn cancel_requested(flag: &Option<std::sync::Arc<std::sync::atomic::AtomicBool>>) -> bool {
+    flag.as_ref()
+        .map(|c| c.load(std::sync::atomic::Ordering::Relaxed))
+        .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    #[test]
+    fn cancel_flag_none_means_not_cancelled() {
+        // 未挂载取消标志 = 老行为（不可取消）
+        assert!(!cancel_requested(&None));
+    }
+
+    #[test]
+    fn cancel_flag_defaults_false_then_flips() {
+        let flag = Arc::new(AtomicBool::new(false));
+        let opt = Some(flag.clone());
+        assert!(!cancel_requested(&opt), "初始应为未取消");
+
+        // scan_cancel 做的就是这一步
+        flag.store(true, Ordering::Relaxed);
+        assert!(cancel_requested(&opt), "置位后应立即读到 true");
+    }
+
+    #[test]
+    fn cancel_flag_reset_between_scans() {
+        // scan_start 每轮复位，避免上一轮的取消让新扫描一启动就停
+        let flag = Arc::new(AtomicBool::new(true));
+        let opt = Some(flag.clone());
+        assert!(cancel_requested(&opt));
+        flag.store(false, Ordering::Relaxed);
+        assert!(!cancel_requested(&opt), "复位后新扫描应正常跑");
     }
 }

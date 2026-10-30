@@ -53,17 +53,40 @@ fn validate_scan_input(scope: &str, target_drive: &Option<String>) -> Result<(),
     Ok(())
 }
 
+/// task-063：扫描取消标志（全局单例，setup 里注入）。
+///
+/// 用 `Arc<AtomicBool>` 而不是 `Mutex<bool>`：只需要「置位 / 读取」两个原子操作，
+/// 且 `scan_cancel` 必须**立刻**生效（不能被正在跑的扫描持有锁挡住）。
+#[derive(Default)]
+pub struct ScanCancelState(pub std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+/// `scan_cancel`：请求取消当前扫描（task-063）。
+///
+/// **立即返回**，不等扫描真的停下——真正的停止发生在下一个脚本开始前
+/// （`ScanOrchestrator` 在每轮循环开头检查标志）。这样 IPC 不会卡住 UI。
+///
+/// 取消后**已扫描的结果保留**（`cleanup_item` 的行不删），用户刷新列表就能看到。
+#[tauri::command]
+pub fn scan_cancel(cancel: tauri::State<'_, ScanCancelState>) -> Result<Envelope<bool>, String> {
+    cancel.0.store(true, std::sync::atomic::Ordering::Relaxed);
+    eprintln!("[scan_cancel] 已置取消标志");
+    Ok(Envelope::ok(true))
+}
+
 /// `scan.start`：task-013 起真接通扫描。
 #[tauri::command]
 pub async fn scan_start(
     scope: String,
     target_drive: Option<String>,
     progress: tauri::State<'_, ProgressState>,
+    cancel: tauri::State<'_, ScanCancelState>,
     paths: tauri::State<'_, AppPaths>,
 ) -> Result<Envelope<engine::ipc::commands::scan_start::ScanStartResp>, String> {
     if validate_scan_input(&scope, &target_drive).is_err() {
         return Ok(Envelope::err(INTERNAL));
     }
+    // task-063：每次开始前复位取消标志，否则上一次的「取消」会让这次一启动就停。
+    cancel.0.store(false, std::sync::atomic::Ordering::Relaxed);
 
     let conn = engine::db::conn::open(&paths.data_root).map_err(|e| e.to_string())?;
     conn.execute(
@@ -74,7 +97,8 @@ pub async fn scan_start(
     let session_id = conn.last_insert_rowid();
 
     let emitter_guard = progress.0.lock().map_err(|e| e.to_string())?;
-    let orch = ScanOrchestrator::new(session_id, &conn, &*emitter_guard);
+    let orch =
+        ScanOrchestrator::new(session_id, &conn, &*emitter_guard).with_cancel(cancel.0.clone());
     let outcome = orch.run_all(&paths.scripts_dir);
     drop(emitter_guard);
 
@@ -844,7 +868,9 @@ pub async fn report_export(
 ///
 /// `drive` 不传时默认 `"C"`——本工具主要面向 C 盘，前端可以只在需要时显式指定。
 #[tauri::command]
-pub async fn drive_usage(drive: Option<String>) -> Result<Envelope<engine::report::DriveUsage>, String> {
+pub async fn drive_usage(
+    drive: Option<String>,
+) -> Result<Envelope<engine::report::DriveUsage>, String> {
     let d = drive.unwrap_or_else(|| "C".to_string());
     match engine::report::drive_usage(&d) {
         Ok(u) => Ok(Envelope::ok(u)),

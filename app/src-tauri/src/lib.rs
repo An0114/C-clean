@@ -38,6 +38,8 @@ pub fn run() {
             let paths = paths::AppPaths::from_app(app.handle())?;
             app.manage(paths);
             app.manage(progress::ProgressState::new(app.handle().clone()));
+            // task-063：扫描取消标志（scan_cancel 置位，scan_start 每轮复位）。
+            app.manage(commands::ScanCancelState::default());
             // task-061：起后台自动扫描线程（默认关闭，读 prefs 决定是否真的扫）。
             // 只在这里 spawn 一次；线程内部轮询，不做精确定时（理由见 auto_scan.rs）。
             auto_scan::spawn(app.handle().clone());
@@ -61,6 +63,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             ping,
             commands::scan_start,
+            commands::scan_cancel,
             commands::cleanup_dry_run,
             commands::cleanup_execute,
             commands::cleanup_retry_locked,

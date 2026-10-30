@@ -79,6 +79,8 @@ export default function Dashboard({ scanSignal = 0 }: { scanSignal?: number }) {
   const [scanStatus, setScanStatus] = useState<ScanStatus>("idle");
   const [progress, setProgress] = useState<ScanProgress | null>(null);
   const [scanMsg, setScanMsg] = useState<string>("");
+  // task-063：取消请求已发出（按钮切「正在停止…」，等扫描真正结束再复位）。
+  const [cancelling, setCancelling] = useState(false);
 
   // task-053 G7.3：延迟退订的兜底定时器句柄（卸载时清掉，避免泄漏）。
   const tailTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -114,6 +116,8 @@ export default function Dashboard({ scanSignal = 0 }: { scanSignal?: number }) {
   // 原实现 finally 里同步 unlisten，把后端收尾的那条 100 事件一起退掉了。
   const startScan = useCallback(async () => {
     setScanStatus("scanning");
+    // task-063：新一轮扫描开始时清掉上一轮的「正在停止」状态。
+    setCancelling(false);
     setScanMsg("");
     setProgress(null);
     // 上一次扫描可能还挂着兜底定时器，先清掉，免得它退订本次的订阅。
@@ -186,6 +190,20 @@ export default function Dashboard({ scanSignal = 0 }: { scanSignal?: number }) {
   }, [scanSignal, startScan]);
 
   const scanning = scanStatus === "scanning";
+
+  // task-063：取消扫描。只发一个标志位，不 await 扫描真的停下——
+  // 后端在下一个脚本开始前才检查，所以这里立刻把按钮切成「正在停止…」，
+  // 让用户知道点击生效了（否则会以为没反应而反复点）。
+  const cancelScan = useCallback(async () => {
+    setCancelling(true);
+    setScanMsg("正在停止…（当前脚本跑完后停止）");
+    try {
+      await api<boolean>("scan_cancel", {});
+    } catch (e) {
+      setScanMsg(`取消失败：${String(e)}`);
+      setCancelling(false);
+    }
+  }, []);
   // engine ScanProgress.percent 已是 0~100，直接用；缺失时置 0 不除零。
   const percent = progress ? progress.percent ?? 0 : 0;
   const barPct = Math.max(0, Math.min(100, percent));
@@ -214,6 +232,27 @@ export default function Dashboard({ scanSignal = 0 }: { scanSignal?: number }) {
             ? "重试扫描"
             : "开始扫描"}
         </button>
+
+        {/* task-063：取消扫描。只在扫描中显示，且不等待——点了立刻给反馈，
+            真正的停止发生在下一个脚本开始前（后端是脚本粒度检查取消标志）。 */}
+        {scanning && (
+          <button
+            onClick={cancelScan}
+            disabled={cancelling}
+            style={{
+              marginLeft: 8,
+              padding: "8px 16px",
+              borderRadius: 6,
+              border: "1px solid #b45309",
+              background: cancelling ? "#fde68a" : "#fff",
+              color: "#92400e",
+              cursor: cancelling ? "not-allowed" : "pointer",
+              fontSize: 13,
+            }}
+          >
+            {cancelling ? "正在停止…" : "取消扫描"}
+          </button>
+        )}
 
         {(scanning || scanStatus === "done") && progress && (
           <div style={{ marginTop: 12 }}>
