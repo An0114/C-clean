@@ -788,6 +788,73 @@ pub async fn set_prefs(
     Ok(Envelope::ok(engine::prefs::Prefs::load(&conn)))
 }
 
+// ===================== task-063：报告导出 =====================
+
+/// `report_export`：把一次清理结果渲染成 HTML / CSV 并落盘。
+///
+/// **入参带整个 `summary`**：清理结果只存在于前端内存（DB 里 `cleanup_item` 的
+/// 行在删除后状态已变，重建不出「哪条失败、为什么」），所以由前端把结果原样传回。
+/// 这也让「导出」是纯函数式的——不依赖任何后端会话状态。
+///
+/// 返回落盘后的**绝对路径**，前端可展示给用户「报告已保存到 …」。
+#[tauri::command]
+pub async fn report_export(
+    format: String,
+    summary: engine::execute::executor::ExecuteSummary,
+    drive: Option<String>,
+    paths: tauri::State<'_, AppPaths>,
+) -> Result<Envelope<String>, String> {
+    let drive = drive.unwrap_or_else(|| "C".to_string());
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+
+    let snapshot = engine::report::DriveSnapshot {
+        before_used_bytes: summary.disk_before_bytes,
+        after_used_bytes: summary.disk_after_bytes,
+    };
+    let meta = engine::report::ReportMeta {
+        generated_at: now,
+        drive: &drive,
+        snapshot,
+    };
+
+    // 只认两种格式，其余按 html 处理（前端只会传这两个值）。
+    let (content, ext) = if format == "csv" {
+        (engine::report::build_csv(&summary), "csv")
+    } else {
+        (engine::report::build_html(&summary, &meta), "html")
+    };
+
+    let filename = format!("cleanup-report-{now}.{ext}");
+    let dir = paths.data_root.join("reports");
+    match engine::report::write_report(&dir, &filename, &content) {
+        Ok(p) => Ok(Envelope::ok(p.to_string_lossy().to_string())),
+        Err(e) => {
+            eprintln!("[report_export] {e}");
+            Ok(Envelope::err(INTERNAL))
+        }
+    }
+}
+
+// ===================== task-063：磁盘空间 =====================
+
+/// `drive_usage`：查某个盘的总量/已用/可用（仪表盘环形图数据源）。
+///
+/// `drive` 不传时默认 `"C"`——本工具主要面向 C 盘，前端可以只在需要时显式指定。
+#[tauri::command]
+pub async fn drive_usage(drive: Option<String>) -> Result<Envelope<engine::report::DriveUsage>, String> {
+    let d = drive.unwrap_or_else(|| "C".to_string());
+    match engine::report::drive_usage(&d) {
+        Ok(u) => Ok(Envelope::ok(u)),
+        Err(e) => {
+            eprintln!("[drive_usage] {e}");
+            Ok(Envelope::err(INTERNAL))
+        }
+    }
+}
+
 // ===================== task-062：托盘 / 开机自启 =====================
 
 /// `quit_app`：真正退出进程。

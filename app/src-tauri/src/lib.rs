@@ -79,6 +79,8 @@ pub fn run() {
             commands::audit_log_stats,
             commands::cleanup_stats_trend,
             commands::cleanup_list_pending,
+            commands::report_export,
+            commands::drive_usage,
             commands::get_prefs,
             commands::set_prefs,
             // task-062：托盘 / 自启

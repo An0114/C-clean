@@ -18,7 +18,8 @@ use crate::execute::resolve::resolve_to_real;
 use crate::execute::whitelist::classify_with_external;
 
 /// 单条 item 的执行结果（返回给 Tauri / 测试断言）。
-#[derive(Debug, Clone, serde::Serialize)]
+// task-063：加 Deserialize —— 前端要把清理结果原样传回 `report_export` 生成报告。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExecResult {
     pub item_id: i64,
@@ -37,7 +38,7 @@ pub struct ExecResult {
 }
 
 /// 一次 execute_items 调用的汇总（返回给 Tauri）。
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExecuteSummary {
     pub results: Vec<ExecResult>,
@@ -47,6 +48,15 @@ pub struct ExecuteSummary {
     #[serde(default)]
     pub already_gone_count: u64,
     pub bytes_freed_total: u64,
+    /// task-063：清理**前**目标盘已用字节数（查不到为 None，前端显示「—」）。
+    ///
+    /// 与 `bytes_freed_total` 的区别：后者是「删掉的文件大小之和」，这里是
+    /// 「磁盘实际已用量」。两者会有偏差（簇对齐、并发写入），报告里都展示。
+    #[serde(default)]
+    pub disk_before_bytes: Option<u64>,
+    /// task-063：清理**后**目标盘已用字节数。
+    #[serde(default)]
+    pub disk_after_bytes: Option<u64>,
 }
 
 /// 一次 execute_items 调用的聚合（写 cleanup_task 用）。
@@ -132,6 +142,14 @@ pub fn execute_items<'a, F>(
 where
     F: FnMut(i64, i64) -> Box<dyn Deleter + 'a>,
 {
+    // task-063：记录清理前目标盘已用量，供结果页做「前后对比」。
+    // 盘符从第一条 item 的路径推断（本工具主要清 C 盘，但用户也可能清 D 盘，
+    // 写死 "C" 会让非 C 盘的结果页数字完全对不上）。
+    let drive = detect_drive(conn, item_ids);
+    let disk_before_bytes = crate::report::drive_usage(&drive)
+        .ok()
+        .map(|u| u.used_bytes);
+
     let mut results = Vec::with_capacity(item_ids.len());
     let mut summary = BatchSummary {
         freed_bytes: 0i64,
@@ -345,13 +363,39 @@ where
     let already_gone_count = results.iter().filter(|r| r.already_gone).count() as u64;
     let bytes_freed_total: u64 = results.iter().map(|r| r.bytes_freed).sum();
 
+    // task-063：清理后再查一次。查不到就留 None（前端显示「—」而不是 0）。
+    let disk_after_bytes = crate::report::drive_usage(&drive)
+        .ok()
+        .map(|u| u.used_bytes);
+
     ExecuteSummary {
         results,
         deleted_count,
         failed_count,
         already_gone_count,
         bytes_freed_total,
+        disk_before_bytes,
+        disk_after_bytes,
     }
+}
+
+/// 从 `item_ids` 的第一条记录推断目标盘符（`"C"`）。查不到时回落 `"C"`。
+///
+/// 只取第一条而不是逐条检查：一次清理跨盘是极罕见的，为它做「多盘分别统计」
+/// 会让报告结构复杂一个量级，收益不抵成本。
+fn detect_drive(conn: &Connection, item_ids: &[i64]) -> String {
+    item_ids
+        .first()
+        .and_then(|id| {
+            conn.query_row("SELECT path FROM cleanup_item WHERE id = ?1", [id], |r| {
+                r.get::<_, String>(0)
+            })
+            .ok()
+        })
+        .and_then(|p| p.chars().next())
+        .filter(|c| c.is_ascii_alphabetic())
+        .map(|c| c.to_ascii_uppercase().to_string())
+        .unwrap_or_else(|| "C".to_string())
 }
 
 fn now_unix() -> i64 {

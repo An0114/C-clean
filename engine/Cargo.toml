@@ -35,4 +35,6 @@ windows = { version = "0.58", features = [
     # SHELLEXECUTEINFOW 结构体里有 hkeyClass 字段，windows crate 因此把它
     # gate 在 Win32_System_Registry 后面（不加这个 feature 结构体不可见）。
     "Win32_System_Registry",
+    # task-063：GetDiskFreeSpaceExW（磁盘容量查询）需要 FileSystem。
+    "Win32_Storage_FileSystem",
 ] }

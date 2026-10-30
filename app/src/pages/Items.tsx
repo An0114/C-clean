@@ -92,6 +92,10 @@ interface ExecuteSummary {
   /** task-052 G5：本次「已不存在」的条目数（不计入 bytesFreedTotal）。 */
   alreadyGoneCount: number;
   bytesFreedTotal: number;
+  /** task-063：清理前目标盘已用字节（查不到为 null，UI 显示「—」）。 */
+  diskBeforeBytes?: number | null;
+  /** task-063：清理后目标盘已用字节。 */
+  diskAfterBytes?: number | null;
 }
 
 /** task-049：cleanup_retry_locked 响应体。 */
@@ -107,10 +111,23 @@ interface ResultState {
   failures: ExecResult[];
   /** 被护栏拒绝的进程（仅重试路径会有）。 */
   refused: RefusedProcess[];
+  /** task-063：最后一次清理的完整结果，供「导出报告」使用。 */
+  summary?: ExecuteSummary;
 }
 
 /** `chrome.exe (PID 1234)` —— 与后端 audit_log 的拼法保持一致。 */
 const formatProc = (p: { appName: string; pid: number }) => `${p.appName} (PID ${p.pid})`;
+
+/** task-063：导出按钮样式（结果条里的小按钮）。 */
+const exportBtnStyle: React.CSSProperties = {
+  padding: "4px 10px",
+  borderRadius: 5,
+  border: "1px solid #9ca3af",
+  background: "#fff",
+  color: "#111827",
+  fontSize: 12,
+  cursor: "pointer",
+};
 
 /** 把后端稳定错误前缀翻成人话，其余原样展示（不吞信息）。 */
 function describeExecError(err: string | null): string {
@@ -190,6 +207,9 @@ export default function Items() {
   // task-060：关闭进程期间「已等待秒数」。null = 没在关（不显示进度条）。
   // 来源是后端 `shutdown://progress` 事件（engine 每秒回调一次）。
   const [shutdownSecs, setShutdownSecs] = useState<number | null>(null);
+  // task-063：报告导出状态与提示。
+  const [exporting, setExporting] = useState(false);
+  const [exportMsg, setExportMsg] = useState("");
   const [result, setResult] = useState<ResultState | null>(null);
   // task-040 预览态。
   const [previewing, setPreviewing] = useState(false);
@@ -341,6 +361,8 @@ export default function Items() {
               (gone > 0 ? ` / 已不存在 ${gone} 项` : ""),
         failures,
         refused: [],
+        // task-063：留着完整结果，供结果条上的「导出报告」使用。
+        summary,
       });
       setSelected(new Set());
       await load();
@@ -355,6 +377,27 @@ export default function Items() {
       setCleaning(false);
     }
   }, [selected, busy, load]);
+
+  // task-063：导出报告。把本次清理结果原样传回后端渲染（结果只在前端内存里）。
+  const exportReport = useCallback(
+    async (fmt: "html" | "csv") => {
+      if (!result?.summary) return;
+      setExporting(true);
+      setExportMsg("");
+      try {
+        const path = await api<string>("report_export", {
+          format: fmt,
+          summary: result.summary,
+        });
+        setExportMsg(`已保存：${path}`);
+      } catch (e) {
+        setExportMsg(`导出失败：${String(e)}`);
+      } finally {
+        setExporting(false);
+      }
+    },
+    [result],
+  );
 
   // task-049 C10/C11：确认 → 关闭占用进程 → 自动重试删除。
   // C12：与 cleanup / preview 共用 busy，重试按钮同样纳入三态互斥。
@@ -511,6 +554,43 @@ export default function Items() {
           }}
         >
           <div style={{ fontWeight: 600 }}>{result.headline}</div>
+
+          {/* task-063：前后空间对比。两个值都拿到才显示——只有一侧时显示「—」没意义。 */}
+          {result.summary?.diskBeforeBytes != null &&
+            result.summary?.diskAfterBytes != null && (
+              <div style={{ fontSize: 12, marginTop: 6, lineHeight: 1.6 }}>
+                磁盘已用：清理前 {formatBytes(result.summary.diskBeforeBytes)} → 清理后{" "}
+                {formatBytes(result.summary.diskAfterBytes)}，实际释放{" "}
+                {formatBytes(
+                  Math.max(0, result.summary.diskBeforeBytes - result.summary.diskAfterBytes),
+                )}
+              </div>
+            )}
+
+          {/* task-063：导出报告（HTML 单文件 / CSV 明细）。 */}
+          {result.summary && (
+            <div style={{ marginTop: 8, display: "flex", gap: 8, alignItems: "center" }}>
+              <button
+                onClick={() => exportReport("html")}
+                disabled={exporting}
+                style={exportBtnStyle}
+              >
+                导出 HTML 报告
+              </button>
+              <button
+                onClick={() => exportReport("csv")}
+                disabled={exporting}
+                style={exportBtnStyle}
+              >
+                导出 CSV
+              </button>
+              {exportMsg && (
+                <span style={{ fontSize: 11, color: "#4b5563", wordBreak: "break-all" }}>
+                  {exportMsg}
+                </span>
+              )}
+            </div>
+          )}
 
           {result.failures.length > 0 && (
             <div style={{ marginTop: 8 }}>
