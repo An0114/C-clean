@@ -23,6 +23,11 @@ pub struct PendingItem {
     pub size_bytes: i64,
     pub module_code: String,
     pub session_id: i64,
+    /// task-064：风险等级 L0/L1/L2/L3，前端据此渲染徽标与 hover 说明。
+    ///
+    /// 之前没返回这个字段，前端只能「所有项一视同仁」——无法做「全选 L1」，
+    /// 也无法告诉用户「这条删了会怎样」。
+    pub risk_level: String,
 }
 
 /// 分页响应（task-052 G2，对齐 task-045 的 `SafeBoxPage` 模式）。
@@ -68,7 +73,7 @@ pub fn list_pending_page(
         )
         .map_err(|e| format!("list_pending count: {e}"))?;
 
-    let sql = "SELECT id, path, size_bytes, module_code, session_id \
+    let sql = "SELECT id, path, size_bytes, module_code, session_id, risk_level \
                FROM cleanup_item \
                WHERE (?1 IS NULL OR session_id = ?1) \
                ORDER BY size_bytes DESC, id DESC \
@@ -85,6 +90,7 @@ pub fn list_pending_page(
                 size_bytes: r.get(2)?,
                 module_code: r.get(3)?,
                 session_id: r.get(4)?,
+                risk_level: r.get(5)?,
             })
         })
         .map_err(|e| format!("list_pending query: {e}"))?;

@@ -41,6 +41,48 @@ interface PendingItem {
   sizeBytes: number;
   moduleCode: string;
   sessionId: number;
+  /** task-064：L0/L1/L2/L3，用于风险徽标与「全选 L1」。 */
+  riskLevel: string;
+}
+
+/** task-064：风险等级的展示元数据（颜色走 CSS 变量，深色主题自动适配）。 */
+const RISK_META: Record<string, { label: string; fg: string; bg: string; hint: string }> = {
+  L0: {
+    label: "L0",
+    fg: "var(--text-muted)",
+    bg: "var(--bg)",
+    hint: "L0 仅提示，不参与清理（无风险）",
+  },
+  L1: {
+    label: "L1",
+    fg: "#15803d",
+    bg: "#dcfce7",
+    hint: "L1 安全缓存：删除不影响系统，相关程序会自动重建",
+  },
+  L2: {
+    label: "L2",
+    fg: "#b45309",
+    bg: "#fef3c7",
+    hint: "L2 需确认：删除可能影响某些功能，清理前会创建系统还原点",
+  },
+  L3: {
+    label: "L3",
+    fg: "#b91c1c",
+    bg: "#fee2e2",
+    hint: "L3 红线项：禁止自动清理，仅展示",
+  },
+};
+
+/** 未知等级（后端将来新增）也要能显示，不能崩。 */
+function riskMeta(level: string) {
+  return (
+    RISK_META[level] ?? {
+      label: level || "?",
+      fg: "var(--text-muted)",
+      bg: "var(--bg)",
+      hint: `未知风险等级 ${level}`,
+    }
+  );
 }
 
 /** task-052 G2：engine::execute::list_pending::PendingPage 的 JSON shape。 */
@@ -300,6 +342,17 @@ export default function Items() {
     .filter((r) => selected.has(r.id))
     .reduce((sum, r) => sum + r.sizeBytes, 0);
 
+  // task-064：本页的 L1 安全项（「全选 L1」按钮用）。
+  // 只统计**当前页**——跨页全选要先把所有页拉下来，而列表是分页的，
+  // 那会让按钮点击变慢且行为难以解释（用户看不到被选中的项）。
+  const l1Rows = rows.filter((r) => r.riskLevel === "L1");
+  const l1Count = l1Rows.length;
+  const l1Bytes = l1Rows.reduce((sum, r) => sum + r.sizeBytes, 0);
+
+  const selectAllL1 = useCallback(() => {
+    setSelected(new Set(l1Rows.map((r) => r.id)));
+  }, [l1Rows]);
+
   // task-049：三态互斥（清理 / 重试 / 预览 任一为真时，其余操作按钮禁用）。
   const busy = cleaning || retrying || previewing;
 
@@ -510,6 +563,28 @@ export default function Items() {
         <span style={{ fontSize: 13, color: "#374151" }}>
           已选 {selected.size} 项，共 {formatBytes(totalSelectedBytes)}
         </span>
+        {/* task-064：一键全选 L1（安全项）。L2/L3 一律不选——L2 需要逐项确认，
+            自动全选 L2 等于绕过「需确认」这道设计。 */}
+        <button
+          onClick={selectAllL1}
+          disabled={busy || l1Count === 0}
+          title={
+            l1Count === 0
+              ? "本页没有 L1 安全项"
+              : `勾选本页 ${l1Count} 项 L1 安全缓存（约 ${formatBytes(l1Bytes)}）`
+          }
+          style={{
+            padding: "6px 14px",
+            borderRadius: 6,
+            border: "1px solid #16a34a",
+            background: l1Count === 0 ? "#bbf7d0" : "#16a34a",
+            color: l1Count === 0 ? "#166534" : "#fff",
+            fontSize: 13,
+            cursor: l1Count === 0 ? "not-allowed" : "pointer",
+          }}
+        >
+          全选 L1（安全）
+        </button>
         <button
           onClick={previewSelection}
           disabled={selected.size === 0 || busy}
@@ -753,6 +828,7 @@ export default function Items() {
                   }}
                 />
               </th>
+              <th style={{ ...thStyle, width: 56 }}>风险</th>
               <th style={thStyle}>路径</th>
               <th style={{ ...thStyle, width: 100 }}>大小</th>
               <th style={{ ...thStyle, width: 80 }}>模块</th>
@@ -775,6 +851,27 @@ export default function Items() {
                     checked={selected.has(r.id)}
                     onChange={() => toggle(r.id)}
                   />
+                </td>
+                <td style={tdStyle}>
+                  {/* task-064：风险徽标。title 提供原生 tooltip（hover 显示影响说明），
+                      比自绘 tooltip 省事且不会被表格 overflow 裁掉。 */}
+                  <span
+                    title={riskMeta(r.riskLevel).hint}
+                    style={{
+                      display: "inline-block",
+                      padding: "1px 6px",
+                      borderRadius: 4,
+                      fontSize: 11,
+                      fontWeight: 600,
+                      color: riskMeta(r.riskLevel).fg,
+                      background: riskMeta(r.riskLevel).bg,
+                      border: `1px solid ${riskMeta(r.riskLevel).fg}`,
+                      cursor: "help",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {riskMeta(r.riskLevel).label}
+                  </span>
                 </td>
                 <td style={{ ...tdStyle, fontFamily: "monospace", fontSize: 12 }}>{r.path}</td>
                 <td style={tdStyle}>{formatBytes(r.sizeBytes)}</td>
