@@ -787,3 +787,52 @@ pub async fn set_prefs(
     }
     Ok(Envelope::ok(engine::prefs::Prefs::load(&conn)))
 }
+
+// ===================== task-062：托盘 / 开机自启 =====================
+
+/// `quit_app`：真正退出进程。
+///
+/// 托盘菜单的「退出」**不会**直接调它——先 emit `tray://quit-request` 让前端弹
+/// 二次确认，用户点「确定」后才调到这里。PRD 要求「退出二次确认」，而托盘菜单
+/// 回调里没有 WebView，弹不了 `confirm`。
+#[tauri::command]
+pub fn quit_app(app: tauri::AppHandle) {
+    eprintln!("[quit_app] 用户确认退出，进程结束");
+    app.exit(0);
+}
+
+/// `get_autostart_enabled`：开机自启是否开启。
+///
+/// **真实来源是系统注册表**（插件封装了 `HKCU\...\Run`），不另存一份 prefs——
+/// 否则用户在「任务管理器 → 启动」里手动禁用了，我们的 prefs 还写着 true，
+/// 两边打架。读插件状态永远是对的。
+#[tauri::command]
+pub fn get_autostart_enabled(app: tauri::AppHandle) -> Result<Envelope<bool>, String> {
+    use tauri_plugin_autostart::ManagerExt;
+    match app.autolaunch().is_enabled() {
+        Ok(v) => Ok(Envelope::ok(v)),
+        Err(e) => {
+            // 读不到不等于「没开」——但要给前端一个确定答案，按未开启处理并留日志。
+            eprintln!("[autostart] is_enabled 失败: {e}");
+            Ok(Envelope::err(INTERNAL))
+        }
+    }
+}
+
+/// `set_autostart_enabled`：开 / 关开机自启。返回**写入后**的真实状态。
+#[tauri::command]
+pub fn set_autostart_enabled(
+    app: tauri::AppHandle,
+    enabled: bool,
+) -> Result<Envelope<bool>, String> {
+    use tauri_plugin_autostart::ManagerExt;
+    let mgr = app.autolaunch();
+    let r = if enabled { mgr.enable() } else { mgr.disable() };
+    if let Err(e) = r {
+        eprintln!("[autostart] set({enabled}) 失败: {e}");
+        return Ok(Envelope::err(INTERNAL));
+    }
+    // 回读一次，把系统真实状态返回给前端（避免 UI 与实际不一致）。
+    let actual = mgr.is_enabled().unwrap_or(enabled);
+    Ok(Envelope::ok(actual))
+}

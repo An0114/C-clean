@@ -139,6 +139,36 @@ export default function Settings({ onUpdateFound, onThemeChange }: SettingsProps
   const [whitelistText, setWhitelistText] = useState<string>("");
   const [whitelistSaving, setWhitelistSaving] = useState<boolean>(false);
 
+  // task-062：开机自启。**不存 prefs**——真实来源是系统注册表（autostart 插件），
+  // 用户在「任务管理器 → 启动」里手动禁用也能被正确反映。
+  const [autostartEnabled, setAutostartEnabled] = useState<boolean>(false);
+  const [autostartSaving, setAutostartSaving] = useState<boolean>(false);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        setAutostartEnabled(Boolean(await api<boolean>("get_autostart_enabled", {})));
+      } catch {
+        // 读失败保持 false（不谎报「已开启」）
+      }
+    })();
+  }, []);
+
+  const onToggleAutostart = useCallback(async (next: boolean) => {
+    setAutostartEnabled(next);
+    setAutostartSaving(true);
+    try {
+      // 用后端回读的真实状态覆盖（避免 UI 与注册表不一致）
+      const actual = await api<boolean>("set_autostart_enabled", { enabled: next });
+      setAutostartEnabled(Boolean(actual));
+    } catch (e) {
+      setAutostartEnabled(!next);
+      setToast({ ok: false, text: `设置开机自启失败：${String(e)}` });
+    } finally {
+      setAutostartSaving(false);
+    }
+  }, []);
+
   useEffect(() => {
     (async () => {
       try {
@@ -835,6 +865,39 @@ export default function Settings({ onUpdateFound, onThemeChange }: SettingsProps
             先开启上面的开关，间隔选择才会生效。
           </div>
         )}
+      </div>
+
+      {/* task-062：开机自启。状态真实来源是系统注册表（autostart 插件），不存 prefs。 */}
+      <h2 style={{ margin: "24px 0 12px", fontSize: 16 }}>启动</h2>
+      <div style={cardStyle}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 600 }}>开机自启</div>
+            <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 4, lineHeight: 1.5 }}>
+              登录 Windows 后自动启动 C-Disk Cleaner，并在托盘常驻。
+              <b>默认关闭</b>；关闭主窗口不会退出程序，需要从托盘菜单「退出」才真正结束。
+            </div>
+          </div>
+          <label
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              cursor: autostartSaving ? "wait" : "pointer",
+              whiteSpace: "nowrap",
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={autostartEnabled}
+              disabled={autostartSaving}
+              onChange={(e) => onToggleAutostart(e.target.checked)}
+            />
+            <span style={{ fontSize: 12, color: "var(--text)" }}>
+              {autostartEnabled ? "已开启" : "已关闭"}
+            </span>
+          </label>
+        </div>
       </div>
     </div>
   );

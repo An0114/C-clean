@@ -16,7 +16,9 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { workspace = true }
+# task-062：托盘图标需要 tauri 的 `tray-icon` feature（Tauri 2 没有独立的 tray 插件，
+# 托盘是内置能力，只是默认 feature 不开）。
+tauri = { workspace = true, features = ["tray-icon"] }
 # task-035：updater 插件，配合 tauri.conf.plugins.updater + 签名私钥做自动更新
 tauri-plugin-updater = "2"
 # bugfix/task-035-updater-acl：前端 downloadAndInstall 后调 relaunch()，
@@ -26,6 +28,9 @@ tauri-plugin-process = "2"
 # 用官方插件而不是自己调 WinRT Toast：后者要注册 AppUserModelID、只在安装态可用，
 # 插件把「dev / 安装态」两条路径都处理好了。
 tauri-plugin-notification = "2"
+# task-062：开机自启。用官方插件而不是自己写 HKCU\...\Run——插件处理了
+# 「安装路径变化后条目失效」「卸载时清理」这些边界，自己写容易留残渣。
+tauri-plugin-autostart = "2"
 # generate_context 解析 plugins.updater 配置时需要 serde_json
 serde_json = "1"
 # 链接仓库内 engine 核心库，验证 Rust workspace 链路打通。
