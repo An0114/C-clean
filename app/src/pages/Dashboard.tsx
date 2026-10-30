@@ -320,9 +320,98 @@ export default function Dashboard({ scanSignal = 0 }: { scanSignal?: number }) {
         </div>
       )}
 
+      {/* task-063：C 盘空间环形图 */}
+      <DriveRing />
+
       {/* task-061：最近 30 天释放量趋势 */}
       <TrendChart />
     </main>
+  );
+}
+
+// ===================== task-063：C 盘空间环形图 =====================
+//
+// 手写 SVG，不引图表库：只需要「一个圆环 + 中心百分比」，
+// 引 recharts / chart.js 会让产物从 198 kB 涨到 300 kB+。
+//
+// 圆环的画法：两个同心圆，底层是完整灰环，上层用 `strokeDasharray` 只画
+// `pct` 那一段，再 `rotate(-90)` 让起点在 12 点方向。
+
+interface DriveUsage {
+  totalBytes: number;
+  usedBytes: number;
+  freeBytes: number;
+}
+
+function DriveRing() {
+  const [usage, setUsage] = useState<DriveUsage | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const u = await api<DriveUsage>("drive_usage", {});
+        setUsage(u);
+      } catch {
+        // 查不到就整块不显示——比显示一个 0% 的假环好
+        setFailed(true);
+      }
+    })();
+  }, []);
+
+  if (failed || !usage) return null;
+
+  const total = usage.totalBytes || 0;
+  const used = usage.usedBytes || 0;
+  // 用整数百分比显示；计算时保留一位小数避免 49.6% 被显示成 50% 后和环对不上
+  const pct = total > 0 ? Math.min(100, (used / total) * 100) : 0;
+  const R = 46;
+  const CIRC = 2 * Math.PI * R;
+  const dash = (pct / 100) * CIRC;
+
+  // 已用超过 85% 变红：这是「该清理了」的信号，与产品定位一致。
+  const color = pct >= 85 ? "#dc2626" : pct >= 70 ? "#d97706" : "#2563eb";
+
+  return (
+    <div style={{ ...cardStyle, display: "flex", alignItems: "center", gap: 20, marginTop: 12 }}>
+      <svg width={120} height={120} viewBox="0 0 120 120" role="img" aria-label="C 盘空间使用率">
+        <circle cx={60} cy={60} r={R} fill="none" stroke="var(--border)" strokeWidth={12} />
+        <circle
+          cx={60}
+          cy={60}
+          r={R}
+          fill="none"
+          stroke={color}
+          strokeWidth={12}
+          strokeDasharray={`${dash} ${CIRC - dash}`}
+          strokeLinecap="round"
+          transform="rotate(-90 60 60)"
+        />
+        <text
+          x={60}
+          y={58}
+          textAnchor="middle"
+          fontSize={20}
+          fontWeight={600}
+          fill="var(--text)"
+        >
+          {Math.round(pct)}%
+        </text>
+        <text x={60} y={76} textAnchor="middle" fontSize={11} fill="var(--text-muted)">
+          已用
+        </text>
+      </svg>
+      <div style={{ fontSize: 12, lineHeight: 1.9, color: "var(--text)" }}>
+        <div style={{ fontWeight: 600, marginBottom: 2 }}>C 盘空间</div>
+        <div style={{ color: "var(--text-muted)" }}>
+          已用 {formatBytes(used)} / 共 {formatBytes(total)}
+        </div>
+        <div style={{ color: "var(--text-muted)" }}>可用 {formatBytes(usage.freeBytes)}</div>
+        {pct >= 85 && (
+          <div style={{ color: "#b91c1c", marginTop: 2 }}>空间紧张，建议尽快清理</div>
+        )}
+      </div>
+    </div>
   );
 }
 
