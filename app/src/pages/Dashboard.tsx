@@ -70,7 +70,7 @@ const btnStyle = (disabled: boolean): React.CSSProperties => ({
   cursor: disabled ? "not-allowed" : "pointer",
 });
 
-export default function Dashboard() {
+export default function Dashboard({ scanSignal = 0 }: { scanSignal?: number }) {
   const [status, setStatus] = useState<Status>("loading");
   const [data, setData] = useState<CleanupStats | null>(null);
   const [msg, setMsg] = useState<string>("");
@@ -174,6 +174,16 @@ export default function Dashboard() {
       }
     }
   }, [load]);
+
+  // task-062：托盘「立即扫描」→ App 递增 scanSignal → 这里触发一次扫描。
+  // 用 ref 记住上次的值，避免「首次挂载就自动扫」（用户切到仪表盘不该自己跑起来）。
+  const lastScanSignalRef = useRef(scanSignal);
+  useEffect(() => {
+    if (scanSignal > lastScanSignalRef.current) {
+      lastScanSignalRef.current = scanSignal;
+      void startScan();
+    }
+  }, [scanSignal, startScan]);
 
   const scanning = scanStatus === "scanning";
   // engine ScanProgress.percent 已是 0~100，直接用；缺失时置 0 不除零。

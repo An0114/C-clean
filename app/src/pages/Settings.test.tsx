@@ -515,3 +515,97 @@ describe("Settings 自动扫描（task-061）", () => {
     });
   });
 });
+
+// task-062：开机自启
+describe("Settings 开机自启（task-062）", () => {
+  function mockAutostart(enabled: boolean, onSet?: (v: boolean) => boolean) {
+    mockedInvoke.mockImplementation(((cmd: string, args: unknown) => {
+      if (cmd === "rules_check_update") {
+        return Promise.resolve(
+          ok({
+            status: "upToDate",
+            localVersion: "1.0.0",
+            localSha256: "a".repeat(64),
+            remoteVersion: "1.0.0",
+            remoteSha256: "a".repeat(64),
+            message: "ok",
+          })
+        );
+      }
+      if (cmd === "rules_has_backup") return Promise.resolve(ok(false));
+      if (cmd === "get_prefs") {
+        return Promise.resolve(
+          ok({
+            autoRestartOnClose: false,
+            restartWhitelist: [],
+            theme: "system",
+            autoScanEnabled: false,
+            autoScanInterval: "daily",
+          })
+        );
+      }
+      if (cmd === "get_autostart_enabled") return Promise.resolve(ok(enabled));
+      if (cmd === "set_autostart_enabled") {
+        const want = (args as { enabled: boolean }).enabled;
+        return Promise.resolve(ok(onSet ? onSet(want) : want));
+      }
+      return Promise.resolve(ok(null));
+    }) as never);
+  }
+
+  it("按 get_autostart_enabled 回填开关（true → 已开启）", async () => {
+    mockAutostart(true);
+
+    render(<Settings />);
+    expect(await screen.findByText("开机自启")).toBeInTheDocument();
+
+    // 自启开关是页面上最后一个 checkbox
+    const boxes = screen.getAllByRole("checkbox") as HTMLInputElement[];
+    await waitFor(() => expect(boxes[boxes.length - 1].checked).toBe(true));
+  });
+
+  it("默认关闭：get_autostart_enabled=false 时不勾；切换时调 set_autostart_enabled", async () => {
+    let called: boolean | null = null;
+    mockAutostart(false, (v) => {
+      called = v;
+      return v;
+    });
+
+    render(<Settings />);
+    await screen.findByText("开机自启");
+
+    const boxes = screen.getAllByRole("checkbox") as HTMLInputElement[];
+    const box = boxes[boxes.length - 1];
+    await waitFor(() => expect(box.checked).toBe(false));
+
+    fireEvent.click(box);
+    await waitFor(() => expect(called).not.toBeNull());
+    expect(called).toBe(true);
+  });
+
+  it("写入失败时回滚开关并提示", async () => {
+    mockedInvoke.mockImplementation(((cmd: string) => {
+      if (cmd === "rules_check_update") {
+        return Promise.resolve(ok({ status: "upToDate", localVersion: "1.0.0", localSha256: "a".repeat(64), remoteVersion: "1.0.0", remoteSha256: "a".repeat(64), message: "ok" }));
+      }
+      if (cmd === "rules_has_backup") return Promise.resolve(ok(false));
+      if (cmd === "get_prefs") {
+        return Promise.resolve(ok({ autoRestartOnClose: false, restartWhitelist: [], theme: "system", autoScanEnabled: false, autoScanInterval: "daily" }));
+      }
+      if (cmd === "get_autostart_enabled") return Promise.resolve(ok(false));
+      if (cmd === "set_autostart_enabled") return Promise.reject(new Error("注册表写入被拒"));
+      return Promise.resolve(ok(null));
+    }) as never);
+
+    render(<Settings />);
+    await screen.findByText("开机自启");
+
+    const boxes = screen.getAllByRole("checkbox") as HTMLInputElement[];
+    const box = boxes[boxes.length - 1];
+    fireEvent.click(box);
+
+    // 回滚：仍是不勾
+    await waitFor(() => expect(box.checked).toBe(false));
+    expect(await screen.findByText(/设置开机自启失败/)).toBeInTheDocument();
+  });
+});

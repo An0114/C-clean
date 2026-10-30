@@ -1,10 +1,20 @@
 [package]
 name = "elevation"
 version = "0.1.0"
-description = "独立提权 exe（M0 占位 crate，真正功能在后续任务落地）"
+description = "独立提权 exe（按需 UAC、完成即退出）——只接受固定命令白名单"
 edition.workspace = true
 rust-version.workspace = true
 
 [[bin]]
-name = "elevation"
+# task-062：二进制名改成 `cclean-elevation`（与主 exe 区分，也便于安装包 resources 定位）。
+name = "cclean-elevation"
 path = "src/main.rs"
+
+# **刻意不依赖 windows crate**：本 exe 只需要 SRSetRestorePointW 一个函数，
+# 引整个 windows crate 会让「独立 target-dir 编译」多花几分钟（它要编上千个模块）。
+# 手写 FFI 声明只有几十行、编译秒级，对打包脚本更友好。
+[dependencies]
+
+[dev-dependencies]
+# 只给单测用（写结果 JSON 的临时目录）
+tempfile = "3"

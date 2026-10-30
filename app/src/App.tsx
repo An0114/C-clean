@@ -4,6 +4,7 @@
 import { Component, useEffect, useRef, useState, type ReactNode } from "react";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
+import { listen } from "@tauri-apps/api/event";
 import { api } from "./utils/invoke";
 import Dashboard from "./pages/Dashboard";
 import History from "./pages/History";
@@ -167,6 +168,8 @@ export default function App() {
   // task-036：启动时自动 check 一次应用更新（不弹窗、不阻塞）。
   // 无更新 / 网络失败都静默；有更新才在顶部 banner 提示。
   const [update, setUpdate] = useState<Update | null>(null);
+  // task-062：托盘「立即扫描」的触发信号（递增即触发，Dashboard 内部监听变化）。
+  const [scanSignal, setScanSignal] = useState(0);
   const [dismissed, setDismissed] = useState(false);
   const [bannerPhase, setBannerPhase] = useState<
     "idle" | "downloading" | "installing" | "error"
@@ -188,6 +191,44 @@ export default function App() {
     bytes: 0,
     ema: 0,
   });
+  // task-062：托盘事件。
+  // - `tray://scan`：托盘菜单「立即扫描」→ 切到仪表盘并触发一次扫描；
+  // - `tray://quit-request`：托盘菜单「退出」→ 这里弹二次确认，确认后才真正退出
+  //   （Rust 侧不直接 exit，因为托盘回调里没有 WebView，弹不了 confirm）。
+  useEffect(() => {
+    let unScan: (() => void) | null = null;
+    let unQuit: (() => void) | null = null;
+    (async () => {
+      try {
+        unScan = await listen("tray://scan", () => {
+          setTab("dashboard");
+          setScanSignal((n) => n + 1);
+        });
+      } catch {
+        // 非 Tauri 环境（单测 / 浏览器预览）：忽略
+      }
+      try {
+        unQuit = await listen("tray://quit-request", () => {
+          const ok = window.confirm(
+            "确定退出 C-Disk Cleaner？\n\n退出后托盘图标会消失，自动扫描也会停止。\n下次清理需要重新打开应用。",
+          );
+          if (ok) {
+            void api<null>("quit_app", {}).catch(() => {
+              // 命令失败也要给出反馈，否则用户以为「点了没反应」
+              window.alert("退出失败，请从任务管理器结束进程。");
+            });
+          }
+        });
+      } catch {
+        // 同上
+      }
+    })();
+    return () => {
+      unScan?.();
+      unQuit?.();
+    };
+  }, []);
+
   // task-061：跟随系统主题的实时变化（用户在 Windows 设置里切换时不需重启应用）。
   useEffect(() => {
     const mq = window.matchMedia?.("(prefers-color-scheme: dark)");
@@ -463,7 +504,7 @@ export default function App() {
         </button>
       </div>
       <ErrorBoundary onReset={() => setTab("dashboard")}>
-        {tab === "dashboard" && <Dashboard />}
+        {tab === "dashboard" && <Dashboard scanSignal={scanSignal} />}
         {tab === "items" && <Items />}
         {tab === "safebox" && <SafeBox />}
         {tab === "history" && <History />}

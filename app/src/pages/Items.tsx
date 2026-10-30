@@ -291,8 +291,38 @@ export default function Items() {
     setPreview(null);
     try {
       const ids = Array.from(selected);
-      // task-049 C8：接住返回值，失败项要展示原因与占用进程（此前直接丢弃）。
-      const summary = await api<ExecuteSummary>("cleanup_execute", { itemIds: ids });
+      // task-062：含 L2 风险项时后端会先建系统还原点（弹一次 UAC）。
+      // 用 apiRaw 而不是 api——需要接住 2007（还原点失败）这个业务码，
+      // api() 会把它当异常抛掉，拿不到码就没法区分「还原点失败」和「清理失败」。
+      let env = await apiRaw<ExecuteSummary>("cleanup_execute", { itemIds: ids });
+      if (env.code === 2007) {
+        // 还原点创建失败（最常见原因：系统还原被关闭 / UAC 被拒）。
+        // 让用户自己决定要不要继续——不替他做决定，但也不让流程卡死。
+        const go = window.confirm(
+          "系统还原点创建失败。\n\n" +
+            "常见原因：系统还原功能未开启、UAC 提权被取消、或还原点磁盘空间不足。\n\n" +
+            "继续清理的话，文件仍会先移入保险箱（7 天内可恢复），但**没有系统级回滚点**。\n\n" +
+            "是否继续清理？",
+        );
+        if (!go) {
+          setResult({
+            tone: "fail",
+            headline: "已取消清理：系统还原点创建失败",
+            failures: [],
+            refused: [],
+          });
+          return;
+        }
+        // 用户确认继续 → 带 skipRestorePoint 重调。
+        env = await apiRaw<ExecuteSummary>("cleanup_execute", {
+          itemIds: ids,
+          skipRestorePoint: true,
+        });
+      }
+      if (env.code !== 0 || !env.data) {
+        throw new Error(env.message || `清理失败（code=${env.code}）`);
+      }
+      const summary = env.data;
       // task-052 G5：已不存在（alreadyGone）既不算成功释放、也不算失败，
       // 必须从失败明细里排除，否则会渲染出一堆「— 未知原因」的假失败行。
       const failures = summary.results.filter((r) => !r.deleted && !r.alreadyGone);

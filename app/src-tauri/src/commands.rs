@@ -126,10 +126,48 @@ pub async fn cleanup_dry_run(
     ))
 }
 
+/// 定位提权 exe（task-062）。
+///
+/// 三个候选，按优先级：
+/// 1. **安装态**：`bundle.resources` 把 `cclean-elevation.exe` 映射到安装目录**根**，
+///    而 `scripts_dir` 就是 `<resource>/scripts`，所以 `parent()` 就是 resource 根；
+/// 2. **本机打包后**：workspace 根的 `target/release/`；
+/// 3. **dev**：`target/debug/`。
+fn locate_elevation_exe(paths: &AppPaths) -> Option<std::path::PathBuf> {
+    if let Some(root) = paths.scripts_dir.parent() {
+        let p = root.join("cclean-elevation.exe");
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    // dev / 本机：从当前工作目录往上找 workspace 根的 target。
+    // tauri dev 的 cwd 是 `app/src-tauri`，`tauri build` 的 cwd 是 `app/`，
+    // 所以两个层级都要试。
+    let mut base = std::env::current_dir().ok()?;
+    for _ in 0..3 {
+        for profile in ["release", "debug"] {
+            let p = base
+                .join("target")
+                .join(profile)
+                .join("cclean-elevation.exe");
+            if p.is_file() {
+                return Some(p);
+            }
+        }
+        if !base.pop() {
+            break;
+        }
+    }
+    None
+}
+
 /// `cleanup.execute`：dryRun 通过后用户确认 → 真删文件。
 #[tauri::command]
 pub async fn cleanup_execute(
     item_ids: Vec<i64>,
+    // task-062：用户在「系统还原点创建失败，是否继续清理？」确认框里点「继续」时传 true。
+    // 不传 / 传 false = 需要还原点时必须先建成功。
+    skip_restore_point: Option<bool>,
     paths: tauri::State<'_, AppPaths>,
 ) -> Result<Envelope<engine::execute::executor::ExecuteSummary>, String> {
     if item_ids.is_empty() {
@@ -140,6 +178,33 @@ pub async fn cleanup_execute(
         Err(_) => return Ok(Envelope::err(INTERNAL)),
     };
     let conn = engine::db::conn::open(&paths.data_root).map_err(|e| e.to_string())?;
+
+    // task-062：含 L2 风险项时，清理前必须建系统还原点。
+    //
+    // fail-closed：`needs_restore_point` 返回 Err（查库失败）时**按需要处理**，
+    // 不能因为查不清就裸奔清理。
+    if skip_restore_point != Some(true) {
+        let need = engine::execute::executor::needs_restore_point(&conn, &item_ids);
+        match need {
+            Ok(false) => {}
+            Ok(true) | Err(_) => {
+                let exe = match locate_elevation_exe(&paths) {
+                    Some(p) => p,
+                    None => {
+                        eprintln!("[cleanup_execute] 提权 exe 未找到");
+                        return Ok(Envelope::err(engine::ipc::error_codes::RESTOREPOINT_FAILED));
+                    }
+                };
+                if let Err(msg) = engine::elevation::ensure_restore_point(&conn, &exe) {
+                    eprintln!("[cleanup_execute] 还原点创建失败: {msg}");
+                    // 2007：前端据此弹「是否继续清理？」确认框，用户点继续后带
+                    // skipRestorePoint=true 重调本命令。原因只在日志里——
+                    // Envelope 的 data 类型被 ExecuteSummary 钉死，塞不进字符串。
+                    return Ok(Envelope::err(engine::ipc::error_codes::RESTOREPOINT_FAILED));
+                }
+            }
+        }
+    }
 
     let summary = engine::execute::executor::execute_items(
         &item_ids,
@@ -721,4 +786,53 @@ pub async fn set_prefs(
         return Ok(Envelope::err(INTERNAL));
     }
     Ok(Envelope::ok(engine::prefs::Prefs::load(&conn)))
+}
+
+// ===================== task-062：托盘 / 开机自启 =====================
+
+/// `quit_app`：真正退出进程。
+///
+/// 托盘菜单的「退出」**不会**直接调它——先 emit `tray://quit-request` 让前端弹
+/// 二次确认，用户点「确定」后才调到这里。PRD 要求「退出二次确认」，而托盘菜单
+/// 回调里没有 WebView，弹不了 `confirm`。
+#[tauri::command]
+pub fn quit_app(app: tauri::AppHandle) {
+    eprintln!("[quit_app] 用户确认退出，进程结束");
+    app.exit(0);
+}
+
+/// `get_autostart_enabled`：开机自启是否开启。
+///
+/// **真实来源是系统注册表**（插件封装了 `HKCU\...\Run`），不另存一份 prefs——
+/// 否则用户在「任务管理器 → 启动」里手动禁用了，我们的 prefs 还写着 true，
+/// 两边打架。读插件状态永远是对的。
+#[tauri::command]
+pub fn get_autostart_enabled(app: tauri::AppHandle) -> Result<Envelope<bool>, String> {
+    use tauri_plugin_autostart::ManagerExt;
+    match app.autolaunch().is_enabled() {
+        Ok(v) => Ok(Envelope::ok(v)),
+        Err(e) => {
+            // 读不到不等于「没开」——但要给前端一个确定答案，按未开启处理并留日志。
+            eprintln!("[autostart] is_enabled 失败: {e}");
+            Ok(Envelope::err(INTERNAL))
+        }
+    }
+}
+
+/// `set_autostart_enabled`：开 / 关开机自启。返回**写入后**的真实状态。
+#[tauri::command]
+pub fn set_autostart_enabled(
+    app: tauri::AppHandle,
+    enabled: bool,
+) -> Result<Envelope<bool>, String> {
+    use tauri_plugin_autostart::ManagerExt;
+    let mgr = app.autolaunch();
+    let r = if enabled { mgr.enable() } else { mgr.disable() };
+    if let Err(e) = r {
+        eprintln!("[autostart] set({enabled}) 失败: {e}");
+        return Ok(Envelope::err(INTERNAL));
+    }
+    // 回读一次，把系统真实状态返回给前端（避免 UI 与实际不一致）。
+    let actual = mgr.is_enabled().unwrap_or(enabled);
+    Ok(Envelope::ok(actual))
 }

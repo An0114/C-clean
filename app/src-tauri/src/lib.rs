@@ -25,6 +25,12 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         // task-061：自动扫描完成后发系统通知（Windows 通知中心）。
         .plugin(tauri_plugin_notification::init())
+        // task-062：开机自启（写 HKCU\...\Run）。用插件而不是手写注册表，
+        // 卸载时它会自己清理条目，不会留残渣。
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .manage(std::sync::Mutex::new(0_i64))
         // task-007：在 setup 闭包里拿 AppHandle，构造全局进度 State 并注入。
         // debt-cleanup-003：构造 AppPaths（data_root/rules_dir/scripts_dir/box_dir）并注入。
@@ -35,7 +41,22 @@ pub fn run() {
             // task-061：起后台自动扫描线程（默认关闭，读 prefs 决定是否真的扫）。
             // 只在这里 spawn 一次；线程内部轮询，不做精确定时（理由见 auto_scan.rs）。
             auto_scan::spawn(app.handle().clone());
+            // task-062：系统托盘（关闭窗口时最小化到托盘，而不是退出）。
+            if let Err(e) = setup_tray(app.handle()) {
+                // 托盘创建失败不该让整个应用起不来（例如无图标资源），
+                // 降级为「关闭窗口即退出」——但要在日志里说清楚。
+                eprintln!("[tray] 创建托盘失败，将退化为「关闭即退出」: {e}");
+            }
             Ok(())
+        })
+        // task-062：拦截关闭 → 隐藏到托盘。
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                // prevent_close：拦掉「销毁窗口」的默认行为。
+                api.prevent_close();
+                let _ = window.hide();
+                eprintln!("[tray] 窗口已隐藏到托盘（进程仍在运行）");
+            }
         })
         .invoke_handler(tauri::generate_handler![
             ping,
@@ -59,8 +80,82 @@ pub fn run() {
             commands::cleanup_stats_trend,
             commands::cleanup_list_pending,
             commands::get_prefs,
-            commands::set_prefs
+            commands::set_prefs,
+            // task-062：托盘 / 自启
+            commands::quit_app,
+            commands::get_autostart_enabled,
+            commands::set_autostart_enabled
         ])
         .run(tauri::generate_context!())
         .expect("error while running C-Disk Cleaner");
+}
+
+// ===================== task-062：系统托盘 =====================
+//
+// 为什么用内置托盘而不是插件：Tauri 2 **没有** `tauri-plugin-tray` 这个插件
+// （任务书写的那个不存在），托盘是内置能力，只是默认不开 `tray-icon` feature。
+//
+// 菜单三项：立即扫描 / 打开主窗口 / 退出。
+// 「退出」不在 Rust 侧直接 `app.exit(0)`——PRD 要求二次确认，而托盘菜单回调里
+// 拿不到 WebView 的 `confirm`。所以走「显示主窗口 + emit `tray://quit-request`」，
+// 由前端弹 confirm，用户确认后调 `quit_app` 命令真正退出。
+
+fn setup_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
+    use tauri::menu::{Menu, MenuItem};
+    use tauri::tray::TrayIconBuilder;
+    use tauri::Emitter;
+
+    let scan = MenuItem::with_id(app, "scan", "立即扫描", true, None::<&str>)?;
+    let show = MenuItem::with_id(app, "show", "打开主窗口", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&scan, &show, &quit])?;
+
+    let mut builder = TrayIconBuilder::with_id("main-tray")
+        .tooltip("C-Disk Cleaner")
+        .menu(&menu)
+        // 左键点图标直接显示窗口（与右键出菜单区分，符合 Windows 习惯）。
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "scan" => {
+                show_main_window(app);
+                // 让前端切到仪表盘并开始扫描（前端监听这个事件）。
+                let _ = app.emit("tray://scan", ());
+            }
+            "show" => show_main_window(app),
+            "quit" => {
+                // 先显示窗口，让 confirm 有宿主；再请前端确认。
+                show_main_window(app);
+                let _ = app.emit("tray://quit-request", ());
+            }
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            // 左键单击托盘图标 → 显示窗口。
+            if let tauri::tray::TrayIconEvent::Click {
+                button: tauri::tray::MouseButton::Left,
+                button_state: tauri::tray::MouseButtonState::Up,
+                ..
+            } = event
+            {
+                show_main_window(tray.app_handle());
+            }
+        });
+
+    // 图标：用窗口默认图标。取不到就不设（托盘仍会出现，只是用系统占位图标）。
+    if let Some(icon) = app.default_window_icon() {
+        builder = builder.icon(icon.clone());
+    }
+
+    builder.build(app)?;
+    Ok(())
+}
+
+/// 显示并聚焦主窗口（托盘菜单 / 图标点击都走这里）。
+fn show_main_window(app: &tauri::AppHandle) {
+    use tauri::Manager;
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+    }
 }
