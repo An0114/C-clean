@@ -59,9 +59,62 @@ struct BatchSummary {
     already_gone: u32,
 }
 
+/// 记一条「系统还原点已创建」到 audit_log（task-062 验收 10）。
+///
+/// 放在 executor 而不是 elevation 模块：elevation 刻意不碰 DB（它要能被提权 exe
+/// 那种零依赖场景复用），而 executor 本来就在写 audit_log。
+pub fn log_restore_point(
+    conn: &Connection,
+    name: &str,
+    sequence: i64,
+    ts: i64,
+) -> Result<(), String> {
+    conn.execute(
+        "INSERT INTO audit_log (ts, actor, action, target, detail, result, denial_reason)
+         VALUES (?1, 'elevated', 'restore_point', ?2, ?3, 'success', NULL)",
+        params![ts, name, format!("sequence={sequence}")],
+    )
+    .map(|_| ())
+    .map_err(|e| format!("log_restore_point: {e}"))
+}
+
+/// 判断这批 item 是否含 **L2 风险项**——有则清理前必须建系统还原点（task-062）。
+///
+/// # 为什么只对 L2 触发
+///
+/// - **L1**（缓存 / 临时文件）：删错了也能重建，为它弹一次 UAC + 等几十秒建还原点
+///   是灾难级体验，用户会直接关掉这个功能；
+/// - **L2**（需逐项确认的高风险项）：PRD 要求「清理前自动创建还原点」；
+/// - **L3**：根本进不了 `cleanup_item` 表（红线在扫描侧就拦掉了）。
+///
+/// 所以判断依据就是「这批 id 里有没有 `risk_level = 'L2'` 的行」。
+///
+/// # 失败语义
+///
+/// 返回 `Err` 只代表**查库失败**，不代表「不需要还原点」。调用方遇到 `Err` 应当
+/// 按「需要还原点」处理（fail-closed）——查不清风险就不该裸奔清理。
+pub fn needs_restore_point(conn: &Connection, item_ids: &[i64]) -> Result<bool, String> {
+    if item_ids.is_empty() {
+        return Ok(false);
+    }
+    // 动态占位符：`IN (?,?,?)`。条数是运行期才知道的，不能预编译。
+    let placeholders = std::iter::repeat("?")
+        .take(item_ids.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "SELECT COUNT(*) FROM cleanup_item WHERE risk_level = 'L2' AND id IN ({placeholders})"
+    );
+    let n: i64 = conn
+        .query_row(&sql, rusqlite::params_from_iter(item_ids.iter()), |r| {
+            r.get(0)
+        })
+        .map_err(|e| format!("needs_restore_point: {e}"))?;
+    Ok(n > 0)
+}
+
 /// 编排：对每个 id 先 SELECT path，再过一次白名单（防 dryRun 到 execute 之间路径被改），
 /// 通过则调 `deleter.delete_file`，成功/失败都写 audit_log；最后写一行 cleanup_task。
-///
 /// - NotFound（DB 里没有这个 id）→ skip，不写 audit_log（任务书要求「不影响其他 item」）；
 /// - L3 命中 → audit_log result='denied'，denial_reason 填具体原因；
 /// - deleter 失败 → audit_log result='fail'，detail 带错误文案。
