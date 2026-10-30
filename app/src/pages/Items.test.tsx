@@ -23,7 +23,14 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 const mockedInvoke = vi.mocked(invoke);
 
 const ROWS = [
-  { id: 1, path: "C:\\Temp\\locked.txt", sizeBytes: 12, moduleCode: "A", sessionId: 1 },
+  {
+    id: 1,
+    path: "C:\\Temp\\locked.txt",
+    sizeBytes: 12,
+    moduleCode: "A",
+    sessionId: 1,
+    riskLevel: "L2",
+  },
 ];
 
 /** 信封成功包装（与 engine::ipc::Envelope 对齐）。 */
@@ -561,5 +568,65 @@ describe("关闭进度反馈（task-060）", () => {
     expect(
       await screen.findByText(/已等 31s（最多 30s），已超过预期，仍在等待系统响应/)
     ).toBeInTheDocument();
+  });
+});
+
+// task-064：风险徽标 + 全选 L1
+describe("风险徽标与全选 L1（task-064）", () => {
+  const MIXED = [
+    { id: 1, path: "C://a.tmp", sizeBytes: 100, moduleCode: "A", sessionId: 1, riskLevel: "L1" },
+    { id: 2, path: "C://b.tmp", sizeBytes: 200, moduleCode: "A", sessionId: 1, riskLevel: "L1" },
+    { id: 3, path: "C://c.log", sizeBytes: 300, moduleCode: "A", sessionId: 1, riskLevel: "L2" },
+    { id: 4, path: "C://d.sys", sizeBytes: 400, moduleCode: "A", sessionId: 1, riskLevel: "L3" },
+  ];
+
+  it("每行渲染 L1/L2/L3 徽标，说明挂在 title（原生 tooltip）上", async () => {
+    mockInvoke({ cleanup_list_pending: () => Promise.resolve(pageOf(MIXED, 4)) });
+
+    render(<Items />);
+    await waitFor(() => expect(screen.getByText("a.tmp", { exact: false })).toBeInTheDocument());
+
+    // 两条 L1、各一条 L2/L3
+    expect(screen.getAllByText("L1").length).toBe(2);
+    expect(screen.getByText("L2")).toBeInTheDocument();
+    expect(screen.getByText("L3")).toBeInTheDocument();
+
+    // hover 说明（title 属性）
+    expect(screen.getAllByText("L1")[0].getAttribute("title")).toContain("安全缓存");
+    expect(screen.getByText("L2").getAttribute("title")).toContain("需确认");
+    expect(screen.getByText("L3").getAttribute("title")).toContain("禁止自动清理");
+  });
+
+  it("点「全选 L1」只勾 L1，L2/L3 保持不勾", async () => {
+    mockInvoke({ cleanup_list_pending: () => Promise.resolve(pageOf(MIXED, 4)) });
+
+    render(<Items />);
+    await waitFor(() => expect(screen.getByText("a.tmp", { exact: false })).toBeInTheDocument());
+
+    fireEvent.click(screen.getByText("全选 L1（安全）"));
+
+    const boxes = Array.from(
+      document.querySelectorAll("tbody input[type=checkbox]"),
+    ) as HTMLInputElement[];
+    expect(boxes.length).toBe(4);
+    // 前两行是 L1 → 勾上；后两行 L2/L3 → 不勾
+    expect(boxes[0].checked).toBe(true);
+    expect(boxes[1].checked).toBe(true);
+    expect(boxes[2].checked).toBe(false);
+    expect(boxes[3].checked).toBe(false);
+
+    // 已选统计：2 项，100 + 200 = 300 B
+    expect(screen.getByText(/已选 2 项，共 300 B/)).toBeInTheDocument();
+  });
+
+  it("本页没有 L1 时按钮禁用（不能误以为能一键清空）", async () => {
+    const onlyL2 = [MIXED[2], MIXED[3]];
+    mockInvoke({ cleanup_list_pending: () => Promise.resolve(pageOf(onlyL2, 2)) });
+
+    render(<Items />);
+    await waitFor(() => expect(screen.getByText("c.log", { exact: false })).toBeInTheDocument());
+
+    const btn = screen.getByText("全选 L1（安全）").closest("button") as HTMLButtonElement;
+    expect(btn.disabled).toBe(true);
   });
 });
