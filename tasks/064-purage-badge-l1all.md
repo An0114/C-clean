@@ -11,7 +11,7 @@
 
 ## 状态字段
 
-pending
+testing
 
 ## 任务目标
 
@@ -181,3 +181,111 @@ DevAgent 交付物（后续执行结果）：
 4. 本任务文档本身**由 DocsKeeper 在派发时**单独提交一次：
    `docs(task): 新增任务064-P0收尾（7天purge+风险徽标+全选L1） (#task-064)`，
    该提交只含 `tasks/064-purage-badge-l1all.md` 一个文件，落在 `feature/task-064-purage-badge-l1all` 分支最前端。
+
+---
+
+## 实现备注
+
+> 执行日期：2026-10-30　分支：`feature/task-064-purage-badge-l1all`（基线 `d876565`，从 main `62cb7cd` 拉出）
+
+### 1. 实际改动文件清单
+
+| 文件 | 类型 | 改动 |
+|---|---|---|
+| `engine/src/execute/safe_box.rs` | 后端 | `PurgeExpiredResult` + `purge_expired(conn, box_dir, now)` |
+| `app/src-tauri/src/lib.rs` | Tauri（**缺口**） | setup 里 `spawn_safe_box_purge`（启动一次 + 每 6 小时） |
+| `app/src/pages/SafeBox.tsx` | 前端 | 顶部「保留 7 天…自动永久删除」提示 |
+| `engine/tests/purge_expired.rs` | 新建测试 | 6 条 |
+| `engine/src/execute/list_pending.rs` | 后端（**缺口**） | `PendingItem` 加 `risk_level` + SELECT 加列 |
+| `app/src/pages/Items.tsx` | 前端 | `RISK_META` + `riskMeta()` + 徽标列 + 「全选 L1」按钮 + `selectAllL1` |
+| `app/src/pages/Items.test.tsx` | 测试 | 3 条 |
+
+### 2. purge_expired 触发时机
+
+**启动跑一次 + 之后每 6 小时**（`std::thread` 轮询，理由同 task-061 的 auto_scan）。
+
+- **为什么不是每小时**：过期判定粒度是「7 天」，6 小时精度绰绰有余；每小时跑一次只是白耗 IO（要扫 `safe_box` 表 + 可能删文件）。
+- **为什么不在前端触发**：purge 必须「用户不打开应用时也能发生」——否则「7 天后自动删除」变成「7 天后第一次打开应用时删除」，与 PRD 不符。
+- **已知局限**：Tauri 进程不常驻（用户退出后进程就没了），所以严格意义上的「到点必删」需要计划任务。本期按「运行期间定期 + 启动补一次」实现，**已记入遗留问题**。
+
+### 3. 风险徽标颜色方案
+
+| 等级 | 前景色 | 背景色 | hover 说明 |
+|---|---|---|---|
+| L0 | `var(--text-muted)` | `var(--bg)` | L0 仅提示，不参与清理（无风险） |
+| L1 | `#15803d`（绿） | `#dcfce7` | L1 安全缓存：删除不影响系统，相关程序会自动重建 |
+| L2 | `#b45309`（黄） | `#fef3c7` | L2 需确认：删除可能影响某些功能，清理前会创建系统还原点 |
+| L3 | `#b91c1c`（红） | `#fee2e2` | L3 红线项：禁止自动清理，仅展示 |
+
+**L0 用 CSS 变量**（而不是写死灰）——深色主题下自动跟着变；L1/L2/L3 的语义色（绿/黄/红）在深浅背景下都够对比度，所以固定。
+
+**hover 用 `title` 原生 tooltip**，不自己画：省一套定位逻辑，而且不会被表格 `overflow` 裁掉。
+
+**未知等级有 fallback**（`RISK_META[level] ?? {...}`）：后端将来新增等级时前端不会崩，只显示原值。
+
+### 4. 全选 L1 按钮位置
+
+**Items 页顶部工具栏**，紧跟「已选 N 项，共 X」统计之后、「预览」按钮之前。
+
+- **只勾本页** L1：跨页全选要把所有页拉下来，按钮会变慢，而且用户看不到被选中的项（当前页只显示 100 条）。
+- **L2/L3 一律不选**：L2 是「需逐项确认」，自动全选等于绕过这道设计。
+- **本页无 L1 时按钮禁用**，`title` 说明「本页没有 L1 安全项」——避免用户以为点了没反应。
+- 统计沿用页面已有的「已选 N 项，共 X」，不另起一套文案。
+
+### 5. `cargo test` / `pnpm` 通过输出
+
+```
+cargo test --workspace  →  passed=334  failed=0  ignored=8
+pnpm --filter app test  →  9 files / 104 passed
+```
+
+`334 = 328（task-063 基线）+ 6`：
+
+| 用例 | 覆盖 |
+|---|---|
+| `purges_expired_row_and_deletes_file` | **端到端**：过期行 → DB 行消失 + 磁盘文件消失 + audit_log 有 `auto_purge` |
+| `keeps_unexpired_rows` | 未过期行与文件都保留 |
+| `mixed_batch_only_removes_expired` | 4 条混合，只删 2 条过期，释放量 = 10+20 |
+| `expired_row_with_missing_file_still_deletes_row` | 文件已不在时仍删行（防永久孤儿行） |
+| `boundary_expires_at_equal_now_is_kept` | `expires_at == now` 不算过期（严格 `<`） |
+| `ignores_rows_not_in_box` | `status != 'in_box'` 即使过期也不 purge |
+| 前端 3 条 | 徽标渲染 + title 说明 / 全选只勾 L1 / 无 L1 时禁用 |
+
+**`pnpm build`**：`201.48 kB │ gzip 64.95 kB`（基线 199.87，+1.6 kB）。
+
+### 6. 真机 / 安装态冒烟 / CI
+
+| 项 | 状态 | 说明 |
+|---|---|---|
+| 保险箱 7 天提示 | **移交测试 Agent** | 按新流程开发轮不做 GUI/真机 |
+| 风险徽标四色 | **移交测试 Agent** | 同上 |
+| hover tooltip | **移交测试 Agent** | 同上 |
+| 全选 L1 只选 L1 | **移交测试 Agent** | 同上 |
+| 已选数量/大小 | **移交测试 Agent** | 同上 |
+| purge 端到端（造过期行 → 重启 → 消失） | **移交测试 Agent** | 单测已覆盖同一逻辑（真实 DB + 真实文件） |
+| CDP Console 零红 | **移交测试 Agent** | 同上 |
+| NSIS 安装态复跑 | **移交测试 Agent** | 同上 |
+| CI（PR + 五道闸） | **移交测试 Agent** | 开发分支不跑 CI；**未建 PR** |
+
+开发轮替代验证：`purge_expired` 的 6 条用例用**真实 SQLite + 真实磁盘文件**（不是 mock），已满足「端到端写路径」的实质；徽标与全选用 3 条 jsdom 用例覆盖。
+
+### 7. 与任务书不符的偏差（3 项）
+
+1. **白名单漏了 `engine/src/execute/list_pending.rs`**：`risk_level` 必须在这里加到 `PendingItem`，否则前端根本拿不到等级——这是单元 2 的**前提**，不写进来整个功能做不了。
+2. **purge 触发点写「`engine/src/lib.rs` 或 `main.rs`」**：engine 是纯库，没有「启动」概念；实际在 `app/src-tauri/src/lib.rs` 的 `setup` 里起线程。
+3. **徽标与全选 L1 都在 `Items.tsx` 一个文件里**，无法拆成两个原子提交（同一文件的两次 `git add` 无法分离），合并为一次 `feat(ui)`，测试单独一次 `test(ui)`。
+
+### 8. 遗留问题
+
+- **purge 不是「到点必删」**：进程退出后不再检查。严格实现需要 `schtasks` 计划任务（但 task-062 已论证 schtasks 要管理员权限、卸载残留，代价不小）。当前语义是「运行期间定期 + 下次启动补一次」，对 7 天粒度的用户体验影响很小。
+- **全选 L1 只作用于当前页**：跨页要等列表改造成「虚拟滚动 + 全量加载」才合理。
+- **purge 失败的行没有 UI 提示**：文件被长期占用时，行会一直留在保险箱且每 6 小时重试一次，用户看不到「为什么没删掉」。可在保险箱页加个「自动删除失败」标记。
+- **P0 已全部清完**，下一步进 M1：C 模块 WinSxS 清理（task-065），需扩展 task-062 的提权白名单（当前只有 `create_restore_point`）。
+- **Items/SafeBox/History 三页深色适配**仍待补（task-061 只覆盖 App 外壳 / Dashboard / Settings）。
+
+### 三句话结论
+
+1. purge **逐条处理 + 逐条审计**（批量 DELETE 会丢审计粒度），**文件删不掉就保留 DB 行**下轮重试（否则文件成永久孤儿）。
+2. 风险徽标的前提是 `PendingItem` **返回 `risk_level`**——任务书白名单漏了这个文件，不补则整个单元 2 无从做起。
+3. 全选 L1 只勾本页、只勾 L1：跨页会让按钮变慢且用户看不见选中项，自动全选 L2 等于绕过「需逐项确认」的设计。
+
