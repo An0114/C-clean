@@ -38,7 +38,8 @@
 //!    按需对 `bRestartable==TRUE` 的进程调 `RmRestart`（默认 false，由设置页开关控制）。
 
 /// 占用进程的最小可序列化视图（给前端 toast 用）。
-#[derive(Debug, Clone, serde::Serialize)]
+// task-063：加 Deserialize（ExecResult 反序列化需要，前端回传清理结果给报告）。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LockingProcess {
     pub pid: u32,

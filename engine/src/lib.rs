@@ -30,5 +30,8 @@ pub mod scan;
 /// 用户偏好（task-057）：复用 settings 表存 auto_restart_on_close 等开关。
 pub mod prefs;
 
+/// 清理报告导出 + 磁盘空间查询（task-063）。
+pub mod report;
+
 /// 提权 exe 的主进程侧封装（task-062）：`ShellExecuteExW("runas")` + 等退出 + 读结果。
 pub mod elevation;

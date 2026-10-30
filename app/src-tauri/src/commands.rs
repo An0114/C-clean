@@ -53,17 +53,40 @@ fn validate_scan_input(scope: &str, target_drive: &Option<String>) -> Result<(),
     Ok(())
 }
 
+/// task-063：扫描取消标志（全局单例，setup 里注入）。
+///
+/// 用 `Arc<AtomicBool>` 而不是 `Mutex<bool>`：只需要「置位 / 读取」两个原子操作，
+/// 且 `scan_cancel` 必须**立刻**生效（不能被正在跑的扫描持有锁挡住）。
+#[derive(Default)]
+pub struct ScanCancelState(pub std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+/// `scan_cancel`：请求取消当前扫描（task-063）。
+///
+/// **立即返回**，不等扫描真的停下——真正的停止发生在下一个脚本开始前
+/// （`ScanOrchestrator` 在每轮循环开头检查标志）。这样 IPC 不会卡住 UI。
+///
+/// 取消后**已扫描的结果保留**（`cleanup_item` 的行不删），用户刷新列表就能看到。
+#[tauri::command]
+pub fn scan_cancel(cancel: tauri::State<'_, ScanCancelState>) -> Result<Envelope<bool>, String> {
+    cancel.0.store(true, std::sync::atomic::Ordering::Relaxed);
+    eprintln!("[scan_cancel] 已置取消标志");
+    Ok(Envelope::ok(true))
+}
+
 /// `scan.start`：task-013 起真接通扫描。
 #[tauri::command]
 pub async fn scan_start(
     scope: String,
     target_drive: Option<String>,
     progress: tauri::State<'_, ProgressState>,
+    cancel: tauri::State<'_, ScanCancelState>,
     paths: tauri::State<'_, AppPaths>,
 ) -> Result<Envelope<engine::ipc::commands::scan_start::ScanStartResp>, String> {
     if validate_scan_input(&scope, &target_drive).is_err() {
         return Ok(Envelope::err(INTERNAL));
     }
+    // task-063：每次开始前复位取消标志，否则上一次的「取消」会让这次一启动就停。
+    cancel.0.store(false, std::sync::atomic::Ordering::Relaxed);
 
     let conn = engine::db::conn::open(&paths.data_root).map_err(|e| e.to_string())?;
     conn.execute(
@@ -74,7 +97,8 @@ pub async fn scan_start(
     let session_id = conn.last_insert_rowid();
 
     let emitter_guard = progress.0.lock().map_err(|e| e.to_string())?;
-    let orch = ScanOrchestrator::new(session_id, &conn, &*emitter_guard);
+    let orch =
+        ScanOrchestrator::new(session_id, &conn, &*emitter_guard).with_cancel(cancel.0.clone());
     let outcome = orch.run_all(&paths.scripts_dir);
     drop(emitter_guard);
 
@@ -786,6 +810,75 @@ pub async fn set_prefs(
         return Ok(Envelope::err(INTERNAL));
     }
     Ok(Envelope::ok(engine::prefs::Prefs::load(&conn)))
+}
+
+// ===================== task-063：报告导出 =====================
+
+/// `report_export`：把一次清理结果渲染成 HTML / CSV 并落盘。
+///
+/// **入参带整个 `summary`**：清理结果只存在于前端内存（DB 里 `cleanup_item` 的
+/// 行在删除后状态已变，重建不出「哪条失败、为什么」），所以由前端把结果原样传回。
+/// 这也让「导出」是纯函数式的——不依赖任何后端会话状态。
+///
+/// 返回落盘后的**绝对路径**，前端可展示给用户「报告已保存到 …」。
+#[tauri::command]
+pub async fn report_export(
+    format: String,
+    summary: engine::execute::executor::ExecuteSummary,
+    drive: Option<String>,
+    paths: tauri::State<'_, AppPaths>,
+) -> Result<Envelope<String>, String> {
+    let drive = drive.unwrap_or_else(|| "C".to_string());
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+
+    let snapshot = engine::report::DriveSnapshot {
+        before_used_bytes: summary.disk_before_bytes,
+        after_used_bytes: summary.disk_after_bytes,
+    };
+    let meta = engine::report::ReportMeta {
+        generated_at: now,
+        drive: &drive,
+        snapshot,
+    };
+
+    // 只认两种格式，其余按 html 处理（前端只会传这两个值）。
+    let (content, ext) = if format == "csv" {
+        (engine::report::build_csv(&summary), "csv")
+    } else {
+        (engine::report::build_html(&summary, &meta), "html")
+    };
+
+    let filename = format!("cleanup-report-{now}.{ext}");
+    let dir = paths.data_root.join("reports");
+    match engine::report::write_report(&dir, &filename, &content) {
+        Ok(p) => Ok(Envelope::ok(p.to_string_lossy().to_string())),
+        Err(e) => {
+            eprintln!("[report_export] {e}");
+            Ok(Envelope::err(INTERNAL))
+        }
+    }
+}
+
+// ===================== task-063：磁盘空间 =====================
+
+/// `drive_usage`：查某个盘的总量/已用/可用（仪表盘环形图数据源）。
+///
+/// `drive` 不传时默认 `"C"`——本工具主要面向 C 盘，前端可以只在需要时显式指定。
+#[tauri::command]
+pub async fn drive_usage(
+    drive: Option<String>,
+) -> Result<Envelope<engine::report::DriveUsage>, String> {
+    let d = drive.unwrap_or_else(|| "C".to_string());
+    match engine::report::drive_usage(&d) {
+        Ok(u) => Ok(Envelope::ok(u)),
+        Err(e) => {
+            eprintln!("[drive_usage] {e}");
+            Ok(Envelope::err(INTERNAL))
+        }
+    }
 }
 
 // ===================== task-062：托盘 / 开机自启 =====================
