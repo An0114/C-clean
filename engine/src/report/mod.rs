@@ -104,8 +104,10 @@ impl DriveSnapshot {
     /// 导致「后 > 前」，此时算 0 而不是负数）。
     ///
     /// 注意这与 `bytes_freed_total`（文件大小求和）不是一回事：
+    ///
     /// - `bytes_freed_total` = 我们删掉的文件总大小（精确，但可能因簇对齐而偏大）；
     /// - 本函数 = 磁盘实际变化（含用户并发写入的干扰）。
+    ///
     /// 报告里两个都展示，用户能看出差异。
     pub fn released_bytes(&self) -> Option<u64> {
         match (self.before_used_bytes, self.after_used_bytes) {
@@ -339,7 +341,13 @@ mod tests {
     use super::*;
     use crate::execute::executor::{ExecResult, ExecuteSummary};
 
-    fn mk(path: &str, deleted: bool, already_gone: bool, bytes: u64, err: Option<&str>) -> ExecResult {
+    fn mk(
+        path: &str,
+        deleted: bool,
+        already_gone: bool,
+        bytes: u64,
+        err: Option<&str>,
+    ) -> ExecResult {
         ExecResult {
             item_id: 1,
             path: path.to_string(),
@@ -353,7 +361,10 @@ mod tests {
 
     fn summary_of(results: Vec<ExecResult>) -> ExecuteSummary {
         let deleted_count = results.iter().filter(|r| r.deleted).count() as u64;
-        let failed_count = results.iter().filter(|r| !r.deleted && !r.already_gone).count() as u64;
+        let failed_count = results
+            .iter()
+            .filter(|r| !r.deleted && !r.already_gone)
+            .count() as u64;
         let bytes_freed_total = results.iter().map(|r| r.bytes_freed).sum();
         ExecuteSummary {
             results,
@@ -437,7 +448,13 @@ mod tests {
 
     #[test]
     fn csv_escapes_comma_and_quote() {
-        let s = summary_of(vec![mk(r"C:\a,b\c.tmp", false, false, 0, Some(r#"say "hi""#))]);
+        let s = summary_of(vec![mk(
+            r"C:\a,b\c.tmp",
+            false,
+            false,
+            0,
+            Some(r#"say "hi""#),
+        )]);
         let csv = build_csv(&s);
         // 含逗号的路径要被双引号包裹
         assert!(csv.contains(r#""C:\a,b\c.tmp""#), "实际: {csv}");
