@@ -94,7 +94,9 @@ pub fn run() {
             commands::set_autostart_enabled,
             // task-065：WinSxS 组件存储（C 模块）
             commands::winsxs_analyze,
-            commands::winsxs_cleanup
+            commands::winsxs_cleanup,
+            // task-066：大文件地图（E 模块，只读）
+            commands::big_files_scan
         ])
         .run(tauri::generate_context!())
         .expect("error while running C-Disk Cleaner");

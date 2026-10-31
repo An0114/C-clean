@@ -334,3 +334,35 @@ fn recycle_bin_returns_structure() {
         item.path
     );
 }
+
+// ===================== IPC handler =====================
+
+#[test]
+fn handler_returns_ok_envelope_with_report() {
+    use engine::ipc::commands::big_files::handle_big_files_scan;
+
+    let dir = tempfile::tempdir().unwrap();
+    make_file(&dir.path().join("hiberfil.sys"), 2048);
+
+    let env = handle_big_files_scan(dir.path());
+    assert_eq!(env.code, 0, "正常扫描必须返回 code=0");
+    assert_eq!(env.message, "ok");
+
+    let report = env.data.expect("成功信封必须带 data");
+    assert_eq!(report.categories.len(), 3, "三张卡片必须固定 3 条");
+    assert!(report.total_bytes >= 2048);
+}
+
+#[test]
+fn handler_errors_on_missing_root() {
+    use engine::ipc::commands::big_files::handle_big_files_scan;
+    use engine::ipc::error_codes::INTERNAL;
+
+    let dir = tempfile::tempdir().unwrap();
+    let env = handle_big_files_scan(&dir.path().join("no-such-drive"));
+
+    // 根路径不合法是调用方 bug（比如系统装在 D: 却传了 C:/），
+    // 必须明确报错，而不是回一个「全 0」让用户以为盘是空的。
+    assert_eq!(env.code, INTERNAL.code);
+    assert!(env.data.is_none(), "失败信封不该带 data");
+}
