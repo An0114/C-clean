@@ -11,7 +11,7 @@
 
 ## 状态字段
 
-pending
+testing
 
 ## 任务目标
 
@@ -220,3 +220,214 @@ DevAgent 交付物（后续执行结果）：
 4. 本任务文档本身**由 DocsKeeper 在派发时**单独提交一次：
    `docs(task): 新增任务067-M1 D模块 残留增强 (#task-067)`，
    该提交只含 `tasks/067-residual-scan.md` 一个文件，落在 `feature/task-067-residual-scan` 分支最前端。
+
+## 实现备注
+
+> 开发轮（DevFullstackRustReact）交付说明。**所有结论可复现**，命令附在对应位置。
+
+### 1. 实际改动文件清单
+
+| 文件 | 类型 | 说明 |
+|---|---|---|
+| `engine/src/scan/residual.rs` | **新建** | `scan_registry_uninstall` / `install_roots` / `list_install_dirs` / `cross_reference` / `scan_all` / `delete_residuals` + `winreg` 子模块（注册表 FFI） |
+| `engine/src/scan/mod.rs` | 改 | `pub mod residual;` + 导出 `ResidualItem` / `ResidualReport` |
+| `engine/src/ipc/commands/residual.rs` | **新建** | `handle_residual_scan` / `handle_residual_delete` |
+| `engine/src/ipc/commands/mod.rs` | 改 | `pub mod residual;` |
+| `engine/tests/residual_test.rs` | **新建** | 23 条（22 常规 + 1 `#[ignore]` 真机冒烟） |
+| `app/src-tauri/src/commands.rs` | 改 | `residual_scan` / `residual_delete` |
+| `app/src-tauri/src/lib.rs` | 改 | 注册两条命令 |
+| `app/src/pages/Residual.tsx` | **新建** | 两分类 tab + 勾选 + 移入保险箱 |
+| `app/src/pages/Residual.test.tsx` | **新建** | 11 条 |
+| `app/src/App.tsx` | 改 | `residual` tab + 按钮 + 渲染 |
+| `app/src/App.test.tsx` | 改 | +1 条 tab 切换（验收 16） |
+| `docs/PROJECT_STATE.md` | 改 | 按第 5 条提交规范更新 |
+| `engine/src/execute/safe_box.rs` | 改 | **白名单外**：目录删除能力 + 配额缺陷修正（见 §4） |
+
+**与白名单的差异（5 处）**：
+
+| # | 白名单写法 | 实际情况 |
+|---|---|---|
+| 1 | 未列 `engine/src/execute/safe_box.rs` | **必须改**：`delete_dir` 原是 `Err` 桩、`delete_file` 用 `metadata().len()` 算目录体积会得 0 让配额失效。不改就删不了目录。 |
+| 2 | 未列 `app/src-tauri/src/{commands,lib}.rs` | 必须改，否则前端 invoke 不到命令（与 task-065/066 同样的遗漏）。 |
+| 3 | `engine/src/lib.rs`（注册 IPC handler） | **无需改动**（`pub mod ipc` 已存在）。 |
+| 4 | `app/src/utils/invoke.ts`（加 API 封装） | **未改动**：现有模式是 9 个页面全部直调 `api<T>` / `apiRaw<T>`，invoke.ts 只有两个通用解包函数、没有任何 per-command 封装。 |
+| 5 | 未列 `app/src/App.test.tsx` | 验收 16「tab 切换正确」只能在 App 层测，新增 1 条。 |
+
+### 2. 注册表卸载列表读取实现（**没用 winreg crate**）
+
+用**已在依赖里的 `windows` crate**手写 FFI，`Win32_System_Registry` feature 在 task-062
+就为 `SHELLEXECUTEINFOW` 的 `hkeyClass` 字段开好了，**Cargo.toml 一行没动**：
+
+```rust
+// engine/src/scan/residual.rs 的 winreg 子模块
+RegOpenKeyExW(root, PCWSTR(path), 0, KEY_READ, &mut hkey)        // 开键
+RegEnumKeyExW(hkey, idx, PWSTR(buf), &mut len, None, PWSTR::null(), None, None)  // 枚举子键
+RegGetValueW(root, PCWSTR(sub), PCWSTR(name), RRF_RT_REG_SZ, ...) // 读字符串（一次到位）
+```
+
+为什么不用 `winreg` crate：只需要「枚举子键 + 读字符串/DWORD」三件事，引一个 crate
+会拖慢本 crate 的编译时间（项目一直把编译时间当指标）。手写约 90 行。
+
+读**三处**（只读 64 位会漏掉所有 32 位程序的卸载项）：
+
+- `HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall`（64 位）
+- `HKLM\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall`（32 位）
+- `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall`（用户级安装）
+
+过滤三类「不是可卸载程序」的项：`DisplayName` 为空（补丁/系统组件）、
+`SystemComponent == 1`（微软约定：不在「程序和功能」显示）、`ParentKeyName` 存在（子组件）。
+本机实测过滤后剩 **94** 个有效卸载项。
+
+### 3. 交叉比对算法
+
+**类型 A（注册表残留）**：
+
+```
+对每个 entry：
+  InstallLocation 为空 或 长度 < 3（如 "C:"）  → 跳过（判不了，宁可漏报）
+  Path::new(loc).exists()                      → 不是残留
+  否则                                          → 类型 A，confidence=high
+```
+
+**类型 B（文件残留）**：`has_owner(dir, entries)` 三级判定，**任一级命中就算有归属**：
+
+```
+① 路径级：InstallLocation 与目录路径互为前缀（含相等）
+② 目录名级：InstallLocation 的末段 == 目录名
+③ 名称级：normalize_name(DisplayName) 与 normalize_name(目录名)
+          双向包含，且较短串 ≥ 4 字符
+```
+
+`normalize_name` 只保留字母数字（含 CJK）并转小写：
+`Microsoft Visual C++ 2015 (x64)` → `microsoftvisualc2015x64`，这样带版本号/架构后缀的
+名字能和文件夹名对上。
+
+**为什么「任一级命中就算有归属」**：误判有两个方向——
+把正常程序报成残留（用户可能真去删，**危险**）vs 把残留漏掉（用户少清一点，**无害**）。
+所以判定一律偏向「有归属」，宁可漏报。
+
+### 4. 文件残留删除方式：**送保险箱，不直接删**
+
+按用户明确选择实现为「移入保险箱，7 天可恢复」：
+
+```
+residual_delete(paths)
+  → execute()（项目唯一删除入口：L3 红线 + 动作级禁令）
+  → 拒绝 → 记 failed + 原因，不进保险箱
+  → 通过 → SafeBoxDeleter::delete_dir（整目录 rename 进 box_dir）
+         → 写 safe_box 行（7 天后 purge_expired 自动永久删除）
+```
+
+**为什么必须走保险箱**：`engine::execute::whitelist` 的 L3 红线只覆盖个人目录 / 浏览器数据 /
+System32 / Installer / pagefile，**`C:/Program Files\*` 不在红线内**——白名单拦不住误判。
+一旦删错，只有保险箱能救回来。目录是**整体 rename**，内部结构完整保留，恢复后目录树原样回来。
+
+**顺带修两个既有缺陷**（`engine/src/execute/safe_box.rs`）：
+
+1. `delete_file` 用 `metadata().len()` 算体积——对目录返回**目录项本身**的大小（NTFS 上通常 0），
+   一个 3 GB 的残留目录会被记成 0 字节，`enforce_quota` 完全放行，保险箱可以被撑爆。
+   改为 `meta.is_dir()` 时走 `dir_total_bytes` 递归求和。
+2. `delete_dir` 原是 `Err("not implemented for ... (task-016 only moves files)")` 桩。
+   实现为转调 `delete_file`——对目录而言 `fs::rename` 本来就是整体移动。
+
+**自己写出来的假成功也修了**：不存在的路径会被 `delete_dir` 当成 `Ok(())`（幂等语义），
+直接信它就会把「什么都没做」记成「已移入保险箱」，UI 上出现「已移入 1 项」但实际没动。
+现在调用前先 `Path::exists()` 挡一道，不存在就完全 no-op。
+
+### 5. 真机实测：误报从 182 条压到 11 条
+
+这是本任务最花时间的一段，也是**只靠单测发现不了的**。
+
+初版把 `%LOCALAPPDATA%` / `%APPDATA%` 也当安装目录扫，本机结果：
+
+```
+typeB=182  total=36.0GB  elapsed=10458ms
+  C:/Users/An/AppData/Local/Huawei        ← 华为 SDK，装了
+  C:/Users/An/AppData/Roaming/LarkShell   ← 飞书，装了
+  C:/Users/An/AppData/Roaming/Tencent     ← 腾讯系，装了
+  C:/Users/An/AppData/Roaming/JetBrains   ← JetBrains，装了
+  C:/Program Files (x86)\Windows Kits     ← Windows SDK
+  C:/Program Files\WSL                    ← Windows 功能
+```
+
+**根因**：AppData 是「应用数据」目录，不是「程序安装」目录，里面的东西本来就不写卸载项。
+把它当孤儿报出来，等于把用户的正常数据说成残留——**比不报更糟**。
+
+修正：只扫 Program Files 系列 + 补 13 个系统组件黑名单（Windows Kits / WSL / dotnet /
+Hyper-V / WindowsPowerShell / Application Verifier / AMD / NVIDIA 等，每条都对应一个实际误报）。
+
+修正后：
+
+```
+typeB=11  total=95.7MB  elapsed=75ms
+  HONOR / C-Disk Cleaner / Microsoft Office 15 / Tencent / WXWork
+  Zero G Registry (17 KB)  ← InstallAnywhere 典型空壳残留
+  WinRAR (474 B)           ← 卸载后剩空壳，典型残留
+  Huawei / OpenBoxLab / Tencent (0 B)  ← 空目录
+```
+
+剩下的 11 条都可核查，且「误报」与「真残留」的边界本来就模糊（`C-Disk Cleaner` 是
+我们自己，如果是绿色解压进去的，本来就没有卸载项——符合类型 B 的定义）。
+
+### 6. 门禁输出
+
+```
+cargo check --workspace --all-targets            exit 0
+cargo clippy --workspace --all-targets -- -D warnings   exit 0
+cargo fmt --all -- --check                       exit 0
+cargo test --workspace                           405 passed, 0 failed   （本任务新增 22 条 + 1 条 #[ignore]）
+  └─ engine/tests/residual_test.rs                22 passed, 1 ignored
+pnpm --filter app lint                           0 error（2 warning 均 SafeBox.tsx 既有）
+pnpm --filter app test                           135 passed（12 files，+12）
+pnpm --filter app build                          220.75 kB │ gzip 69.85 kB
+tauri build                                      NSIS 4.41 MiB + MSI 6.51 MiB
+```
+
+### 7. 真实数据证据（后端侧真机冒烟）
+
+```bash
+cargo test -p engine --test residual_test -- --ignored --nocapture real_scan
+```
+
+```
+registry_entries=94 dirs_scanned=28 typeA=3 typeB=11 total=95719553B elapsed=75ms
+--- 类型 A（注册表残留，路径已不存在）---
+  Google Chrome  →  C:/Program Files (x86)\Chromebrowser
+  IntelliJ IDEA 2024.1  →  D:/IDEA/IntelliJ IDEA 2024.1
+  Java(TM) SE Development Kit 25.0.1 (64-bit)  →  D:/Java/jdk-25
+--- 类型 B（文件残留，注册表无对应项）---
+  ...（11 条，见 §5）
+```
+
+三条类型 A 都可核查：`Chromebrowser` 目录名本身就是拼错的，`D:/IDEA/...` 与 `D:/Java/jdk-25` 也已不存在。
+
+### 8. 真机冒烟 / 打包安装冒烟 / CI
+
+**未执行**（按 `docs/PROJECT_STATE.md` 的流程约定：开发轮只做本地静态/单元/集成门禁
++ 打包能出包，GUI 与安装态冒烟统一移交测试 Agent）。
+
+已完成的打包验证：`pnpm tauri build` 产出
+`C-DiskCleaner_0.1.7_x64-setup.exe`（**4.41 MiB**）+ `.msi`（**6.51 MiB**），
+末尾签名步报 `A public key has been found, but no private key` —— 本地无私钥，
+属**已知预期**（CI 有 secret 才签）。
+
+### 9. 与本任务文档不符的偏差（5 项）
+
+1. **「文件残留可勾选删除」→ 实现为「移入保险箱」**（用户明确选择）。理由：Program Files
+   不在 L3 红线内，白名单拦不住误判，必须留可恢复的退路。
+2. `app/src/utils/invoke.ts` **未改动**（现有模式无 per-command 封装）。
+3. `engine/src/lib.rs` **无需改动**，但 `app/src-tauri/src/{commands,lib}.rs` 漏在白名单外。
+4. `app/src/App.test.tsx` 漏在白名单外（验收 16 只能在 App 层测）。
+5. 白名单漏 `engine/src/execute/safe_box.rs`（目录删除 + 配额缺陷修正）。
+
+### 10. 遗留问题
+
+- **类型 B 的误报率无法归零**：「注册表里没有」推不出「已卸载」。已用四重措施兜底
+  （低置信徽标 + 默认不勾 + 不提供全选 + 移入保险箱）。要提高准确率需引入
+  「文件指纹 / 厂商签名 / 版本资源比对」，属新功能点。
+- **注册表读取只覆盖 Uninstall 三处**，不含「应用和功能」里被 `SystemComponent` 隐藏的项、
+  不含微软商店应用的注册信息——这些程序如果目录还在，会被判成类型 B。
+- 类型 A 只检查 `InstallLocation`，不看 `DisplayIcon` / `UninstallString` 里的路径。
+  `InstallLocation` 为空的项（本机 94 条里有一部分）完全没做残留检查。
+- M1 第 4 项：F 模块注册表健康中心（task-068）。可复用本任务的 `winreg` 子模块。
+- Items / SafeBox / History 三页深色适配待补（本任务新增的 Residual 页已全走 CSS 变量）。
