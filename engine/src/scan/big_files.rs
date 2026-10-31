@@ -24,7 +24,7 @@
 //! 所以遍历时对 reparse point 一律不进。
 
 use std::cmp::Reverse;
-use std::collections::BinaryHeap;
+use std::collections::{BinaryHeap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -347,7 +347,12 @@ pub fn should_skip_root_file(name: &str) -> bool {
 /// 返回 `(总字节数, Top 列表, 是否截断)`。
 ///
 /// 实现要点：
-/// - **显式栈**而不是递归：目录层级深（`node_modules` 能嵌套十几层）时递归会爆栈；
+/// - **显式队列做 BFS**，不用递归也不用 DFS 栈：
+///   - 递归会在 `node_modules` 那种十几层嵌套上爆栈；
+///   - **DFS 在「时间预算用尽」时会一头扎进 `AppData` 深处**，等回过神来
+///     `Desktop` / `Downloads` / `Videos` 一个都没扫到——实测本机 20 秒只覆盖了
+///     `C://Users` 的一部分。BFS 先把同一层的兄弟目录全部排进队列，浅层
+///     （用户真正认识的那些目录）优先被覆盖，截断时结果的可用性高得多；
 /// - **最小堆**维护 Top N：`Reverse` 让堆顶是「当前 Top N 里最小的那个」，
 ///   新文件只要比它大就替换。内存恒定为 O(N)，不受文件总数影响；
 /// - **不跟随 reparse point**：junction / symlink 会造成无限循环与重复计数；
@@ -360,10 +365,11 @@ fn walk_collect(root: &Path, skip_root_files: &[&str], opts: TopFilesOptions) ->
     let mut truncated = false;
     let mut heap: BinaryHeap<Reverse<(u64, PathBuf)>> = BinaryHeap::new();
 
-    // 栈元素：(路径, 是否是根目录这一层)
-    let mut stack: Vec<(PathBuf, bool)> = vec![(root.to_path_buf(), true)];
+    // 队列元素：(路径, 是否是根目录这一层)
+    let mut queue: VecDeque<(PathBuf, bool)> = VecDeque::new();
+    queue.push_back((root.to_path_buf(), true));
 
-    while let Some((dir, is_root)) = stack.pop() {
+    while let Some((dir, is_root)) = queue.pop_front() {
         // 每处理 512 个目录检查一次时间，`Instant::now()` 不便宜，别每次循环都调。
         if Instant::now() >= deadline {
             truncated = true;
@@ -397,7 +403,7 @@ fn walk_collect(root: &Path, skip_root_files: &[&str], opts: TopFilesOptions) ->
                 if should_skip_dir(&name) {
                     continue;
                 }
-                stack.push((entry.path(), false));
+                queue.push_back((entry.path(), false));
                 continue;
             }
 

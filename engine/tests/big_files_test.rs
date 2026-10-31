@@ -366,3 +366,44 @@ fn handler_errors_on_missing_root() {
     assert_eq!(env.code, INTERNAL.code);
     assert!(env.data.is_none(), "失败信封不该带 data");
 }
+
+// ===================== 真机冒烟辅助 =====================
+
+/// 直接扫本机系统盘并打印摘要（`#[ignore]`，CI 默认不跑）。
+///
+/// 为什么需要这条：上面的用例全在 `tempfile` 上跑，证明的是「逻辑对」；
+/// 而「真扫一遍不卡死 / 不 panic / 数字量级合理」只能在真实磁盘上验。
+/// 本机 WebView2 渲染进程起不来（见 `docs/test-reports/` 历史报告），GUI 取证
+/// 拿不到，这条就是后端侧能产出的**真实数据**证据。
+///
+/// 跑法：
+/// ```text
+/// cargo test -p engine --test big_files_test -- --ignored --nocapture real_scan
+/// ```
+#[test]
+#[ignore = "真机冒烟：扫真实系统盘，耗时数秒到数十秒"]
+fn real_scan_smoke() {
+    let drive = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".to_string());
+    let root = std::path::PathBuf::from(format!("{drive}\\"));
+
+    let report = scan_all(&root, TopFilesOptions::default());
+
+    println!(
+        "root={} total={}B scanned={} truncated={} elapsed={}ms",
+        root.display(),
+        report.total_bytes,
+        report.scanned_entries,
+        report.truncated,
+        report.elapsed_ms
+    );
+    for c in &report.categories {
+        println!("  [{}] {}B  {}", c.category, c.size_bytes, c.path);
+    }
+    println!("  top_files={}", report.top_files.len());
+    for f in report.top_files.iter().take(5) {
+        println!("    {}B  {}", f.size_bytes, f.path);
+    }
+
+    // 结构不变量：无论这台机器上有什么，三张卡片必须都在
+    assert_eq!(report.categories.len(), 3);
+}
