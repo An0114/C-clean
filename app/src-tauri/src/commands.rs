@@ -929,3 +929,102 @@ pub fn set_autostart_enabled(
     let actual = mgr.is_enabled().unwrap_or(enabled);
     Ok(Envelope::ok(actual))
 }
+
+// ===================== task-065：WinSxS 组件存储（C 模块） =====================
+
+/// `winsxs_analyze`：跑 `dism /online /cleanup-image /analyzecomponentstore`。
+///
+/// **会弹 UAC**（DISM 必须管理员权限，实测非提权返回错误 740）。所以只能由用户
+/// 主动点「分析」触发，绝不能在页面加载时自动跑。
+///
+/// # 为什么失败走 `Err(String)` 而不是信封
+///
+/// DISM 的失败原因（退出码 + 输出尾部）必须让用户看到，但 `Envelope` 的
+/// `message` 是 `&'static str`、`data` 被出参类型钉死，动态文本塞不进去。
+/// 这与本文件里 `engine::db::conn::open(...).map_err(|e| e.to_string())?` 的
+/// 处理方式一致：**环境/权限类失败走 `Err`，业务判定失败才走信封**。
+#[tauri::command]
+pub async fn winsxs_analyze(
+    paths: tauri::State<'_, AppPaths>,
+) -> Result<Envelope<engine::scan::winsxs::WinsxsAnalysis>, String> {
+    let exe = locate_elevation_exe(&paths).ok_or_else(|| {
+        eprintln!("[winsxs_analyze] 提权 exe 未找到");
+        "提权组件缺失，无法分析组件存储（请重新安装）".to_string()
+    })?;
+
+    let analysis = engine::scan::winsxs::analyze(&exe).map_err(|e| {
+        eprintln!("[winsxs_analyze] {e}");
+        e
+    })?;
+
+    eprintln!(
+        "[winsxs_analyze] reclaimable={}B packages={} recommended={}",
+        analysis.reclaimable_bytes, analysis.reclaimable_packages, analysis.recommended_cleanup
+    );
+    Ok(Envelope::ok(analysis))
+}
+
+/// `winsxs_cleanup`：跑 `dism /online /cleanup-image /startcomponentcleanup`。
+///
+/// # 会弹两次 UAC
+///
+/// 1. 建系统还原点（提权命令 `create_restore_point`）；
+/// 2. 跑 DISM（提权命令 `dism_cleanup`）。
+///
+/// 两个独立的提权进程——还原点必须**先落地**才动手清，合并成一个进程反而做不到
+/// 「建点失败就中止」的语义。
+///
+/// # `skipRestorePoint`
+///
+/// 还原点建失败时返回 2007（RESTOREPOINT_FAILED），前端据此弹「是否继续清理？」；
+/// 用户点继续 → 带 `skipRestorePoint: true` 重调本命令。
+///
+/// # 进度
+///
+/// 每读到 DISM 的一行就 emit 一个 `winsxs://progress` 事件。emit 失败（窗口已关）
+/// 只打日志——进度通道绝不能影响清理本身。
+#[tauri::command]
+pub async fn winsxs_cleanup(
+    app: tauri::AppHandle,
+    skip_restore_point: Option<bool>,
+    paths: tauri::State<'_, AppPaths>,
+) -> Result<Envelope<engine::scan::winsxs::WinsxsCleanupResult>, String> {
+    use tauri::Emitter;
+
+    let exe = locate_elevation_exe(&paths).ok_or_else(|| {
+        eprintln!("[winsxs_cleanup] 提权 exe 未找到");
+        "提权组件缺失，无法清理组件存储（请重新安装）".to_string()
+    })?;
+    let conn = engine::db::conn::open(&paths.data_root).map_err(|e| e.to_string())?;
+
+    let on_line = |seq: u64, line: &str| {
+        let payload = engine::scan::winsxs::WinsxsProgress {
+            seq,
+            line: line.to_string(),
+        };
+        if let Err(e) = app.emit(engine::scan::winsxs::WINSXS_PROGRESS_EVENT, payload) {
+            eprintln!("[winsxs_cleanup] emit progress failed: {e}");
+        }
+    };
+
+    match engine::scan::winsxs::cleanup(&conn, &exe, skip_restore_point == Some(true), &on_line) {
+        Ok(r) => {
+            eprintln!(
+                "[winsxs_cleanup] ok={} exit={} restorePoint={:?} lines={}",
+                r.ok, r.exit_code, r.restore_point_seq, r.line_count
+            );
+            Ok(Envelope::ok(r))
+        }
+        Err(engine::scan::winsxs::WinsxsCleanupError::RestorePoint(m)) => {
+            // 2007：前端弹「是否继续清理？」，用户点继续后带 skipRestorePoint 重调。
+            // 原因只写日志——Envelope 的 data 类型被出参钉死，塞不进字符串。
+            eprintln!("[winsxs_cleanup] 还原点创建失败: {m}");
+            Ok(Envelope::err(engine::ipc::error_codes::RESTOREPOINT_FAILED))
+        }
+        Err(e) => {
+            // 提权链路失败（UAC 被取消等）：原因必须让用户看到。
+            eprintln!("[winsxs_cleanup] {e}");
+            Err(e.to_string())
+        }
+    }
+}

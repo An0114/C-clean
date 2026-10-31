@@ -6,7 +6,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { formatBytes } from "../utils/formatBytes";
-import { api } from "../utils/invoke";
+import { api, apiRaw } from "../utils/invoke";
 
 // engine CleanupStats / ScanProgress 均 #[serde(rename_all = "camelCase")]，
 // 前端 interface 必须用 camelCase（debt-cleanup-004 Bug-1+2：之前 snake_case
@@ -362,6 +362,9 @@ export default function Dashboard({ scanSignal = 0 }: { scanSignal?: number }) {
       {/* task-063：C 盘空间环形图 */}
       <DriveRing />
 
+      {/* task-065：WinSxS 组件存储（C 模块） */}
+      <WinsxsCard />
+
       {/* task-061：最近 30 天释放量趋势 */}
       <TrendChart />
     </main>
@@ -569,6 +572,356 @@ function TrendChart() {
           );
         })}
       </svg>
+    </div>
+  );
+}
+
+// ===================== task-065：WinSxS 组件存储（C 模块） =====================
+//
+// 组件存储（WinSxS）清理必须走 DISM + 管理员权限，所以这块 UI 只做三件事：
+//   1. 展示分析结果（可清理多少 / DISM 是否建议清）；
+//   2. 用户点「立即清理」→ 二次确认 → 调 winsxs_cleanup；
+//   3. 把 DISM 的输出行实时铺出来（事件 winsxs://progress）。
+//
+// **绝不在挂载时自动分析**：DISM 会弹 UAC，页面一打开就弹窗是流氓行为，
+// 而且用户只是路过仪表盘也会被打断。
+
+interface WinsxsAnalysis {
+  lastCleanup: string | null;
+  reclaimablePackages: number;
+  actualSizeBytes: number;
+  backupsAndDisabledBytes: number;
+  cacheAndTempBytes: number;
+  reclaimableBytes: number;
+  recommendedCleanup: boolean;
+  parsed: boolean;
+  rawOutput: string;
+}
+
+interface WinsxsCleanupResult {
+  ok: boolean;
+  exitCode: number;
+  restorePointSeq: number | null;
+  outputTail: string;
+  lineCount: number;
+}
+
+interface WinsxsProgress {
+  seq: number;
+  line: string;
+}
+
+/**
+ * 与 `engine::scan::winsxs::WINSXS_PROGRESS_EVENT` 对齐。
+ * engine 侧有单测钉住这个字符串，改名会在 `cargo test` 里红。
+ */
+const WINSXS_PROGRESS_EVENT = "winsxs://progress";
+
+/** 进度面板最多缓存多少行：DISM 能输出上千行，全渲染会把 WebView 拖卡。 */
+const WINSXS_MAX_LINES = 200;
+
+/** 进度面板显示最近几行（看的是「现在在干什么」，不是完整日志）。 */
+const WINSXS_TAIL = 8;
+
+/** 还原点创建失败的 IPC 错误码（engine::ipc::error_codes::RESTOREPOINT_FAILED）。 */
+const CODE_RESTOREPOINT_FAILED = 2007;
+
+const winsxsBtnStyle = (disabled: boolean): React.CSSProperties => ({
+  padding: "7px 14px",
+  fontSize: 13,
+  borderRadius: 6,
+  border: `1px solid ${disabled ? "var(--border)" : "#2563eb"}`,
+  background: disabled ? "var(--bg)" : "#2563eb",
+  color: disabled ? "var(--text-muted)" : "#fff",
+  cursor: disabled ? "not-allowed" : "pointer",
+});
+
+function WinsxsCard() {
+  const [analysis, setAnalysis] = useState<WinsxsAnalysis | null>(null);
+  const [analyzing, setAnalyzing] = useState(false);
+  const [analyzeError, setAnalyzeError] = useState("");
+
+  const [cleaning, setCleaning] = useState(false);
+  const [cleanLines, setCleanLines] = useState<string[]>([]);
+  const [cleanResult, setCleanResult] = useState<WinsxsCleanupResult | null>(null);
+  const [cleanError, setCleanError] = useState("");
+
+  const analyze = useCallback(async () => {
+    setAnalyzing(true);
+    setAnalyzeError("");
+    try {
+      setAnalysis(await api<WinsxsAnalysis>("winsxs_analyze", {}));
+    } catch (e) {
+      // 失败时清掉旧结果：留着上一次的数字会让人以为「分析成功了，还是这些」
+      setAnalysis(null);
+      setAnalyzeError(String(e));
+    } finally {
+      setAnalyzing(false);
+    }
+  }, []);
+
+  const cleanup = useCallback(async () => {
+    const size = analysis ? formatBytes(analysis.reclaimableBytes) : "若干空间";
+    if (
+      !window.confirm(
+        `将清理组件存储中约 ${size}。过程中会先创建系统还原点，并弹出管理员授权。是否继续？`
+      )
+    ) {
+      return;
+    }
+
+    setCleaning(true);
+    setCleanError("");
+    setCleanResult(null);
+    setCleanLines([]);
+
+    let unlisten: UnlistenFn | null = null;
+    try {
+      // 先订阅再调用：DISM 可能在命令 resolve 之前就把头几行吐出来了。
+      unlisten = await listen<WinsxsProgress>(WINSXS_PROGRESS_EVENT, (e) => {
+        setCleanLines((prev) => {
+          const next = [...prev, e.payload.line];
+          return next.length > WINSXS_MAX_LINES
+            ? next.slice(next.length - WINSXS_MAX_LINES)
+            : next;
+        });
+      });
+
+      let skipRestorePoint = false;
+      let askedContinue = false;
+      // 2007 = 还原点建失败。问一次「是否继续」；用户同意就带 skipRestorePoint
+      // 重调。**只重试一次**，避免「一直失败一直问」的死循环。
+      for (;;) {
+        const env = await apiRaw<WinsxsCleanupResult>("winsxs_cleanup", {
+          skipRestorePoint,
+        });
+        if (env.code === CODE_RESTOREPOINT_FAILED && !askedContinue) {
+          askedContinue = true;
+          const go = window.confirm(
+            "系统还原点创建失败（可能系统还原已关闭）。继续清理将无法回滚，是否继续？"
+          );
+          if (!go) {
+            setCleanError("已取消：系统还原点创建失败，未执行清理");
+            break;
+          }
+          skipRestorePoint = true;
+          continue;
+        }
+        if (env.code !== 0) {
+          setCleanError(env.message);
+          break;
+        }
+        setCleanResult(env.data);
+        break;
+      }
+    } catch (e) {
+      // 提权链路失败（UAC 被取消等）：命令走 Err，原因在字符串里。
+      setCleanError(String(e));
+    } finally {
+      unlisten?.();
+      setCleaning(false);
+    }
+  }, [analysis]);
+
+  const reclaimable = analysis ? formatBytes(analysis.reclaimableBytes) : "";
+  const hasReclaimable =
+    !!analysis && (analysis.reclaimableBytes > 0 || analysis.reclaimablePackages > 0);
+  const canClean = hasReclaimable && !cleaning && !analyzing;
+
+  return (
+    <div style={{ ...cardStyle, marginTop: 12 }} data-testid="winsxs-card">
+      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
+        <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>
+          WinSxS 组件存储
+        </div>
+        <div style={{ fontSize: 11, color: "var(--text-muted)" }}>需管理员权限（会弹 UAC）</div>
+      </div>
+
+      {!analysis && !analyzing && (
+        <div style={{ marginTop: 10 }}>
+          <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 8 }}>
+            分析组件存储里可回收的旧版本组件。DISM 分析通常十几秒到几分钟，期间请勿关闭窗口。
+          </div>
+          <button onClick={analyze} style={winsxsBtnStyle(false)}>
+            分析组件存储
+          </button>
+        </div>
+      )}
+
+      {analyzing && (
+        <div style={{ marginTop: 10, fontSize: 12, color: "var(--text-muted)" }}>
+          正在分析…（DISM 运行中，若弹出授权请点「是」）
+        </div>
+      )}
+
+      {analyzeError && (
+        <div
+          style={{
+            marginTop: 10,
+            background: "#fee2e2",
+            border: "1px solid #fca5a5",
+            color: "#b91c1c",
+            padding: 10,
+            borderRadius: 6,
+            fontSize: 12,
+          }}
+        >
+          <div style={{ fontWeight: 600, marginBottom: 4 }}>分析失败</div>
+          <div style={{ wordBreak: "break-all" }}>{analyzeError}</div>
+        </div>
+      )}
+
+      {analysis && (
+        <div style={{ marginTop: 10 }}>
+          <div
+            style={{
+              display: "flex",
+              gap: 24,
+              flexWrap: "wrap",
+              fontSize: 12,
+              lineHeight: 1.9,
+              color: "var(--text)",
+            }}
+          >
+            <div>
+              <div style={{ color: "var(--text-muted)" }}>可清理</div>
+              <div style={{ fontSize: 20, fontWeight: 600 }}>{reclaimable}</div>
+            </div>
+            <div>
+              <div style={{ color: "var(--text-muted)" }}>可回收包</div>
+              <div style={{ fontSize: 20, fontWeight: 600 }}>{analysis.reclaimablePackages}</div>
+            </div>
+            <div>
+              <div style={{ color: "var(--text-muted)" }}>组件存储实际大小</div>
+              <div>{formatBytes(analysis.actualSizeBytes)}</div>
+            </div>
+            <div>
+              <div style={{ color: "var(--text-muted)" }}>上次清理</div>
+              <div>{analysis.lastCleanup ?? "从未清理"}</div>
+            </div>
+            <div>
+              <div style={{ color: "var(--text-muted)" }}>DISM 建议</div>
+              <div style={{ color: analysis.recommendedCleanup ? "#b45309" : "var(--text)" }}>
+                {analysis.recommendedCleanup ? "建议清理" : "暂不建议清理"}
+              </div>
+            </div>
+          </div>
+
+          <div style={{ marginTop: 10, display: "flex", gap: 8 }}>
+            <button onClick={cleanup} disabled={!canClean} style={winsxsBtnStyle(!canClean)}>
+              {cleaning ? "清理中…" : "立即清理"}
+            </button>
+            <button
+              onClick={analyze}
+              disabled={analyzing || cleaning}
+              style={{
+                padding: "7px 14px",
+                fontSize: 13,
+                borderRadius: 6,
+                border: "1px solid var(--border)",
+                background: "var(--bg)",
+                color: "var(--text)",
+                cursor: analyzing || cleaning ? "not-allowed" : "pointer",
+              }}
+            >
+              重新分析
+            </button>
+          </div>
+
+          {!cleaning && !hasReclaimable && (
+            <div style={{ marginTop: 8, fontSize: 12, color: "var(--text-muted)" }}>
+              当前没有可回收的组件，无需清理。
+            </div>
+          )}
+        </div>
+      )}
+
+      {cleaning && (
+        <div
+          style={{
+            marginTop: 10,
+            background: "var(--bg)",
+            border: "1px solid var(--border)",
+            borderRadius: 6,
+            padding: 8,
+            fontFamily: "ui-monospace, SFMono-Regular, Consolas, monospace",
+            fontSize: 11,
+            lineHeight: 1.6,
+            color: "var(--text)",
+            maxHeight: 140,
+            overflow: "auto",
+          }}
+        >
+          {cleanLines.length === 0 ? (
+            <div style={{ color: "var(--text-muted)" }}>
+              正在创建系统还原点…（若弹出授权请点「是」）
+            </div>
+          ) : (
+            cleanLines.slice(-WINSXS_TAIL).map((line, i) => <div key={`${i}-${line}`}>{line}</div>)
+          )}
+        </div>
+      )}
+
+      {cleanResult && (
+        <div
+          style={{
+            marginTop: 10,
+            background: cleanResult.ok ? "#ecfdf5" : "#fee2e2",
+            border: `1px solid ${cleanResult.ok ? "#6ee7b7" : "#fca5a5"}`,
+            color: cleanResult.ok ? "#065f46" : "#b91c1c",
+            padding: 10,
+            borderRadius: 6,
+            fontSize: 12,
+          }}
+        >
+          <div style={{ fontWeight: 600, marginBottom: 4 }}>
+            {cleanResult.ok
+              ? "组件存储清理完成"
+              : `清理失败（DISM 退出码 ${cleanResult.exitCode}）`}
+          </div>
+          <div style={{ color: "var(--text-muted)" }}>
+            {cleanResult.restorePointSeq !== null
+              ? `清理前已创建系统还原点 #${cleanResult.restorePointSeq}`
+              : "本次未创建系统还原点"}
+            {" · "}
+            共 {cleanResult.lineCount} 行 DISM 输出
+          </div>
+          {cleanResult.outputTail && (
+            <div
+              style={{
+                marginTop: 6,
+                fontFamily: "ui-monospace, SFMono-Regular, Consolas, monospace",
+                fontSize: 11,
+                wordBreak: "break-all",
+              }}
+            >
+              {cleanResult.outputTail}
+            </div>
+          )}
+          {cleanResult.ok && (
+            <div style={{ marginTop: 6, color: "var(--text-muted)" }}>
+              点「重新分析」可查看最新可清理空间。
+            </div>
+          )}
+        </div>
+      )}
+
+      {cleanError && (
+        <div
+          style={{
+            marginTop: 10,
+            background: "#fee2e2",
+            border: "1px solid #fca5a5",
+            color: "#b91c1c",
+            padding: 10,
+            borderRadius: 6,
+            fontSize: 12,
+          }}
+        >
+          <div style={{ fontWeight: 600, marginBottom: 4 }}>清理未完成</div>
+          <div style={{ wordBreak: "break-all" }}>{cleanError}</div>
+        </div>
+      )}
     </div>
   );
 }
