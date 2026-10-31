@@ -376,3 +376,66 @@ fn real_scan_smoke() {
         "本机至少应该读到一些卸载项，读到 0 说明注册表读取有问题"
     );
 }
+
+// ===================== IPC handler =====================
+
+#[test]
+fn handler_scan_returns_ok_envelope() {
+    use engine::ipc::commands::residual::handle_residual_scan;
+
+    let env = handle_residual_scan();
+    assert_eq!(env.code, 0);
+    assert_eq!(env.message, "ok");
+    let r = env.data.expect("成功信封必须带 data");
+    // 本机至少能读到一些卸载项；读到 0 说明注册表读取坏了
+    assert!(
+        r.registry_entries > 0,
+        "registry_entries={}",
+        r.registry_entries
+    );
+    assert!(r.dirs_scanned > 0, "dirs_scanned={}", r.dirs_scanned);
+}
+
+#[test]
+fn handler_delete_empty_is_ok_with_empty_result() {
+    use engine::ipc::commands::residual::handle_residual_delete;
+
+    let (tmp, conn) = setup_db();
+    let env = handle_residual_delete(&[], &conn, &tmp.path().join("box"));
+    assert_eq!(env.code, 0, "没勾任何东西不是错误");
+    let r = env.data.expect("应带 data");
+    assert!(r.moved.is_empty());
+    assert!(r.failed.is_empty());
+}
+
+#[test]
+fn handler_delete_all_denied_returns_2002() {
+    use engine::ipc::commands::residual::handle_residual_delete;
+    use engine::ipc::error_codes::WHITELIST_DENIED;
+
+    let (tmp, conn) = setup_db();
+    let userprofile = std::env::var("USERPROFILE").unwrap_or_else(|_| r"C:/Users/test".to_string());
+    let desktop = format!(r"{userprofile}\Desktop\cclean-never-move-me");
+
+    let env = handle_residual_delete(&[desktop], &conn, &tmp.path().join("box"));
+    // 全部命中红线 → 这是安全事件，必须用 2002 而不是「静默 ok」
+    assert_eq!(env.code, WHITELIST_DENIED.code);
+    assert!(env.data.is_none(), "失败信封不该带 data");
+}
+
+#[test]
+fn handler_delete_moves_orphan_dir() {
+    use engine::ipc::commands::residual::handle_residual_delete;
+
+    let (tmp, conn) = setup_db();
+    let box_dir = tmp.path().join("box");
+    let junk = tmp.path().join("ProgramFiles").join("JunkApp");
+    make_file(&junk.join("x.bin"), 2048);
+
+    let env = handle_residual_delete(&[junk.to_string_lossy().to_string()], &conn, &box_dir);
+    assert_eq!(env.code, 0);
+    let r = env.data.expect("应带 data");
+    assert_eq!(r.moved.len(), 1, "failed={:?}", r.failed);
+    assert_eq!(r.bytes_moved, 2048);
+    assert!(!junk.exists());
+}

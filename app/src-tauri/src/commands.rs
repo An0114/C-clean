@@ -1076,3 +1076,65 @@ pub async fn big_files_scan() -> Result<Envelope<engine::scan::big_files::BigFil
     }
     Ok(env)
 }
+
+// ===================== task-067：残留增强（D 模块） =====================
+
+/// `residual_scan`：注册表卸载列表 ↔ 文件目录交叉比对。
+///
+/// 只读——扫注册表和目录，不改任何东西。会返回两类：
+/// - **类型 A**（`confidence=high`）：注册表有 `InstallLocation` 但目录已不存在；
+/// - **类型 B**（`confidence=low`）：安装目录存在但注册表找不到归属。
+///
+/// 类型 B 的误判率天然偏高（绿色软件/商店应用/无 `InstallLocation` 的程序都会
+/// 落进来），所以后端一律标 `riskLevel=L2`，前端必须逐项确认。
+#[tauri::command]
+pub async fn residual_scan() -> Result<Envelope<engine::scan::residual::ResidualReport>, String> {
+    let env = engine::ipc::commands::residual::handle_residual_scan();
+    if let Some(r) = &env.data {
+        eprintln!(
+            "[residual_scan] entries={} dirs={} typeA={} typeB={} total={}B {}ms",
+            r.registry_entries,
+            r.dirs_scanned,
+            r.registry_items.len(),
+            r.file_items.len(),
+            r.total_bytes,
+            r.elapsed_ms
+        );
+    }
+    Ok(env)
+}
+
+/// `residual_delete`：把勾选的残留目录**移入保险箱**（7 天可恢复）。
+///
+/// # 不是直接删
+///
+/// 先过 `engine::execute::delete::execute` 的唯一入口红线校验，再
+/// `SafeBoxDeleter::delete_dir` 整体 rename 进 `%APPDATA%\...\safe_box`。
+/// 目录结构完整保留，恢复后目录树原样回来；7 天后由 `purge_expired` 永久删除。
+///
+/// # 为什么需要 conn
+///
+/// `SafeBoxDeleter` 移入时要写 `safe_box` 行（7 天后 purge 靠它）。没有行
+/// 就是「文件移走了但没人记得」，永远清不掉。
+#[tauri::command]
+pub async fn residual_delete(
+    paths: Vec<String>,
+    paths_ctx: tauri::State<'_, AppPaths>,
+) -> Result<Envelope<engine::scan::residual::ResidualDeleteResult>, String> {
+    let conn = engine::db::conn::open(&paths_ctx.data_root).map_err(|e| e.to_string())?;
+
+    let env =
+        engine::ipc::commands::residual::handle_residual_delete(&paths, &conn, &paths_ctx.box_dir);
+    if let Some(r) = &env.data {
+        eprintln!(
+            "[residual_delete] moved={} failed={} bytes={}",
+            r.moved.len(),
+            r.failed.len(),
+            r.bytes_moved
+        );
+        for f in &r.failed {
+            eprintln!("[residual_delete] 失败 {}: {}", f.path, f.reason);
+        }
+    }
+    Ok(env)
+}
