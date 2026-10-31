@@ -35,6 +35,7 @@ use crate::execute::normalize::normalize;
 use crate::execute::normalize::NormalizedPath;
 use crate::execute::safe_box::SafeBoxDeleter;
 use crate::scan::big_files::dir_total_bytes;
+use crate::scan::winreg::{self, RegRoot};
 
 /// 残留类型：注册表残留（类型 A）。
 pub const RESIDUAL_REGISTRY: &str = "registry";
@@ -181,39 +182,25 @@ pub fn scan_registry_uninstall() -> Vec<UninstallEntry> {
     }
 }
 
-/// 注册表根（跨平台占位，真正的 HKEY 只在 windows 分支里映射）。
-#[derive(Debug, Clone, Copy)]
-enum RegRoot {
-    LocalMachine,
-    CurrentUser,
-}
-
 #[cfg(windows)]
 fn read_uninstall_root(root: RegRoot, root_label: &str, subkey: &str) -> Vec<UninstallEntry> {
-    use windows::Win32::System::Registry::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
-
-    let hkey = match root {
-        RegRoot::LocalMachine => HKEY_LOCAL_MACHINE,
-        RegRoot::CurrentUser => HKEY_CURRENT_USER,
-    };
-
     let mut out = Vec::new();
-    for sub in winreg::subkey_names(hkey, subkey) {
+    for sub in winreg::subkey_names(root, subkey) {
         let full = format!(r"{subkey}\{sub}");
-        let display_name = match winreg::string_value(hkey, &full, "DisplayName") {
+        let display_name = match winreg::string_value(root, &full, "DisplayName") {
             Some(v) if !v.trim().is_empty() => v.trim().to_string(),
             // 没有 DisplayName 的是补丁/系统组件，不是「可卸载程序」
             _ => continue,
         };
-        if winreg::dword_value(hkey, &full, "SystemComponent") == Some(1) {
+        if winreg::dword_value(root, &full, "SystemComponent") == Some(1) {
             continue;
         }
-        if winreg::string_value(hkey, &full, "ParentKeyName").is_some() {
+        if winreg::string_value(root, &full, "ParentKeyName").is_some() {
             continue;
         }
         out.push(UninstallEntry {
             display_name,
-            install_location: winreg::string_value(hkey, &full, "InstallLocation")
+            install_location: winreg::string_value(root, &full, "InstallLocation")
                 .map(|s| clean_location(&s)),
             registry_key: format!(r"{root_label}\{full}"),
         });
@@ -275,130 +262,6 @@ pub fn expand_env(s: &str) -> String {
     }
     out.push_str(rest);
     out
-}
-
-/// Windows 注册表最小封装（只做本模块需要的事）。
-///
-/// 为什么手写而不是引 `winreg` crate：`windows` crate 已在依赖里、
-/// `Win32_System_Registry` feature 也已开（task-062 为 `SHELLEXECUTEINFOW` 开的），
-/// 再加一个 crate 只会拖编译时间。本模块只需要「枚举子键 + 读字符串/DWORD」三件事。
-#[cfg(windows)]
-mod winreg {
-    use windows::core::{PCWSTR, PWSTR};
-    use windows::Win32::System::Registry::{
-        RegCloseKey, RegEnumKeyExW, RegGetValueW, RegOpenKeyExW, HKEY, KEY_READ, RRF_RT_REG_DWORD,
-        RRF_RT_REG_SZ,
-    };
-
-    /// 一次枚举最多读多少个子键（防御异常大的键导致死循环）。
-    const MAX_SUBKEYS: usize = 4096;
-
-    fn to_wide(s: &str) -> Vec<u16> {
-        s.encode_utf16().chain(std::iter::once(0)).collect()
-    }
-
-    /// 枚举 `root\subkey` 下的直接子键名。打不开就返回空（不是错误）。
-    pub fn subkey_names(root: HKEY, subkey: &str) -> Vec<String> {
-        let mut names = Vec::new();
-        let path = to_wide(subkey);
-        let mut hkey = HKEY::default();
-
-        // SAFETY: path 以 NUL 结尾且在本函数内存活；hkey 是栈上变量，API 只写它。
-        let rc = unsafe { RegOpenKeyExW(root, PCWSTR(path.as_ptr()), 0, KEY_READ, &mut hkey) };
-        if rc.is_err() {
-            return names;
-        }
-
-        let mut buf = [0u16; 512];
-        for idx in 0..MAX_SUBKEYS {
-            let mut len: u32 = buf.len() as u32;
-            // SAFETY: buf 容量已通过 len 告知 API；其余可选参数传 None（不需要）。
-            let rc = unsafe {
-                RegEnumKeyExW(
-                    hkey,
-                    idx as u32,
-                    PWSTR(buf.as_mut_ptr()),
-                    &mut len,
-                    None,
-                    PWSTR::null(),
-                    None,
-                    None,
-                )
-            };
-            if rc.is_err() {
-                // ERROR_NO_MORE_ITEMS 就是枚举完了；其他错误也停
-                break;
-            }
-            names.push(String::from_utf16_lossy(&buf[..len as usize]));
-        }
-
-        // SAFETY: hkey 由本函数独占打开，关闭一次。
-        let _ = unsafe { RegCloseKey(hkey) };
-        names
-    }
-
-    /// 读一个 `REG_SZ` / `REG_EXPAND_SZ` 值。
-    pub fn string_value(root: HKEY, subkey: &str, value: &str) -> Option<String> {
-        let mut buf = vec![0u8; 2048];
-        let mut len: u32 = buf.len() as u32;
-        let path = to_wide(subkey);
-        let name = to_wide(value);
-
-        // SAFETY: 两个字符串都以 NUL 结尾且在本函数内存活；buf 的容量通过 len 告知。
-        let rc = unsafe {
-            RegGetValueW(
-                root,
-                PCWSTR(path.as_ptr()),
-                PCWSTR(name.as_ptr()),
-                RRF_RT_REG_SZ,
-                None,
-                Some(buf.as_mut_ptr() as *mut _),
-                Some(&mut len),
-            )
-        };
-        if rc.is_err() || len < 2 {
-            return None;
-        }
-
-        // len 是**字节数**（含结尾 NUL）。u8 缓冲按 u16 解释：
-        // Vec<u8> 的起始地址对齐满足 u16 要求（分配器按 8 字节对齐）。
-        let units = (len as usize) / 2;
-        // SAFETY: buf 至少 units*2 字节有效，且 u16 对齐成立。
-        let wide = unsafe { std::slice::from_raw_parts(buf.as_ptr() as *const u16, units) };
-        let text = String::from_utf16_lossy(wide);
-        let text = text.trim_end_matches('\0').to_string();
-        if text.is_empty() {
-            None
-        } else {
-            Some(text)
-        }
-    }
-
-    /// 读一个 `REG_DWORD` 值。
-    pub fn dword_value(root: HKEY, subkey: &str, value: &str) -> Option<u32> {
-        let mut data: u32 = 0;
-        let mut len: u32 = 4;
-        let path = to_wide(subkey);
-        let name = to_wide(value);
-
-        // SAFETY: data 是栈上 u32，len 已告知其大小；字符串均以 NUL 结尾且存活。
-        let rc = unsafe {
-            RegGetValueW(
-                root,
-                PCWSTR(path.as_ptr()),
-                PCWSTR(name.as_ptr()),
-                RRF_RT_REG_DWORD,
-                None,
-                Some(&mut data as *mut u32 as *mut _),
-                Some(&mut len),
-            )
-        };
-        if rc.is_err() {
-            None
-        } else {
-            Some(data)
-        }
-    }
 }
 
 // ===================== 安装目录枚举 =====================
