@@ -7,6 +7,7 @@
 pub mod big_files;
 pub mod orchestrator;
 pub mod parser;
+pub mod residual;
 pub mod runner;
 /// WinSxS 组件存储分析/清理（task-065，C 模块）。
 pub mod winsxs;
@@ -14,5 +15,6 @@ pub mod winsxs;
 pub use big_files::{BigFileItem, BigFilesReport};
 pub use orchestrator::{OrchestratorError, OrchestratorSummary, ScanOrchestrator};
 pub use parser::{NdjsonEvent, ParseError};
+pub use residual::{ResidualItem, ResidualReport};
 pub use runner::{RunError, ScanRunner, ScanSummary};
 pub use winsxs::WinsxsAnalysis;

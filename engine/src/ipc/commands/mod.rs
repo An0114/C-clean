@@ -2,4 +2,5 @@
 
 pub mod big_files;
 pub mod dry_run;
+pub mod residual;
 pub mod scan_start;

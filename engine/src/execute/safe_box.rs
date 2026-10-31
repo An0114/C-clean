@@ -136,7 +136,18 @@ impl<'conn> Deleter for SafeBoxDeleter<'conn> {
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
             Err(e) => return Err(format!("stat {src}: {e}")),
         };
-        let size = meta.len();
+        // task-067：目录必须递归求和。
+        //
+        // `metadata().len()` 对目录只返回**目录项本身**的大小（NTFS 上通常 0），
+        // 直接拿它算配额等于配额失效——一个 3 GB 的残留目录会被记成 0 字节，
+        // `enforce_quota` 完全放行，保险箱可以被撑爆。残留清理会把整个目录
+        // rename 进保险箱（结构完整保留，恢复后目录树原样回来），所以这条路径
+        // 是真会被走到的。
+        let size = if meta.is_dir() {
+            crate::scan::big_files::dir_total_bytes(src_path)
+        } else {
+            meta.len()
+        };
 
         // 1. 先确保 box_dir 存在
         fs::create_dir_all(&self.box_dir)
@@ -236,10 +247,15 @@ impl<'conn> Deleter for SafeBoxDeleter<'conn> {
     }
 
     fn delete_dir(&self, p: &NormalizedPath) -> Result<(), String> {
-        Err(format!(
-            "SafeBoxDeleter::delete_dir not implemented for {} (task-016 only moves files)",
-            p.normalized()
-        ))
+        // task-067：目录也要能进保险箱。
+        //
+        // 实现上就是复用 `delete_file`——对目录而言 `fs::rename` 本来就是
+        // **整体移动**（同卷原子），内部结构完整保留，恢复时 rename 回来
+        // 目录树原样复原。区别只在于体积要用递归求和（已在 `delete_file` 里修）。
+        //
+        // `Ok(false)`（目录在移动前已不存在）对 delete_dir 的语义也是成功
+        // ——幂等，不需要额外报错。
+        self.delete_file(p).map(|_| ())
     }
 }
 
