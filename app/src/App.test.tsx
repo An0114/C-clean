@@ -402,3 +402,40 @@ describe("tab 切换（task-066 大文件）", () => {
     expect(screen.queryByText("清理统计")).toBeNull();
   });
 });
+
+// ============ ⑤ tab 切换（task-067：残留扫描）============
+//
+// 任务书验收 16「单测：tab 切换正确」。tab 状态在 App 里，只能在这一层测。
+
+describe("tab 切换（task-067 残留）", () => {
+  it("Tab 栏有「残留」按钮，点击后渲染残留扫描页", async () => {
+    mockedInvoke.mockImplementation(((cmd: string) => {
+      if (cmd === "residual_scan") {
+        return Promise.resolve(
+          ok({
+            registryItems: [],
+            fileItems: [],
+            totalBytes: 0,
+            registryEntries: 94,
+            dirsScanned: 28,
+            sizeTruncated: false,
+            elapsedMs: 75,
+          })
+        );
+      }
+      return Promise.resolve(
+        ok({ totalBytesFreed: 0, successCount: 0, failedCount: 0, sessionCount: 0 })
+      );
+    }) as unknown as typeof invoke);
+
+    render(<App />);
+
+    const btn = await screen.findByText("残留");
+    fireEvent.click(btn);
+
+    expect(await screen.findByText("残留扫描")).toBeTruthy();
+    // 空列表也要给出说明，而不是一片空白
+    expect(screen.getByText(/没有发现文件残留/)).toBeTruthy();
+    expect(screen.queryByText("清理统计")).toBeNull();
+  });
+});
