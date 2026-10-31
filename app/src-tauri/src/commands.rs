@@ -1138,3 +1138,84 @@ pub async fn residual_delete(
     }
     Ok(env)
 }
+
+// ===================== task-068：注册表健康中心（F 模块） =====================
+
+/// 计划任务目录（`%SystemRoot%\System32\Tasks`）。
+///
+/// 不写死 `C:/Windows`：系统装在别的盘 / 改过 SystemRoot 的机器上会读空。
+fn scheduled_tasks_dir() -> std::path::PathBuf {
+    let root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:/Windows".to_string());
+    std::path::PathBuf::from(root)
+        .join("System32")
+        .join("Tasks")
+}
+
+/// `registry_health_scan`：Run 键 / 卸载残留 / 计划任务三分类体检（只读）。
+///
+/// `taskScanAvailable` 会如实反映计划任务目录能不能读——普通用户对该目录
+/// 就是 Permission denied，前端要区分「没有任务」和「读不到」。
+#[tauri::command]
+pub async fn registry_health_scan(
+) -> Result<Envelope<engine::scan::registry_health::RegistryHealthReport>, String> {
+    let env =
+        engine::ipc::commands::registry_health::handle_registry_health_scan(&scheduled_tasks_dir());
+    if let Some(r) = &env.data {
+        eprintln!(
+            "[registry_health_scan] run={} uninstall={} task={} taskReadable={} {}ms",
+            r.run_items.len(),
+            r.uninstall_items.len(),
+            r.task_items.len(),
+            r.task_scan_available,
+            r.elapsed_ms
+        );
+    }
+    Ok(env)
+}
+
+/// `registry_health_delete`：删除 Run 启动项，**删前自动导出 `.reg` 备份**。
+///
+/// # 只删值不删键
+///
+/// `HKCU\...\Run` 下一个值对应一个程序，删键会连带干掉同键下其他所有启动项。
+///
+/// # fail-closed
+///
+/// 备份写不出来就不删。备份落在 `<data_root>\registry_backups\`，
+/// 双击 `.reg` 即可还原。
+///
+/// # 后端独立复核
+///
+/// 删除前重新读值、重新判 L3，**不信前端传的 `riskLevel`**。
+#[tauri::command]
+pub async fn registry_health_delete(
+    targets: Vec<engine::scan::registry_health::RunTarget>,
+    paths_ctx: tauri::State<'_, AppPaths>,
+) -> Result<Envelope<engine::scan::registry_health::RegistryDeleteResult>, String> {
+    let backup_dir = paths_ctx.data_root.join("registry_backups");
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+
+    let env = engine::ipc::commands::registry_health::handle_registry_health_delete(
+        &backup_dir,
+        &targets,
+        now,
+    );
+    if let Some(r) = &env.data {
+        eprintln!(
+            "[registry_health_delete] deleted={} failed={} backups={}",
+            r.deleted.len(),
+            r.failed.len(),
+            r.backups.len()
+        );
+        for b in &r.backups {
+            eprintln!("[registry_health_delete] 备份 → {b}");
+        }
+        for f in &r.failed {
+            eprintln!("[registry_health_delete] 失败 {}: {}", f.name, f.reason);
+        }
+    }
+    Ok(env)
+}

@@ -9,6 +9,7 @@ import { api } from "./utils/invoke";
 import BigFiles from "./pages/BigFiles";
 import Dashboard from "./pages/Dashboard";
 import History from "./pages/History";
+import RegistryHealth from "./pages/RegistryHealth";
 import Residual from "./pages/Residual";
 import Items from "./pages/Items";
 import SafeBox from "./pages/SafeBox";
@@ -25,7 +26,15 @@ import {
   writeDismissedVersion,
 } from "./utils/update";
 
-type Tab = "dashboard" | "items" | "bigfiles" | "residual" | "safebox" | "history" | "settings";
+type Tab =
+  | "dashboard"
+  | "items"
+  | "bigfiles"
+  | "residual"
+  | "registry"
+  | "safebox"
+  | "history"
+  | "settings";
 
 // ===================== task-061：主题 =====================
 //
@@ -501,6 +510,9 @@ export default function App() {
         <button style={tabBtnStyle(tab === "residual")} onClick={() => setTab("residual")}>
           残留
         </button>
+        <button style={tabBtnStyle(tab === "registry")} onClick={() => setTab("registry")}>
+          注册表
+        </button>
         <button style={tabBtnStyle(tab === "safebox")} onClick={() => setTab("safebox")}>
           保险箱
         </button>
@@ -516,6 +528,7 @@ export default function App() {
         {tab === "items" && <Items />}
         {tab === "bigfiles" && <BigFiles />}
         {tab === "residual" && <Residual />}
+        {tab === "registry" && <RegistryHealth />}
         {tab === "safebox" && <SafeBox />}
         {tab === "history" && <History />}
         {tab === "settings" && (
