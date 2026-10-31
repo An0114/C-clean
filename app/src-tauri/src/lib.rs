@@ -99,7 +99,10 @@ pub fn run() {
             commands::big_files_scan,
             // task-067：残留增强（D 模块）
             commands::residual_scan,
-            commands::residual_delete
+            commands::residual_delete,
+            // task-068：注册表健康中心（F 模块）
+            commands::registry_health_scan,
+            commands::registry_health_delete
         ])
         .run(tauri::generate_context!())
         .expect("error while running C-Disk Cleaner");

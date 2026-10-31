@@ -528,3 +528,82 @@ fn scan_all_reports_task_dir_available() {
     assert!(r.task_scan_available, "能读到就必须标 true");
     assert_eq!(r.task_items.len(), 1);
 }
+
+// ===================== IPC handler =====================
+
+#[test]
+fn handler_scan_returns_ok_envelope() {
+    use engine::ipc::commands::registry_health::handle_registry_health_scan;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let env = handle_registry_health_scan(tmp.path());
+
+    assert_eq!(env.code, 0);
+    assert_eq!(env.message, "ok");
+    let r = env.data.expect("成功信封必须带 data");
+    // 本机至少有启动项；三分类字段都要在
+    assert!(!r.run_items.is_empty(), "本机至少有几个启动项");
+    assert!(r.run_items.iter().all(|i| i.category == "run"));
+    assert!(r.uninstall_items.iter().all(|i| i.category == "uninstall"));
+    // tempdir 可读 → available 必须是 true
+    assert!(r.task_scan_available);
+}
+
+#[test]
+fn handler_delete_empty_is_ok() {
+    use engine::ipc::commands::registry_health::handle_registry_health_delete;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let env = handle_registry_health_delete(&tmp.path().join("bk"), &[], 1);
+    assert_eq!(env.code, 0, "没勾任何东西不是错误");
+    let r = env.data.expect("应带 data");
+    assert!(r.deleted.is_empty());
+    assert!(r.failed.is_empty());
+}
+
+#[test]
+fn handler_delete_empty_backup_dir_returns_internal() {
+    use engine::ipc::commands::registry_health::handle_registry_health_delete;
+    use engine::ipc::error_codes::INTERNAL;
+
+    let env = handle_registry_health_delete(
+        std::path::Path::new(""),
+        &[RunTarget {
+            root: "HKCU".to_string(),
+            subkey: "Software\\X".to_string(),
+            value_name: "Y".to_string(),
+        }],
+        1,
+    );
+    // 备份目录为空会把 .reg 写到当前工作目录，必须挡在门外
+    assert_eq!(env.code, INTERNAL.code);
+    assert!(env.data.is_none());
+}
+
+#[test]
+#[cfg(windows)]
+fn handler_delete_all_l3_returns_2002() {
+    use engine::ipc::commands::registry_health::handle_registry_health_delete;
+    use engine::ipc::error_codes::WHITELIST_DENIED;
+
+    let sub = test_subkey("handler-l3");
+    remove_test_key(&sub);
+    write_test_value(&sub, "SysEntry", r"C:/Windows/System32/svchost.exe");
+
+    let backup_dir = tempfile::tempdir().unwrap();
+    let env = handle_registry_health_delete(
+        backup_dir.path(),
+        &[RunTarget {
+            root: "HKCU".to_string(),
+            subkey: sub.clone(),
+            value_name: "SysEntry".to_string(),
+        }],
+        1,
+    );
+
+    // 全部命中 L3 → 安全事件，必须 2002 而不是「静默 ok」
+    assert_eq!(env.code, WHITELIST_DENIED.code);
+    assert!(env.data.is_none());
+
+    remove_test_key(&sub);
+}
