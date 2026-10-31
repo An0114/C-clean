@@ -343,3 +343,62 @@ describe("仪表盘趋势图（task-061）", () => {
     expect(screen.getByText("总释放空间")).toBeInTheDocument();
   });
 });
+
+// ============ ④ tab 切换（task-066：大文件地图）============
+//
+// 任务书验收 16「单测：tab 切换正确」。App.test.tsx 是唯一能测 tab 的地方
+// （tab 状态在 App 里），所以本任务为它新增这一条——已在任务书白名单偏差里登记。
+
+describe("tab 切换（task-066 大文件）", () => {
+  it("Tab 栏有「大文件」按钮，点击后渲染大文件地图页", async () => {
+    // App 默认渲染 Dashboard；切到「大文件」后 BigFiles 会调 big_files_scan。
+    // 默认 mock 对所有命令都回 stats 对象，BigFiles 拿到会崩，所以这里按命令分派。
+    mockedInvoke.mockImplementation(((cmd: string) => {
+      if (cmd === "big_files_scan") {
+        return Promise.resolve(
+          ok({
+            categories: [
+              {
+                path: "C://hiberfil.sys",
+                sizeBytes: 1024,
+                category: "hiberfil",
+                recommendation: "powercfg /h off",
+              },
+              {
+                path: "C://Windows.old",
+                sizeBytes: 0,
+                category: "windows_old",
+                recommendation: "不存在",
+              },
+              {
+                path: "C://$Recycle.Bin",
+                sizeBytes: 0,
+                category: "recycle_bin",
+                recommendation: "清空回收站",
+              },
+            ],
+            topFiles: [],
+            totalBytes: 1024,
+            scannedEntries: 3,
+            truncated: false,
+            elapsedMs: 5,
+          })
+        );
+      }
+      return Promise.resolve(
+        ok({ totalBytesFreed: 0, successCount: 0, failedCount: 0, sessionCount: 0 })
+      );
+    }) as unknown as typeof invoke);
+
+    render(<App />);
+
+    // 按钮存在（验收 14）
+    const btn = await screen.findByText("大文件");
+    fireEvent.click(btn);
+
+    // 切过去之后渲染的是大文件页，不是仪表盘（验收 15）
+    expect(await screen.findByText("大文件地图")).toBeTruthy();
+    expect(screen.getByTestId("category-hiberfil")).toBeTruthy();
+    expect(screen.queryByText("清理统计")).toBeNull();
+  });
+});
