@@ -6,6 +6,7 @@ import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { listen } from "@tauri-apps/api/event";
 import { api } from "./utils/invoke";
+import BigFiles from "./pages/BigFiles";
 import Dashboard from "./pages/Dashboard";
 import History from "./pages/History";
 import Items from "./pages/Items";
@@ -23,7 +24,7 @@ import {
   writeDismissedVersion,
 } from "./utils/update";
 
-type Tab = "dashboard" | "items" | "safebox" | "history" | "settings";
+type Tab = "dashboard" | "items" | "bigfiles" | "safebox" | "history" | "settings";
 
 // ===================== task-061：主题 =====================
 //
@@ -493,6 +494,9 @@ export default function App() {
         <button style={tabBtnStyle(tab === "items")} onClick={() => setTab("items")}>
           清理
         </button>
+        <button style={tabBtnStyle(tab === "bigfiles")} onClick={() => setTab("bigfiles")}>
+          大文件
+        </button>
         <button style={tabBtnStyle(tab === "safebox")} onClick={() => setTab("safebox")}>
           保险箱
         </button>
@@ -506,6 +510,7 @@ export default function App() {
       <ErrorBoundary onReset={() => setTab("dashboard")}>
         {tab === "dashboard" && <Dashboard scanSignal={scanSignal} />}
         {tab === "items" && <Items />}
+        {tab === "bigfiles" && <BigFiles />}
         {tab === "safebox" && <SafeBox />}
         {tab === "history" && <History />}
         {tab === "settings" && (
