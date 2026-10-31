@@ -439,3 +439,38 @@ describe("tab 切换（task-067 残留）", () => {
     expect(screen.queryByText("清理统计")).toBeNull();
   });
 });
+
+// ============ ⑥ tab 切换（task-068：注册表健康）============
+//
+// 任务书验收 18「单测：tab 切换正确」。tab 状态在 App 里，只能在这一层测。
+
+describe("tab 切换（task-068 注册表健康）", () => {
+  it("Tab 栏有「注册表」按钮，点击后渲染注册表健康页", async () => {
+    mockedInvoke.mockImplementation(((cmd: string) => {
+      if (cmd === "registry_health_scan") {
+        return Promise.resolve(
+          ok({
+            runItems: [],
+            uninstallItems: [],
+            taskItems: [],
+            taskScanAvailable: false,
+            elapsedMs: 5,
+          })
+        );
+      }
+      return Promise.resolve(
+        ok({ totalBytesFreed: 0, successCount: 0, failedCount: 0, sessionCount: 0 })
+      );
+    }) as unknown as typeof invoke);
+
+    render(<App />);
+
+    const btn = await screen.findByText("注册表");
+    fireEvent.click(btn);
+
+    expect(await screen.findByText("注册表健康")).toBeTruthy();
+    // 空列表也要给出说明，而不是一片空白
+    expect(screen.getByText("没有开机启动项。")).toBeTruthy();
+    expect(screen.queryByText("清理统计")).toBeNull();
+  });
+});
