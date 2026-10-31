@@ -85,7 +85,10 @@ fn cleanup_result_serializes_camel_case() {
     assert_eq!(v["exitCode"], serde_json::json!(0));
     assert_eq!(v["restorePointSeq"], serde_json::json!(42));
     assert_eq!(v["lineCount"], serde_json::json!(3));
-    assert!(v["outputTail"].as_str().unwrap().contains("completed successfully"));
+    assert!(v["outputTail"]
+        .as_str()
+        .unwrap()
+        .contains("completed successfully"));
     // 反面：绝不能出现 snake_case 键（出现过一次就是一片 undefined）
     assert!(v.get("restore_point_seq").is_none());
 }
@@ -97,7 +100,10 @@ fn skipped_restore_point_serializes_null_seq() {
         ..Default::default()
     };
     let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap();
-    assert!(v["restorePointSeq"].is_null(), "跳过的还原点必须是 null 而不是 0");
+    assert!(
+        v["restorePointSeq"].is_null(),
+        "跳过的还原点必须是 null 而不是 0"
+    );
 }
 
 #[test]
