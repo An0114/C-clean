@@ -72,6 +72,11 @@ fn run(args: &[String]) -> i32 {
 
     // 2. 白名单校验（**在任何解析之前**，未知命令连参数都不看）。
     if !ALLOWED_COMMANDS.contains(&cmd.as_str()) {
+        // v0.2.1：调用方漏传命令名时，首个 token 会是 `--result` 这类开关。
+        // 单独提示一句，否则只能看到「未知命令 --result」而猜不出是漏了命令。
+        if cmd.starts_with('-') {
+            eprintln!("[elevation] 首个参数是开关而不是命令名（{cmd}）——调用方可能漏传了命令");
+        }
         eprintln!("[elevation] 拒绝未知命令: {cmd}");
         return EXIT_UNKNOWN_CMD;
     }
@@ -592,6 +597,14 @@ mod tests {
     #[test]
     fn missing_command_is_bad_usage() {
         assert_eq!(run(&[]), EXIT_BAD_USAGE);
+    }
+
+    #[test]
+    fn flag_as_first_token_is_rejected_not_treated_as_command() {
+        // v0.2.1 Bug-1 的形状：调用方漏传命令名，argv 直接从 `--result` 开始。
+        // 必须拒（退出码 3），**绝不能**把开关当命令名去匹配——否则白名单形同虚设。
+        let args = vec!["--result".to_string(), "x.json".to_string()];
+        assert_eq!(run(&args), EXIT_UNKNOWN_CMD);
     }
 
     #[test]
