@@ -30,6 +30,8 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use rusqlite::params;
+
 use crate::execute::delete::{execute as redline_execute, Deleter, ExecuteOutcome, ExecuteRequest};
 use crate::execute::normalize::normalize;
 use crate::execute::normalize::NormalizedPath;
@@ -588,6 +590,51 @@ impl Deleter for RedlineOnlyDeleter {
     }
 }
 
+/// 当前 unix 秒。审计与 `cleanup_task` 的时间戳都用它。
+fn unix_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// 为「残留移入保险箱」这一批创建一条 `cleanup_task` 行，返回其 id。
+///
+/// # 为什么必须建（v0.2.1 Bug-3 的后半段）
+///
+/// 保险箱「来源」列读的是 `safe_box.source_task_id`，外键指向 `cleanup_task.id`。
+/// 残留移入时传的是 `None`，来源列就显示「历史（无来源）」——用户看着像数据丢了，
+/// 实际是当时压根没记。
+///
+/// 语义上这批移入**就是一次删除批次**，给它建一行是诚实的：
+///
+/// - `freed_bytes = 0`：同盘移入保险箱只是 rename，**一个字节都没释放**，
+///   不能算进「累计释放空间」；
+/// - `dry_run_snapshot` 里写 `{"source":"residual_scan",...}`，让以后能区分
+///   「普通清理批次」和「残留批次」（表里没有 kind 列，这是唯一不破 schema 的
+///   标记位）；
+/// - `safebox_enabled = 1`、`session_id = NULL`（残留扫描不属于任何一次扫描会话）。
+///
+/// 失败（比如 DB 被锁）时返回 `None`：来源记不上是**次优**，但不能因此让整个
+/// 移入操作失败——文件还是要移走的。
+fn create_residual_task(conn: &rusqlite::Connection, paths: &[String], now: i64) -> Option<i64> {
+    let snapshot = serde_json::json!({
+        "source": "residual_scan",
+        "paths": paths,
+    })
+    .to_string();
+    conn.execute(
+        "INSERT INTO cleanup_task (
+             session_id, started_at, finished_at, disk_before_bytes, disk_after_bytes,
+             freed_bytes, success_count, fail_count, skip_count, dry_run_snapshot,
+             restore_point_name, safebox_enabled
+         ) VALUES (NULL, ?1, ?1, 0, 0, 0, 0, 0, 0, ?2, NULL, 1)",
+        params![now, snapshot],
+    )
+    .ok()?;
+    Some(conn.last_insert_rowid())
+}
+
 /// 把残留目录**移入保险箱**（7 天可恢复），不是直接删。
 ///
 /// # 安全链路（两道）
@@ -609,6 +656,14 @@ pub fn delete_residuals(
     box_dir: &Path,
 ) -> ResidualDeleteResult {
     let mut result = ResidualDeleteResult::default();
+
+    // v0.2.1 Bug-3：先建批次行，让保险箱「来源」列有东西可显示。
+    let now = unix_secs();
+    let task_id = if paths.is_empty() {
+        None
+    } else {
+        create_residual_task(conn, paths, now)
+    };
 
     for raw in paths {
         // 1. 唯一入口红线校验
@@ -665,7 +720,10 @@ pub fn delete_residuals(
         let size = dir_total_bytes(Path::new(np.normalized()));
 
         // 5. 移入保险箱
-        let deleter = SafeBoxDeleter::new(box_dir, conn, None);
+        //
+        // 带上 `task_id`：保险箱「来源」列读 `safe_box.source_task_id`，
+        // 传 None 会显示「历史（无来源）」（v0.2.1 Bug-3）。
+        let deleter = SafeBoxDeleter::new(box_dir, conn, task_id);
         // 用 `delete_dir` 而不是 `delete_file`：语义正确（这是目录），
         // 且 SafeBoxDeleter 的 delete_dir 已实现为「整体 rename 进保险箱」。
         match deleter.delete_dir(&np) {
@@ -678,6 +736,24 @@ pub fn delete_residuals(
                 reason: e,
             }),
         }
+    }
+
+    // 6. 回填这一批的真实计数。
+    //
+    // `freed_bytes` 保持 0：同盘移入保险箱只是 rename，没有释放磁盘空间；
+    // 统计口径里的「累计释放」不该被这一批抬高。
+    if let Some(id) = task_id {
+        let _ = conn.execute(
+            "UPDATE cleanup_task
+                SET finished_at=?1, success_count=?2, fail_count=?3
+              WHERE id=?4",
+            params![
+                now,
+                result.moved.len() as i64,
+                result.failed.len() as i64,
+                id
+            ],
+        );
     }
 
     result

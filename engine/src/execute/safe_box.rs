@@ -26,6 +26,30 @@ use crate::execute::normalize::NormalizedPath;
 /// 保险箱默认容量上限：5 GB（生产值）。测试可通过 [`set_quota_for_test`] 覆盖。
 static QUOTA_BYTES: AtomicU64 = AtomicU64::new(5 * 1024 * 1024 * 1024);
 
+/// 删除保险箱里的一个条目：**文件删文件，目录递归删目录**。
+///
+/// # 为什么不能只用 `remove_file`（v0.2.1 Bug-3）
+///
+/// 保险箱既能放**单个文件**（普通清理），也能放**整个目录**（task-067 的残留
+/// 扫描用 `delete_dir` 整目录 rename 进来）。对目录调 `fs::remove_file` 会返回
+/// 「拒绝访问 / 是一个目录」之类的错误，一路冒到前端只剩一句
+/// 「永久删除失败：内部错误」——用户在残留页移入 `C:\Program Files\HONOR`
+/// 后点「批量删除已选」就是撞在这上面。
+///
+/// `NotFound` 一律当成功：磁盘上已经没了，把 DB 行删掉就行（用户手动清过保险箱
+/// 目录、或上次删了文件没删行，都会走到这里）。
+///
+/// 用 `symlink_metadata` 而不是 `metadata`：不跟随符号链接，避免把一个指到箱外的
+/// 链接当成目录去递归删除。
+fn remove_entry(path: &Path) -> io::Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(meta) if meta.is_dir() => fs::remove_dir_all(path),
+        Ok(_) => fs::remove_file(path),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
 /// 测试覆盖 quota（比如 300 字节）。生产代码不要调。
 pub fn set_quota_for_test(v: u64) {
     QUOTA_BYTES.store(v, Ordering::SeqCst);
@@ -94,7 +118,9 @@ impl<'conn> SafeBoxDeleter<'conn> {
             }
             let (id, rel) = row.map_err(|e| format!("iter evict row: {e}"))?;
             let path = self.box_dir.join(&rel);
-            match fs::remove_file(&path) {
+            // 用 remove_entry 而不是 remove_file：保险箱里可能躺着整个目录
+            // （残留扫描移入的），remove_file 对它必然失败。
+            match remove_entry(&path) {
                 Ok(()) => {
                     let size: i64 = self
                         .conn
@@ -107,12 +133,6 @@ impl<'conn> SafeBoxDeleter<'conn> {
                         .execute("UPDATE safe_box SET status='purged' WHERE id=?1", [id]);
                     usage = usage.saturating_sub(size as u64);
                     evicted_sizes.push((id, size));
-                }
-                Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                    // 磁盘上已经没了，DB 行标 purged 即可，不阻塞 quota。
-                    let _ = self
-                        .conn
-                        .execute("UPDATE safe_box SET status='purged' WHERE id=?1", [id]);
                 }
                 Err(e) => return Err(format!("evict {path:?}: {e}")),
             }
@@ -686,13 +706,12 @@ pub fn purge_item(conn: &Connection, box_dir: &Path, item_id: i64) -> Result<(),
         .map_err(|_| format!("safe_box item not found: id={item_id}"))?;
     let (original_path, rel) = row;
 
-    // 2. 删磁盘文件（NotFound 吞掉）
+    // 2. 删磁盘条目（文件删文件、目录递归删；NotFound 当成功）
+    //
+    // v0.2.1 Bug-3：这里原本是 `fs::remove_file`，对「整目录移入保险箱」的条目
+    // 必然失败（残留扫描移入的就是目录），前端只显示「内部错误」。
     let box_abs = box_dir.join(&rel);
-    match fs::remove_file(&box_abs) {
-        Ok(()) => {}
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-        Err(e) => return Err(format!("remove {box_abs:?}: {e}")),
-    }
+    remove_entry(&box_abs).map_err(|e| format!("remove {box_abs:?}: {e}"))?;
 
     // 3. 删 DB 行（purge 即永久删除，不保留 status='purged' 行）
     conn.execute("DELETE FROM safe_box WHERE id=?1", [item_id])
@@ -800,15 +819,14 @@ pub fn purge_expired(conn: &Connection, box_dir: &Path, now: i64) -> PurgeExpire
         }
     };
 
-    // 2. 逐条：删文件 → 删行 → 写审计。
+    // 2. 逐条：删条目 → 删行 → 写审计。
     for (id, original_path, rel, size) in candidates {
         let box_abs = box_dir.join(&rel);
-        match fs::remove_file(&box_abs) {
+        // v0.2.1 Bug-3：同 purge_item——目录条目必须递归删，不能只 remove_file。
+        match remove_entry(&box_abs) {
             Ok(()) => {}
-            // 文件已经不在了（用户手动删过 / 上次 purge 删了文件没删行）→ 继续删行。
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
             Err(e) => {
-                // 文件删不掉（被占用）→ **保留 DB 行**，下轮重试。
+                // 删不掉（被占用 / 权限不足）→ **保留 DB 行**，下轮重试。
                 result.failed += 1;
                 result
                     .errors

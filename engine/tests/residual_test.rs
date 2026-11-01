@@ -439,3 +439,65 @@ fn handler_delete_moves_orphan_dir() {
     assert_eq!(r.bytes_moved, 2048);
     assert!(!junk.exists());
 }
+
+// ===================== v0.2.1 Bug-3：来源必须写进保险箱 =====================
+
+#[test]
+fn residual_move_records_source_task_id() {
+    // 保险箱「来源」列读的是 `safe_box.source_task_id`。残留移入时传 None 会显示
+    // 「历史（无来源）」，用户看着像数据丢了。这里钉住：移入后必须有来源。
+    let (tmp, conn) = setup_db();
+    let box_dir = tmp.path().join("box");
+    let junk = tmp.path().join("ProgramFiles").join("HONOR");
+    make_file(&junk.join("a.bin"), 512);
+
+    let r = delete_residuals(&[junk.to_string_lossy().to_string()], &conn, &box_dir);
+    assert_eq!(r.moved.len(), 1, "failed={:?}", r.failed);
+
+    // 1. safe_box 行的 source_task_id 必须非空
+    let src: Option<i64> = conn
+        .query_row(
+            "SELECT source_task_id FROM safe_box WHERE status='in_box'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("应有一条 in_box 记录");
+    let src = src.expect("source_task_id 不能是 NULL（否则 UI 显示「历史（无来源）」）");
+
+    // 2. 它指向的 cleanup_task 行必须存在，且标记为残留批次
+    let (snapshot, safebox_enabled): (String, i64) = conn
+        .query_row(
+            "SELECT dry_run_snapshot, safebox_enabled FROM cleanup_task WHERE id=?1",
+            [src],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .expect("source_task_id 必须指向真实存在的 cleanup_task 行");
+    assert!(
+        snapshot.contains("residual_scan"),
+        "批次行要能区分出「残留批次」，实际: {snapshot}"
+    );
+    assert_eq!(safebox_enabled, 1, "这批走的是保险箱");
+
+    // 3. 移入保险箱不释放磁盘空间，freed_bytes 必须保持 0（不能抬高「累计释放」）
+    let freed: i64 = conn
+        .query_row(
+            "SELECT freed_bytes FROM cleanup_task WHERE id=?1",
+            [src],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(freed, 0, "同盘移入保险箱不释放空间，freed_bytes 应为 0");
+}
+
+#[test]
+fn residual_empty_batch_creates_no_task_row() {
+    // 没勾任何东西时不该留下一条空的 cleanup_task（会白抬「清理轮次」）。
+    let (tmp, conn) = setup_db();
+    let r = delete_residuals(&[], &conn, &tmp.path().join("box"));
+    assert!(r.moved.is_empty());
+
+    let n: i64 = conn
+        .query_row("SELECT COUNT(*) FROM cleanup_task", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(n, 0, "空批次不该建 cleanup_task 行");
+}
