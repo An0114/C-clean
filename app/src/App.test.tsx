@@ -297,23 +297,30 @@ describe("仪表盘趋势图（task-061）", () => {
     }) as never);
   }
 
-  it("有数据时显示标题、首尾日期与峰值", async () => {
+  it("有数据时显示标题、合计与折线", async () => {
+    // task-073：改成折线后不再显示「峰值」，改为「合计」；且 x 轴按日历铺满
+    // 30 天，所以**日期必须用相对今天的偏移生成**——写死具体日期会让这条
+    // 用例在 30 天后自动失效（数据落到窗口外，合计变 0）。
+    const dayKey = (offset: number) => {
+      const d = new Date();
+      d.setDate(d.getDate() - offset);
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
+        d.getDate()
+      ).padStart(2, "0")}`;
+    };
     mockDashboard([
-      { day: "2026-10-27", bytesFreed: 1024 * 1024 },
-      { day: "2026-10-28", bytesFreed: 2 * 1024 * 1024 },
-      { day: "2026-10-29", bytesFreed: 512 * 1024 },
+      { day: dayKey(2), bytesFreed: 1024 * 1024 },
+      { day: dayKey(1), bytesFreed: 2 * 1024 * 1024 },
+      { day: dayKey(0), bytesFreed: 512 * 1024 },
     ]);
 
     render(<App />);
 
     expect(await screen.findByText(/最近 30 天释放趋势/)).toBeInTheDocument();
-    // 峰值取最大那天（2 MB）
-    expect(screen.getByText(/峰值 2\.0 MB/)).toBeInTheDocument();
-    // 首尾日期各出现一次
-    expect(screen.getByText("2026-10-27")).toBeInTheDocument();
-    expect(screen.getByText("2026-10-29")).toBeInTheDocument();
-    // 三个柱子（rect 有 title）
-    expect(screen.getByLabelText(/最近 30 天释放趋势柱状图/)).toBeInTheDocument();
+    // 合计 = 1024 + 2048 + 512 KB = 3.5 MB
+    expect(screen.getByText(/合计 3\.5 MB/)).toBeInTheDocument();
+    // 折线图的标志（原来是「柱状图」）
+    expect(screen.getByLabelText(/最近 30 天释放趋势折线图/)).toBeInTheDocument();
   });
 
   it("空数据时显示「暂无清理记录」占位", async () => {

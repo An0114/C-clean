@@ -643,3 +643,172 @@ describe("Settings 开机自启（task-062）", () => {
     expect(screen.getByText(/任务管理器 → 启动/)).toBeInTheDocument();
   });
 });
+
+// ============ task-073：系统级定时扫描（任务计划）============
+//
+// 这块的关键不是「开关能不能点」，而是**状态可信度**：
+// - 查询失败时必须显示真实原因，绝不能伪装成「未注册」（用户会以为开关是关的）；
+// - 注册后用后端回读的状态覆盖（schtasks 可能返回 0 但任务被组策略立刻禁掉）；
+// - 主开关关闭时子开关要禁用（否则用户开了系统级定时也永远不会扫）。
+
+describe("Settings 系统级定时扫描（task-073）", () => {
+  function mockTask(
+    status: "ok" | "err",
+    registered = false,
+    onCall?: (cmd: string, args: unknown) => void
+  ) {
+    mockedInvoke.mockImplementation(((cmd: string, args: unknown) => {
+      if (onCall) onCall(cmd, args);
+      if (cmd === "rules_check_update") {
+        return Promise.resolve(
+          ok({
+            status: "upToDate",
+            localVersion: "1.0.0",
+            localSha256: "a".repeat(64),
+            remoteVersion: "1.0.0",
+            remoteSha256: "a".repeat(64),
+            message: "ok",
+          })
+        );
+      }
+      if (cmd === "rules_has_backup") return Promise.resolve(ok(false));
+      if (cmd === "get_prefs") {
+        return Promise.resolve(
+          ok({
+            autoRestartOnClose: false,
+            restartWhitelist: [],
+            theme: "system",
+            autoScanEnabled: true,
+            autoScanInterval: "daily",
+          })
+        );
+      }
+      if (cmd === "get_autostart_enabled") return Promise.resolve(ok(false));
+      if (cmd === "auto_scan_status") {
+        if (status === "err") return Promise.reject(new Error("schtasks.exe 被安全策略拦截"));
+        return Promise.resolve(
+          ok({ registered, taskName: "C-Disk Cleaner Auto Scan", time: "09:00" })
+        );
+      }
+      if (cmd === "auto_scan_enable") {
+        return Promise.resolve(
+          ok({ registered: true, taskName: "C-Disk Cleaner Auto Scan", time: "09:00" })
+        );
+      }
+      if (cmd === "auto_scan_disable") {
+        return Promise.resolve(
+          ok({ registered: false, taskName: "C-Disk Cleaner Auto Scan", time: "09:00" })
+        );
+      }
+      return Promise.resolve(ok(null));
+    }) as never);
+  }
+
+  it("已注册时显示「已注册」，并显示任务名（用户可去任务计划程序核对）", async () => {
+    mockTask("ok", true);
+    render(<Settings />);
+
+    expect(await screen.findByText("系统级定时（应用未运行时也扫描）")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByLabelText("系统级定时扫描")).toBeChecked()
+    );
+    expect(screen.getByText("已注册")).toBeInTheDocument();
+    expect(screen.getByText("C-Disk Cleaner Auto Scan")).toBeInTheDocument();
+  });
+
+  it("未注册时显示「未注册」且开关不勾", async () => {
+    mockTask("ok", false);
+    render(<Settings />);
+
+    await screen.findByText("系统级定时（应用未运行时也扫描）");
+    const box = (await screen.findByLabelText("系统级定时扫描")) as HTMLInputElement;
+    await waitFor(() => expect(box.checked).toBe(false));
+    expect(screen.getByText("未注册")).toBeInTheDocument();
+  });
+
+  it("查询失败时显示真实原因，不伪装成「未注册」", async () => {
+    mockTask("err");
+    render(<Settings />);
+
+    await screen.findByText("系统级定时（应用未运行时也扫描）");
+    // 原因必须透出来（可能是组策略/安全软件拦截）
+    expect(await screen.findByText(/schtasks\.exe 被安全策略拦截/)).toBeInTheDocument();
+    // 而且不能显示「未注册」——那是在说谎
+    expect(screen.queryByText("未注册")).toBeNull();
+  });
+
+  it("开启时调 auto_scan_enable 并带 time=09:00", async () => {
+    const calls: Array<{ cmd: string; args: unknown }> = [];
+    mockTask("ok", false, (cmd, args) => calls.push({ cmd, args }));
+    render(<Settings />);
+
+    const box = (await screen.findByLabelText("系统级定时扫描")) as HTMLInputElement;
+    await waitFor(() => expect(box.checked).toBe(false));
+    fireEvent.click(box);
+
+    await waitFor(() => {
+      const c = calls.find((x) => x.cmd === "auto_scan_enable");
+      expect(c).toBeTruthy();
+      expect(c!.args).toMatchObject({ time: "09:00" });
+    });
+    // 用后端回读的状态覆盖
+    await waitFor(() => expect(box.checked).toBe(true));
+    expect(screen.getByText("已注册")).toBeInTheDocument();
+  });
+
+  it("关闭时调 auto_scan_disable", async () => {
+    const calls: Array<{ cmd: string; args: unknown }> = [];
+    mockTask("ok", true, (cmd, args) => calls.push({ cmd, args }));
+    render(<Settings />);
+
+    const box = (await screen.findByLabelText("系统级定时扫描")) as HTMLInputElement;
+    await waitFor(() => expect(box.checked).toBe(true));
+    fireEvent.click(box);
+
+    await waitFor(() => expect(calls.some((x) => x.cmd === "auto_scan_disable")).toBe(true));
+    await waitFor(() => expect(box.checked).toBe(false));
+  });
+
+  it("主开关关闭时系统级开关禁用（否则开了也永远不会扫）", async () => {
+    // 单独铺一份 autoScanEnabled=false 的 mock
+    mockedInvoke.mockImplementation(((cmd: string) => {
+      if (cmd === "rules_check_update") {
+        return Promise.resolve(
+          ok({
+            status: "upToDate",
+            localVersion: "1.0.0",
+            localSha256: "a".repeat(64),
+            remoteVersion: "1.0.0",
+            remoteSha256: "a".repeat(64),
+            message: "ok",
+          })
+        );
+      }
+      if (cmd === "rules_has_backup") return Promise.resolve(ok(false));
+      if (cmd === "get_prefs") {
+        return Promise.resolve(
+          ok({
+            autoRestartOnClose: false,
+            restartWhitelist: [],
+            theme: "system",
+            autoScanEnabled: false,
+            autoScanInterval: "daily",
+          })
+        );
+      }
+      if (cmd === "get_autostart_enabled") return Promise.resolve(ok(false));
+      if (cmd === "auto_scan_status") {
+        return Promise.resolve(
+          ok({ registered: false, taskName: "C-Disk Cleaner Auto Scan", time: "09:00" })
+        );
+      }
+      return Promise.resolve(ok(null));
+    }) as never);
+
+    render(<Settings />);
+
+    const box = (await screen.findByLabelText("系统级定时扫描")) as HTMLInputElement;
+    await waitFor(() => expect(box.disabled).toBe(true));
+    expect(screen.getByText(/先开启上面的「定期在后台扫描」/)).toBeInTheDocument();
+  });
+});
