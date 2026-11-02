@@ -305,3 +305,53 @@ fn module_code_is_always_temp() {
     assert!(!items.is_empty());
     assert!(items.iter().all(|i| i.module_code == "temp"));
 }
+
+// ===================== 真机冒烟 =====================
+
+/// 直接扫本机真实 `%TEMP%` 与 `%SystemRoot%\Temp` 并打印摘要
+/// （`#[ignore]`，CI 默认不跑）。
+///
+/// 为什么需要：上面的用例都在 `tempfile` 上跑，证明的是「逻辑对」；
+/// 而「真扫一遍不 panic、条目数量级合理、风险分级对」只能在真实目录上验。
+/// 本机 WebView2 渲染进程起不来、GUI 取证拿不到，这条是后端侧能产出的真实数据。
+///
+/// 跑法：
+/// ```text
+/// cargo test -p engine --test temp_scan_test -- --ignored --nocapture real_scan
+/// ```
+#[test]
+#[ignore = "真机冒烟：扫真实临时目录"]
+fn real_scan_smoke() {
+    let roots = temp::scan_roots();
+    println!("目标目录 {} 个：", roots.len());
+    for (p, cat, risk) in &roots {
+        println!("  [{cat}] L{risk}  {}  存在={}", p.display(), p.is_dir());
+    }
+
+    let items = temp::scan();
+    let total: i64 = items.iter().map(|i| i.size_bytes).sum();
+    println!(
+        "共 {} 项，合计 {} 字节（{:.1} MB）",
+        items.len(),
+        total,
+        total as f64 / 1024.0 / 1024.0
+    );
+
+    for cat in [temp::CATEGORY_USER_TEMP, temp::CATEGORY_WINDOWS_TEMP] {
+        let n = items.iter().filter(|i| i.category == cat).count();
+        let b: i64 = items
+            .iter()
+            .filter(|i| i.category == cat)
+            .map(|i| i.size_bytes)
+            .sum();
+        println!("  {cat}: {n} 项 / {b} 字节");
+    }
+    println!("前 5 条：");
+    for i in items.iter().take(5) {
+        println!("  [L{}] {:>12}B  {}", i.risk_level, i.size_bytes, i.path);
+    }
+
+    // 结构不变量：无论这台机器上有什么，都不能出现 L3 或错误的模块代码
+    assert!(items.iter().all(|i| i.risk_level <= 2));
+    assert!(items.iter().all(|i| i.module_code == temp::MODULE_CODE));
+}
