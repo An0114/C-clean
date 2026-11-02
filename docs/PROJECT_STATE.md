@@ -3,9 +3,16 @@
 > **特别声明**：本文件是项目唯一真实数据源，也是「每次任务结束必更新、必单独提交」的文件。后续所有 Agent 必须遵守：任何任务完成后都要先更新本文件，再单独提交一次（commit message 形如 `docs(state): ... (#task-00X)`），不得与业务代码混在同一个 commit。
 
 ## 当前目标
-**v0.2.0 真机验收发现的 3 个 Bug 已修复（2026-11-01），待测试轮真机复验后走 v0.2.1 patch 发版**：① WinSxS 退出码 3（根因是提权命令名从未进入 argv）；② 扫描只出 L1（根因是脚本把风险等级写死成 1）；③ 残留入箱后永久删除失败 + 来源缺失（根因是目录条目用了 remove_file、移入时 source_task_id 传了 None）。历史决策不变：代码签名不做、品牌图标不做、G6 不修；跨盘恢复 fallback / RmShutdown 连带兄弟进程 / RmShutdown 30s 无进度三项维持现状。
+**v0.2.1 patch 发版准备就绪（2026-11-02），等用户手动 `workflow_dispatch` 发版**：版本号已升、CHANGELOG 已加 v0.2.1 修复段；打包产物 `C-DiskCleaner_0.2.1_x64-setup.exe` / `.msi` 已出，二进制 `FileVersion` 实测 0.2.1。v0.2.1 = 只修 v0.2.0 真机验收的 3 个 Bug（提权 argv / 扫描风险等级 / 保险箱目录删除与来源），无新功能。历史决策不变：代码签名不做、品牌图标不做、G6 不修；跨盘恢复 fallback / RmShutdown 连带兄弟进程 / RmShutdown 30s 无进度三项维持现状。
 
 ## 最近一次变更
+2026-11-02：**task-071 开发完成（v0.2.1 patch 发版准备），状态 `testing`**（`feature/task-071-release-v0.2.1`）：
+  - **① 版本号 `0.2.0` → `0.2.1`**：四处（`app/package.json` / 根 `package.json` / `app/src-tauri/tauri.conf.json` / `app/src-tauri/Cargo.toml`）+ `Cargo.lock`。`engine` / `elevation` 保持 `0.1.0`（内部构件不单独发版，与 task-069 同一判断）。**另同步两处版本展示行**（`README.md` 当前版本行、`docs/USER_GUIDE.md` 适用版本行）——任务书写「不修改 README / 用户手册」，但那句的意图是不重写功能列表，这两行是版本号展示；不改会让仓库自相矛盾（CHANGELOG 说 0.2.1、README 说 0.2.0）。
+  - **② `CHANGELOG.md` v0.2.1 段落**：`## [0.2.1] - 2026-11-02`，**1183 字符**，修复 **3** 条 + 已知问题 **2** 条；patch 语义**不设「新增 / 变更」**。三条修复的根因按实际写（任务书对 Bug-2 写的「L0/L1/L2 三级」实际只做到 L1/L2，照抄会变成虚假承诺）；额外写明**「系统还原点自动创建」在 0.2.0 里其实也从未成功过**（同一条提权路径，只是没有 L2 项可清所以没暴露）——不写这句用户会以为还原点之前是好的。已知问题不删旧账：明确「本版本未新增，v0.2.0 的 10 条仍有效」，另列两处本版本边界（L0 不出现、规则库与脚本各存一份判定）。
+  - **门禁**：`cargo check --workspace` 0 / `fmt --check` 0 / `clippy -D warnings` 0 / `cargo test --workspace` **444 passed**（纯文档+版本号，测试数不变）/ `lint` 0 error（2 warning 均 SafeBox.tsx 既有）/ `vitest` **148 passed（13 files）** / `build` 230.32 kB / **`tauri build` 出 `C-DiskCleaner_0.2.1_x64-setup.exe`（4.46 MiB）+ `.msi`（6.56 MiB）**，二进制 `FileVersion`/`ProductVersion` 实测 **0.2.1**。
+  - **版本号全局搜索**：配置/构建文件中零 `0.2.0` 残留；剩余命中为 CHANGELOG 历史段、`docs/` 与 `tasks/` 历史记录、`release.yml` 的注释示例、`scripts/release-lib.test.mjs` 的测试夹具（与真实版本无关）。
+  - **未做**：安装态版本号验证（非管理员 shell 下 msiexec 装不上，归测试轮）；CI（开发轮不跑）。
+
 2026-11-01：**task-070 开发完成（v0.2.0 真机验收 3 个 Bug 修复），状态 `testing`**（`feature/task-070-v0.2.1-bugfixes`）：
   - **Bug-1（P0，WinSxS 退出码 3）根因：提权命令名从来没进 argv**。`run_elevated` 只把 `(key,value)` 参数对拼进命令行，**忘了把 `cmd` 带上**，提权 exe 收到的 `argv[1]` 是 `--result` → 白名单不认 → `EXIT_UNKNOWN_CMD(3)` 退出、连结果 JSON 都不写 → 前端只能显示「DISM 分析失败（退出码 3）：」（冒号后为空）。**证据**：`cclean-elevation.exe --result x.json` → exit 3；`... dism_analyze --result x.json` → exit 4 + `{"message":"DISM 退出码 740"}`；且 `C://Windows//Logs//DISM//dism.log` 里**没有**我们这次调用的任何痕迹（唯一会话是 cleanmgr）。**`create_restore_point` 同一条路也是坏的**，只是被 Bug-2（全是 L1、不需要还原点）掩盖了。修法：新增 `build_argv(cmd, args)`，两个调用点统一走它。
   - **Bug-2（P1，扫描只出 L1）根因：5 个 `.ps1` 把风险等级写死成字面量 `1`**。顺带确认 `rules/cache_rules.json` 的 `modules` 段**在扫描链路上没有任何消费者**（只用于 `whitelist_deny` 与格式校验，`grade/` 模块从未实现），所以「补 L2 规则到规则库」对用户可见行为零影响，且改它要连带改 `rules_meta.json` 的 SHA-256（改错会让规则库整体加载失败）——**patch 版不引入这个风险，规则库未改**。修法：按分类给风险——缓存类全 L1；`windows_temp`（多属 SYSTEM、安装程序在用）与 `update_download`（更新安装中删会中断）标 L2。**实测** `scan_temp.ps1` → `risk=1: 61 条` + `risk=2: 29 条`。
@@ -562,6 +569,7 @@
 
 - [x] 069：**v0.2.0 发版准备（M1 收官后的发版节点）**——**① 版本号 `0.1.7` → `0.2.0`**（四处 + `Cargo.lock`；`engine`/`elevation` 的 `0.1.0` 与 `latest.json` 的 `0.1.0` **刻意不动**，理由见「最近一次变更」）；**② `CHANGELOG.md` v0.2.0 段落**（3454 字符 / 新增 17 / 变更 4 / 修复 2 / 已知问题 10；**补入任务书漏计的 task-061 三项**——061 的合并晚于 v0.1.7 发版，随本版本交付）；**③ `README.md`**（功能段 7 条 → 三组 17 条 + 八个页签总览 + 四条深度清理各写「为什么不这么做」+ 技术栈/安全基线同步）；**④ `docs/USER_GUIDE.md`**（8 章 331 行 → **15 章 766 行**，覆盖 12 项说明，章节顺序与页签一致，修掉三处与实现不符的说法，新增 5 条 FAQ，30 条内链锚点程序化校验全通过）（`feature/task-069-release-v0.2.0`；**开发轮完成，状态 `testing`**；门禁 check/clippy/fmt 0、`cargo test --workspace` **431 passed**、vitest **148**（13 files）、build 230.32 kB、`tauri build` **NSIS 4.44 MiB + MSI 6.55 MiB** 且二进制 `FileVersion=0.2.0`；按新流程开发轮不跑 CI、不做安装态冒烟，移交测试 Agent）
 - [x] 070：**v0.2.0 真机验收 3 Bug 修复（v0.2.1 patch 前置）**——**① Bug-1（P0）WinSxS 退出码 3**：根因是 `run_elevated` 漏传命令名（`argv[1]` 变成 `--result`），提权 exe 判未知命令退出 3；新增 `build_argv` + 4 条单测；**② Bug-2（P1）扫描只出 L1**：5 个 `.ps1` 把风险等级写死成 `1`，改为按分类（缓存 L1 / `windows_temp` 与 `update_download` L2）+ 4 条静态契约测试（含检测器自检）；**③ Bug-3（P1）残留入箱永久删除失败 + 来源缺失**：目录条目用了 `remove_file`、移入时 `source_task_id` 传 None；抽 `remove_entry()` + 建残留批次 `cleanup_task` 行 + 5 条单测（`feature/task-070-v0.2.1-bugfixes`；**开发轮完成，状态 `testing`**；门禁 check/clippy/fmt 0、`cargo test --workspace` **444 passed**（+13）、vitest 148、build 230.32 kB、`tauri build` NSIS 4.45 MiB + MSI 6.56 MiB；**真机冒烟未做**，按流程归测试轮）
+- [x] 071：**v0.2.1 patch 发版准备**——**① 版本号 `0.2.0` → `0.2.1`**（四处 + `Cargo.lock`；`engine`/`elevation` 保持 0.1.0；**另同步 README / 用户手册的版本展示行**，任务书那句「不修改」指的是功能列表）；**② `CHANGELOG.md` v0.2.1 段落**（1183 字符 / 修复 3 条 + 已知问题 2 条；patch 不设新增变更；根因按实际写，并补明「还原点在 0.2.0 里也从未成功过」）（`feature/task-071-release-v0.2.1`；**开发轮完成，状态 `testing`**；门禁 check/clippy/fmt 0、`cargo test --workspace` **444 passed**、vitest 148、build 230.32 kB、`tauri build` **NSIS 4.46 MiB + MSI 6.56 MiB** 且二进制 `FileVersion=0.2.1`；按新流程开发轮不跑 CI、不做安装态冒烟，移交测试 Agent）
 > 注：040~047 的完成明细未回填本清单（历史遗漏），以「最近一次变更」段与 `tasks/040-*.md`~`tasks/047-*.md` 为准。
 > 编号顺延（2026-10-24）：原定 050 的「safe_box 增强」顺延为 **051**，050 让位给发版阻塞级的打包资源路径缺陷。
 
@@ -583,16 +591,16 @@
 - [B 中] **installer 未做代码签名（评估结论当前不做）**：未购 EV/OV 证书，SmartScreen 警告需手动「更多信息→仍要运行」。详见 `docs/research/code-signing-evaluation.md` 的三个触发条件。
 - [B 低] **品牌图标（决策不做）**：沿用 Tauri 默认占位，待后续有设计出 1024×1024 源 PNG 后再跑 `tauri icon`。
 ## 下一步计划
-1. **v0.2.1 patch 发版准备（下一个任务）**：版本号 `0.2.0` → `0.2.1`（四处 + `Cargo.lock`）、CHANGELOG 加 `## [0.2.1] - 日期` 段（三条修复）、README / 用户手册里对应的「已知问题」同步删掉这三条。发版仍走 `workflow_dispatch`。
-2. **真机复验优先于发版**：三条 Bug 必须由测试轮真机点一遍（尤其 Bug-1 要 UAC 授权才能走完），确认后再发 patch。开发轮能给的只是「argv 形状 / risk 分布 / 真实 DB 取证」这类间接证据。
-3. **原 P1-7 清理方案模板延后到 task-071**（本任务不做）。
+1. **v0.2.1 patch 发版准备就绪，等用户手动 `workflow_dispatch` 发版**。触发方式：GitHub → Actions → Release → Run workflow，`version` 填 `0.2.1`。CI 会重跑 `tauri build`、用 secret 签名、生成 `latest.json` 并上传 `.exe`/`.msi`/`.sig`/`latest.json`。本地已验证「能出包 + 版本号对」（二进制 `FileVersion=0.2.1`），CI 那一步只多签名。
+2. **发版前建议先做真机复验**：v0.2.0 的三个 Bug 修复只在开发轮做过间接取证（argv 形状 / risk 分布 / 真实 DB 核对），真机点一遍再发 patch 更稳——尤其 WinSxS 分析要 UAC 授权才能走完。
+3. **发版后推进 P1-7 清理方案模板（task-072）**：预设勾选组合（「开发机」「办公机」），或先做 P1 体验项（趋势图按类别拆柱 / 自动扫描避开工作时间）与架构债（深色补齐 Items/SafeBox/History 三页）。
 4. **两个待决策项**（都不阻塞发版）：
-   - **L0 要不要进清理列表**：目前 5 个可清理模块只出 L1/L2，L0 的语义（只读/仅提示）在这几个模块里没有天然候选。要 L0 就得把某个模块降成「只能看不能清」（比如 prefetch），属产品决策。
-   - **风险等级单一真值源**：现在风险只由 5 个 `.ps1` 决定，`rules/cache_rules.json` 的 `modules` 段（含 `risk_level`/`description`/`impact_note`）没有任何消费者，`grade/` 分级模块从未实现。要收敛需要同时动规则库 + checksum + 脚本，属重构。
+   - **L0 要不要进清理列表**：现有 5 个可清理模块只出 L1/L2，L0 的语义（只读/仅提示）没有天然候选。要 L0 就得把某个模块降成「只能看不能清」（比如 prefetch），属产品决策。
+   - **风险等级单一真值源**：风险只由 5 个 `.ps1` 决定，`rules/cache_rules.json` 的 `modules` 段（含 `risk_level`/`description`/`impact_note`）没有消费者，`grade/` 分级模块从未实现。要收敛需同时动规则库 + checksum + 脚本，属重构。
 5. **遗留边界不变**：Top100 截断、残留「文件残留」误报无法归零、计划任务扫描非管理员恒空、DISM 15 分钟上限、深色未覆盖三页、跨盘恢复不支持、未做代码签名。
 
 ## 当前负责人 Agent
-**测试 Agent（提示词 9）**——`feature/task-070-v0.2.1-bugfixes` 开发轮已完成、状态 `testing`，待测试轮：独立重跑全部门禁 + 开 PR 触发 CI + **真机冒烟（任务书要求不可裁剪，开发轮做不了）**：① **WinSxS「分析组件存储」点下去 → UAC 点「是」→ 应返回可清理空间**（这是 Bug-1 的最终确认，必须真机走完；若仍报退出码 3 说明还有别的问题）；② 清理页扫描后风险列应同时出现 **L1 与 L2 两种徽标**（`C:/Windows/Temp` 与 `SoftwareDistribution\Download` 的项是 L2）；③ 选一个 L2 项清理 → 应弹 UAC 建还原点（顺带验证 Bug-1 修复后 `create_restore_point` 也通了）；④ 残留页移入保险箱 → 保险箱**来源列应显示 `#N`**（不再是「历史（无来源）」）→ 点「批量删除已选」应成功（目录条目能被递归删掉）；⑤ CDP console 0 红错（G6 除外）。另：安装态（NSIS 干净目录）复跑 ①②④。上一手：DevFullstackRustReact（task-070 开发）。再上一手：DocsKeeper（task-070 派发）。
+**测试 Agent（提示词 9）**——`feature/task-071-release-v0.2.1` 开发轮已完成、状态 `testing`，待测试轮：独立重跑全部门禁 + 开 PR 触发 CI + **重点核对（纯文档/版本号变更，冒烟可裁剪）**：① 四处版本号均为 `0.2.1`（`app/package.json` / 根 `package.json` / `tauri.conf.json` / `app/src-tauri/Cargo.toml`），`Cargo.lock` 里 `cdisk-cleaner = 0.2.1`，`engine`/`elevation` 仍是 `0.1.0`；② `pnpm tauri build` 产物为 `C-DiskCleaner_0.2.1_x64-setup.exe` + `.msi`，二进制 `FileVersion`/`ProductVersion` 为 `0.2.1`；③ **NSIS 装到干净目录后「设置 → 应用更新」显示 0.2.1**（任务书要求的安装态验证，开发轮装不上，必须测试轮补）；④ `CHANGELOG.md` 顶部是 `## [0.2.1] - 2026-11-02`，只有「修复」与「已知问题」两段、修复 3 条；⑤ `README.md` 版本行与 `docs/USER_GUIDE.md` 适用版本行都是 v0.2.1（这两处是白名单外补的，测试时别当成多改）；⑥ **顺带真机复验 v0.2.0 那三个 Bug**（WinSxS 分析要 UAC、清理页应出现 L1/L2 两种徽标、残留入箱后来源显示 `#N` 且能永久删除）。上一手：DevFullstackRustReact（task-071 开发）。再上一手：DocsKeeper（task-071 派发）。
 
 ## Git 提交记录
 | Commit | 任务 | 说明 |
@@ -1049,6 +1057,9 @@
 | be30bc6 | #task-070 | fix(scan): Bug-2 扫描脚本把风险等级写死成 L1，改为按分类判定 |
 | c7d00cc | #task-070 | fix(safe_box): Bug-3 目录条目永久删除失败 + 残留移入不记来源 |
 | （本次） | #task-070 | docs(state): 任务070完成，v0.2.0 真机验收 3 Bug 修复就绪 |
+| 09811dd | #task-071 | chore(release): 版本号 0.2.0 → 0.2.1 (patch) |
+| 9938c11 | #task-071 | docs(changelog): v0.2.1 段落（3 个真机验收 Bug 修复） |
+| （本次） | #task-071 | docs(state): 任务071完成，v0.2.1 patch 发版准备就绪 |
 
 ---
 变更轨迹：
@@ -1182,3 +1193,4 @@
 - 2026-10-31  task-068  M1 F 模块注册表健康中心（**M1 收官**）：**注册表封装抽模块**（`scan/winreg.rs`，从 residual.rs 抽出 + 新增枚举值/删值，零新依赖；公开 API 只暴露 `RegRoot` 不暴露 `HKEY`）；**三分类体检**（Run 读 HKLM 64/32 位 + HKCU；卸载残留复用 task-067；计划任务读 `System32\Tasks` 的 XML 而非 schtasks——本地化文本解析必挂）；**`.reg` 备份自己生成**（不 spawn reg.exe：受限环境会被拦 + 纯字符串可单测；SZ 转义、EXPAND_SZ→hex(2)、DWORD→dword:、默认值→@=、二进制续行）；**只有 Run 可删且只删值**（fail-closed 备份失败不删 + 后端独立复核 L3 不信前端）；**风险分级**（C:/Windows 下→L3、安全软件关键词→L3、文件不存在→L2 直说残留）；**真机修 bug**（`%windir%` 未展开导致 `Path::exists()` 恒 false，把正常程序误判成残留）；**`taskScanAvailable`**（System32\Tasks 普通用户 Permission denied，必须区分「没有任务」与「读不到」）。门禁 check/clippy/fmt 0、cargo test **431 passed**（+26）、vitest **148**（+13）、build 230.32 kB、**tauri build 出包 NSIS 4.45 MiB + MSI 6.55 MiB**（末尾签名步无私钥失败属已知预期）。**真实数据**：`--ignored --nocapture real_scan` → run=16 uninstall=3 task=0 taskReadable=false 62ms；L3 三条判定准确，exists=false 三条都是真残留。**开发轮不跑 CI、不做真机/安装态冒烟**，移交测试 Agent
 - 2026-10-31  task-069  v0.2.0 发版准备：**版本号 0.1.7 → 0.2.0**（四处 + `Cargo.lock`；`engine`/`elevation` 的 0.1.0 与 `latest.json` 的 0.1.0 **刻意不动**——前者是内部构件不单独发布，后者由 `release.yml` 的 `generate-latest` 用真实签名整份覆盖，手改只会造出签名对不上的假清单）；**CHANGELOG v0.2.0**（3454 字符 / 新增 17 / 变更 4 / 修复 2 / 已知问题 10；**补入任务书漏计的 task-061 三项**——061 合并 `b92a763`(10-30) 晚于 v0.1.7 发版 `360df74`(10-29)，随本版本交付，不补就是「代码里有、CHANGELOG 里没有」；已知问题不删旧账，v0.1.7 的 5 条全留 + 新增 5 条边界）；**README**（功能段 7 条 → 三组 17 条 + 八个页签总览 + 四条深度清理各写「为什么不做这个操作」+ 技术栈补 DISM/还原点/托盘通知/注册表 FFI + 安全基线加「不可逆操作前留退路」）；**用户手册**（8 章 331 行 → **15 章 766 行**，章节顺序与页签一致，覆盖 12 项说明，修掉三处与实现不符的说法：普通清理页不显示还原点序号 / `释放 X` 是文件大小之和而非磁盘差值 / 弹 UAC 的程序名是 `cclean-elevation.exe`，新增 5 条 FAQ，30 条内链锚点程序化校验全通过）。门禁 check/clippy/fmt 0、cargo test **431 passed**、vitest **148**（13 files）、build 230.32 kB、**tauri build 出包 NSIS 4.44 MiB + MSI 6.55 MiB**，二进制 `FileVersion`/`ProductVersion` 实测 **0.2.0**（这是「关于」页的数据源）。**本地未签名**（私钥正源在 CI secret）；**安装态冒烟未做**（非管理员 shell 下 msiexec 未完成即被终止、无残留），移交测试 Agent
 - 2026-11-01  task-070  v0.2.0 真机验收 3 Bug 修复：**Bug-1（P0）WinSxS 退出码 3**——根因不是 DISM，而是 `run_elevated` **漏传命令名**（只拼了 `--result "path"`，提权 exe 的 `argv[1]` 是 `--result` → 白名单不认 → `EXIT_UNKNOWN_CMD(3)` 退出且不写结果 JSON → 前端只看到「退出码 3 + 空输出」）；`create_restore_point` 同一条路也是坏的，被 Bug-2 掩盖。证据：两种 argv 形状对比（exit 3 vs exit 4 + `DISM 退出码 740`）+ DISM 日志里无本次调用痕迹。修法：新增 `build_argv(cmd,args)`。**Bug-2（P1）扫描只出 L1**——5 个 `.ps1` 把风险等级写死成字面量 `1`；顺带查清 `rules/cache_rules.json` 的 `modules` 段在扫描链路上**无消费者**（`grade/` 从未实现），改规则库对行为零影响却要连带改 checksum，故未改；改为按分类给风险（缓存 L1 / `windows_temp`+`update_download` L2），实测 `risk=1:61 + risk=2:29`。**Bug-3（P1）永久删除失败 + 来源缺失**——目录条目用 `remove_file` 必然失败（task-067 起保险箱会放整目录）、移入时 `source_task_id` 传 None；只读查用户真实库确认「`src=None` 的三条全是目录、`src=1` 的两条是文件」；修法：抽 `remove_entry()`（`symlink_metadata` 判类型）+ 建残留批次 `cleanup_task` 行（`freed_bytes=0`、snapshot 标 `residual_scan`、`session_id=NULL`）。门禁 check/fmt/clippy 0、cargo test **444 passed**（+13）、vitest 148、build 230.32 kB、**tauri build NSIS 4.45 MiB + MSI 6.56 MiB**。**真机/安装态冒烟未做**（本机 WebView2 起不来、UAC 无法自动化），三条 Bug 的最终确认归测试轮
+- 2026-11-02  task-071  v0.2.1 patch 发版准备：**版本号 `0.2.0` → `0.2.1`**（四处 + `Cargo.lock`；`engine`/`elevation` 保持 `0.1.0`；**另补两处版本展示行**——`README.md` 当前版本、`docs/USER_GUIDE.md` 适用版本，任务书「不修改 README/手册」指的是功能列表，版本行不改会让仓库自相矛盾）；**CHANGELOG v0.2.1 段落**（1183 字符 / 修复 3 条 + 已知问题 2 条；patch 语义不设新增变更；三条根因按实际写，并补明**「系统还原点自动创建」在 0.2.0 里也从未成功过**——同一条提权路径，只是没有 L2 项可清所以没暴露；已知问题明确「本版本未新增，v0.2.0 的 10 条仍有效」+ 两处本版本边界：L0 不出现、规则库与脚本各存一份判定）。门禁 check/fmt/clippy 0、cargo test **444 passed**、vitest **148**（13 files）、build 230.32 kB、**tauri build 出 `C-DiskCleaner_0.2.1_x64-setup.exe`（4.46 MiB）+ `.msi`（6.56 MiB）**，二进制 `FileVersion`/`ProductVersion` 实测 **0.2.1**。**安装态版本号验证未做**（非管理员 shell 装不上），归测试轮
