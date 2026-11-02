@@ -27,11 +27,15 @@ function Write-Item([string]$category, [string]$path, [int64]$size, [int]$risk) 
     $script:totalBytes += $size
 }
 
+# v0.2.1 Bug-2：风险等级不再是写死的 1（判据同 scan_browser_cache.ps1）。
+# 包管理器缓存都是「删了下次安装重新下载」，一律 L1。
+$riskCache = 1
+
 $roots = @(
-    @{ path = (Join-Path $env:LOCALAPPDATA 'npm-cache'); category = 'npm_cache' }
-    @{ path = (Join-Path $env:APPDATA 'npm-cache'); category = 'npm_cache' }
-    @{ path = (Join-Path $env:LOCALAPPDATA 'pip\cache'); category = 'pip_cache' }
-    @{ path = (Join-Path $env:LOCALAPPDATA 'pnpm-store'); category = 'pnpm_store' }
+    @{ path = (Join-Path $env:LOCALAPPDATA 'npm-cache'); category = 'npm_cache'; risk = $riskCache }
+    @{ path = (Join-Path $env:APPDATA 'npm-cache'); category = 'npm_cache'; risk = $riskCache }
+    @{ path = (Join-Path $env:LOCALAPPDATA 'pip\cache'); category = 'pip_cache'; risk = $riskCache }
+    @{ path = (Join-Path $env:LOCALAPPDATA 'pnpm-store'); category = 'pnpm_store'; risk = $riskCache }
 )
 
 foreach ($r in $roots) {
@@ -42,7 +46,7 @@ foreach ($r in $roots) {
     Get-ChildItem -LiteralPath $r.path -Recurse -Force -File -ErrorAction SilentlyContinue |
         ForEach-Object {
             if ($_.LinkType) { return }
-            try { Write-Item $r.category $_.FullName $_.Length 1 }
+            try { Write-Item $r.category $_.FullName $_.Length $r.risk }
             catch { [Console]::Error.WriteLine("skip $($_.FullName): $_") }
         }
 }

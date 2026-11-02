@@ -149,3 +149,72 @@ fn ignores_rows_not_in_box() {
     assert!(r.is_noop(), "非 in_box 的行不该被自动 purge");
     assert_eq!(count_rows(&conn), 1);
 }
+
+// ===================== v0.2.1 Bug-3：目录条目 =====================
+
+/// 在 box_dir 下造一个**真实目录**（含嵌套文件），并插一行 safe_box。
+///
+/// 残留扫描（task-067）移入保险箱的是**整个目录**，不是单文件。旧实现一律
+/// `fs::remove_file`，对这种行必然失败 → 前端只看到「永久删除失败：内部错误」。
+fn insert_boxed_dir(
+    conn: &rusqlite::Connection,
+    box_dir: &Path,
+    rel: &str,
+    expires_at: i64,
+) -> i64 {
+    let abs = box_dir.join(rel);
+    std::fs::create_dir_all(abs.join("nested")).unwrap();
+    std::fs::write(abs.join("a.bin"), vec![b'x'; 128]).unwrap();
+    std::fs::write(abs.join("nested").join("b.bin"), vec![b'y'; 64]).unwrap();
+
+    conn.execute(
+        "INSERT INTO safe_box
+         (original_path, safe_rel_path, size_bytes, quarantined_at, expires_at, status, source_task_id)
+         VALUES (?1, ?2, 192, 0, ?3, 'in_box', NULL)",
+        rusqlite::params![format!(r"C:/Program Files/{rel}"), rel, expires_at],
+    )
+    .unwrap();
+    conn.last_insert_rowid()
+}
+
+#[test]
+fn purge_expired_removes_directory_entries() {
+    // Bug-3 回归：目录条目过期后必须能递归删掉，而不是每轮都失败重试。
+    let (_dir, conn, box_dir) = setup();
+    let id = insert_boxed_dir(&conn, &box_dir, "HONOR", 100);
+
+    let r = purge_expired(&conn, &box_dir, 1_000);
+
+    assert_eq!(r.purged, 1, "目录条目应被清掉，errors={:?}", r.errors);
+    assert_eq!(r.failed, 0, "不该有失败：{:?}", r.errors);
+    assert!(!box_dir.join("HONOR").exists(), "目录必须真的被删掉");
+    assert_eq!(count_rows(&conn), 0);
+    let _ = id;
+}
+
+#[test]
+fn purge_item_removes_directory_entries() {
+    // 与上面同一个 bug，但走「手动永久删除」那条路（purge_item）。
+    use engine::execute::safe_box::purge_item;
+
+    let (_dir, conn, box_dir) = setup();
+    let id = insert_boxed_dir(&conn, &box_dir, "ZeroG", 100);
+
+    purge_item(&conn, &box_dir, id).expect("目录条目永久删除必须成功");
+
+    assert!(!box_dir.join("ZeroG").exists());
+    assert_eq!(count_rows(&conn), 0);
+}
+
+#[test]
+fn purge_item_is_idempotent_when_directory_already_gone() {
+    // 磁盘上已经没了（用户手动清过保险箱目录）→ 仍然删 DB 行，不报错。
+    use engine::execute::safe_box::purge_item;
+
+    let (_dir, conn, box_dir) = setup();
+    let id = insert_boxed_dir(&conn, &box_dir, "Gone", 100);
+    std::fs::remove_dir_all(box_dir.join("Gone")).unwrap();
+
+    purge_item(&conn, &box_dir, id).expect("目录已不存在也必须能删行");
+    assert_eq!(count_rows(&conn), 0);
+}

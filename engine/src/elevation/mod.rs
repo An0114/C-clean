@@ -178,6 +178,31 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
     (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
+/// 拼出完整的提权命令行：**命令名必须是第一个 token**。
+///
+/// # 为什么单独抽一个函数（v0.2.1 修 Bug-1）
+///
+/// 旧版 `run_elevated` 只把 `(key, value)` 参数对拼进命令行，**忘了把 `cmd`
+/// 本身带上**。提权 exe 收到的 `argv[1]` 是 `--result`，白名单不认 → 直接
+/// `EXIT_UNKNOWN_CMD(3)` 退出，连结果 JSON 都不写。主进程只看到「退出码 3 +
+/// 空输出」，于是：
+///
+/// - WinSxS「分析组件存储」永远失败（报「DISM 分析失败（退出码 3）：」）；
+/// - 系统还原点也永远建不成（`create_restore_point` 同样拿不到命令名）。
+///
+/// 还原点这条被「所有项都是 L1」掩盖了——L1 清理不需要还原点，所以那条路
+/// 一直没被走到，直到 WinSxS 才暴露。
+///
+/// 现在「命令名 + 参数」的拼装收在一个函数里，并有单测钉住第一个 token。
+pub fn build_argv(cmd: &str, args: &[(&str, &str)]) -> String {
+    let rest = build_args_string(args);
+    if rest.is_empty() {
+        cmd.to_string()
+    } else {
+        format!("{cmd} {rest}")
+    }
+}
+
 /// 把 `(key, value)` 列表拼成提权 exe 的命令行参数串。
 ///
 /// **每个 value 都用双引号包裹并转义内部引号**：值里可能带空格（例如还原点描述
@@ -265,7 +290,9 @@ pub fn run_elevated(
     let mut all_args: Vec<(&str, &str)> = args.to_vec();
     let result_str = result_path.to_string_lossy().to_string();
     all_args.push(("--result", result_str.as_str()));
-    let args_string = build_args_string(&all_args);
+    // 命令名必须在最前面：提权 exe 用 `argv[1]` 做白名单校验，缺了它会被判成
+    // 「未知命令」并以退出码 3 结束（v0.2.1 Bug-1 的根因）。
+    let args_string = build_argv(cmd, &all_args);
 
     let exit_code = shell_execute_and_wait(exe_path, &args_string)?;
 
@@ -382,7 +409,8 @@ pub fn run_elevated_streaming(
     let result_str = result_path.to_string_lossy().to_string();
     all_args.push(("--progress", progress_str.as_str()));
     all_args.push(("--result", result_str.as_str()));
-    let args_string = build_args_string(&all_args);
+    // 同 run_elevated：命令名必须打头，否则提权 exe 判「未知命令」退出 3。
+    let args_string = build_argv(cmd, &all_args);
 
     let stop = std::sync::atomic::AtomicBool::new(false);
     let exit = std::thread::scope(|s| {
@@ -503,6 +531,41 @@ mod tests {
     fn args_string_joins_multiple() {
         let s = build_args_string(&[("--a", "1"), ("--b", "2 3")]);
         assert_eq!(s, "--a \"1\" --b \"2 3\"");
+    }
+
+    // ============ v0.2.1 Bug-1：命令名必须打头 ============
+
+    #[test]
+    fn argv_starts_with_command_name() {
+        // **这条就是 Bug-1 的回归防线**：旧实现只拼 `--result "..."`，
+        // 提权 exe 的 argv[1] 是 `--result`，白名单不认 → 退出码 3。
+        let s = build_argv(
+            "dism_analyze",
+            &[("--result", r"C:\Users\x\AppData\Local\Temp\r.json")],
+        );
+        let first = s.split(' ').next().unwrap();
+        assert_eq!(first, "dism_analyze", "命令名必须是第一个 token，实际: {s}");
+        assert!(s.contains("--result"), "参数不能丢: {s}");
+    }
+
+    #[test]
+    fn argv_without_args_is_just_the_command() {
+        // 没有参数时不能留尾部空格（否则提权 exe 可能收到空 token）
+        assert_eq!(build_argv("dism_analyze", &[]), "dism_analyze");
+    }
+
+    #[test]
+    fn argv_first_token_is_always_whitelisted() {
+        // 三个命令都必须以「白名单里的名字」打头——把这条钉住，
+        // 以后新增命令若忘了走 build_argv 会立刻红。
+        for cmd in ALLOWED_COMMANDS {
+            let s = build_argv(cmd, &[("--result", "x")]);
+            let first = s.split(' ').next().unwrap();
+            assert!(
+                ALLOWED_COMMANDS.contains(&first),
+                "首个 token {first:?} 不在白名单里"
+            );
+        }
     }
 
     #[test]
