@@ -258,3 +258,109 @@ describe("WinSxS 组件存储卡片", () => {
     expect(await screen.findByText("组件存储清理完成")).toBeTruthy();
   });
 });
+
+// ===================== task-073：趋势图折线增强 =====================
+//
+// 为什么在组件级测：折线是纯 SVG 计算（补零、平滑路径、Y 轴缩放），
+// 本机 WebView2 起不来拿不到真机截图，用 jsdom 把「结构 + 交互」钉死，
+// 视觉上的曲线形状由真机冒烟兜。
+//
+// 断言只依赖「数量 / 存在性 / 调用实参」，不依赖具体日期——
+// 否则用例会随运行日期漂移。
+
+/** 造一份只含指定天数的后端返回（后端只返回有记录的日子）。 */
+const trendOf = (rows: Array<{ day: string; bytesFreed: number }>) => rows;
+
+describe("趋势图（task-073 折线）", () => {
+  it("默认渲染近 30 天折线图（有数据时画 path，槽位铺满 30 天）", async () => {
+    // 给一天有数据：折线必须真的画出来（空数据不画 path，见「全 0」那条）
+    const today = new Date();
+    const key = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(
+      today.getDate()
+    ).padStart(2, "0")}`;
+    mockInvoke({
+      cleanup_stats_trend: () => Promise.resolve(ok(trendOf([{ day: key, bytesFreed: 3 * MB }]))),
+    });
+    render(<Dashboard />);
+
+    const svg = await screen.findByTestId("trend-line");
+    // 折线的标志是 <path>；柱状图原来是一堆 <rect>（现在只剩透明命中区）
+    expect(svg.querySelector("path")).not.toBeNull();
+    expect(screen.getByText("最近 30 天释放趋势")).toBeTruthy();
+    // 30 个命中区 = 按日历铺满 30 天
+    expect(screen.getAllByTestId(/^trend-hit-/)).toHaveLength(30);
+  });
+
+  it("切到近 7 天后按 days=7 重新查询，且槽位数变 7", async () => {
+    mockInvoke({ cleanup_stats_trend: () => Promise.resolve(ok([])) });
+    render(<Dashboard />);
+    await screen.findByTestId("trend-line");
+
+    fireEvent.click(screen.getByText("近 7 天"));
+
+    await waitFor(() => {
+      const calls = callsOf("cleanup_stats_trend");
+      expect(calls[calls.length - 1]).toMatchObject({ days: 7 });
+    });
+    expect(screen.getByText("最近 7 天释放趋势")).toBeTruthy();
+    expect(screen.getAllByTestId(/^trend-hit-/)).toHaveLength(7);
+  });
+
+  it("切到近 90 天：槽位铺满 90 个（不是只画有记录的那几天）", async () => {
+    // 后端只返回 2 天有记录——若按返回数组画，只会有 2 个点
+    mockInvoke({
+      cleanup_stats_trend: () =>
+        Promise.resolve(
+          ok(
+            trendOf([
+              { day: "2026-10-01", bytesFreed: 1024 },
+              { day: "2026-10-20", bytesFreed: 2048 },
+            ])
+          )
+        ),
+    });
+    render(<Dashboard />);
+    await screen.findByTestId("trend-line");
+
+    fireEvent.click(screen.getByText("近 90 天"));
+
+    await waitFor(() => {
+      expect(screen.getAllByTestId(/^trend-hit-/)).toHaveLength(90);
+    });
+  });
+
+  it("悬停某个槽位时出现该日期的数值提示", async () => {
+    mockInvoke({ cleanup_stats_trend: () => Promise.resolve(ok([])) });
+    render(<Dashboard />);
+    await screen.findByTestId("trend-line");
+
+    expect(screen.queryByTestId("trend-tooltip")).toBeNull();
+
+    const hits = screen.getAllByTestId(/^trend-hit-/);
+    fireEvent.mouseEnter(hits[hits.length - 1]);
+
+    const tip = await screen.findByTestId("trend-tooltip");
+    // 提示里要有日期和数值两部分（格式：YYYY-MM-DD · X B）
+    expect(tip.textContent).toMatch(/\d{4}-\d{2}-\d{2}/);
+    expect(tip.textContent).toContain("·");
+  });
+
+  it("全范围都没有清理记录时不画折线，只显示占位文案", async () => {
+    mockInvoke({ cleanup_stats_trend: () => Promise.resolve(ok([])) });
+    render(<Dashboard />);
+
+    const svg = await screen.findByTestId("trend-line");
+    // 全 0 时画一条贴基线的实线会被误读成「有数据」，所以不画 path
+    expect(svg.querySelector("path")).toBeNull();
+    expect(screen.getByText("暂无清理记录")).toBeTruthy();
+  });
+
+  it("查询失败时显示失败文案，不假装成「暂无记录」", async () => {
+    mockInvoke({
+      cleanup_stats_trend: () => Promise.reject(new Error("db locked")),
+    });
+    render(<Dashboard />);
+
+    expect(await screen.findByText(/趋势数据加载失败/)).toBeTruthy();
+  });
+});

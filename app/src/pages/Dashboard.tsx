@@ -457,121 +457,312 @@ function DriveRing() {
   );
 }
 
-// ===================== task-061：趋势图 =====================
+// ===================== task-061 趋势图 / task-073 折线增强 =====================
 //
-// 实现方式：**手写 SVG 柱状图**，不引 recharts / chart.js。
-// 理由：需求只是「每天一根柱子 + 顶部标峰值 + 首尾标日期」，
-// 引一个 100KB+ 的图表库不划算（本项目前端产物体积一直在 190 kB 上下）。
+// 实现方式：**手写 SVG 折线**，不引 recharts / chart.js。
+// 理由：需求只是「一条折线 + 三个范围按钮 + 悬停提示」，引一个 100KB+ 的图表库
+// 不划算（本项目前端产物体积一直在 230 kB 上下）。
 //
-// 为什么用柱状而不是折线：数据是「每日聚合」的离散量，柱状能直观表达
-// 「哪天有清理、哪天没有」；折线会把「没数据的那天」画成一条斜线，误导。
+// # 为什么从柱状改成折线，以及怎么避免折线的老毛病
+//
+// task-061 的注释写过「折线会把没数据的那天画成一条斜线，误导」。那个担心是对的，
+// 但**成因不是折线本身，而是「只画有记录的日子」**——`cleanup_stats_trend` 的
+// SQL 是 `GROUP BY day`，没记录的日子根本不返回，于是 10-01 和 10-20 会被画成
+// 相邻两点，中间 19 天凭空消失。
+//
+// 所以本任务改成折线时同步做了 [`fillDays`]：**按真实日期铺满整个范围**，没记录
+// 的日子补 0。这样「这天没清理」就是基线上一个 0 值点，折线如实贴底，不会骗人。
+// 配合「>0 的日子画实心圆点、=0 不画」，用户一眼能看出哪天真的清过。
 
 interface TrendPoint {
   day: string;
   bytesFreed: number;
 }
 
-const TREND_DAYS = 30;
+/** 可选时间范围。与后端 `cleanup_stats_trend(days)` 的 `days` 直接对应。 */
+const TREND_RANGES = [
+  { days: 7, label: "近 7 天" },
+  { days: 30, label: "近 30 天" },
+  { days: 90, label: "近 90 天" },
+] as const;
+
+const DEFAULT_TREND_DAYS = 30;
+
+/**
+ * 本地日期 → `YYYY-MM-DD`。
+ *
+ * **不能用 `toISOString().slice(0,10)`**：那是 UTC 日期，而 SQLite 侧用的是
+ * `date(started_at,'unixepoch','localtime')`。东八区凌晨 0-8 点用 UTC 会差一天，
+ * 表现为「昨天的数据跑到今天」。
+ */
+function localDayKey(d: Date): string {
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${d.getFullYear()}-${m}-${day}`;
+}
+
+/**
+ * 把「只有有记录的日期」补成「连续 `days` 天」。
+ *
+ * 后端只返回有记录的日期（`GROUP BY day`），直接拿来画折线会把 10-01 和 10-20
+ * 画成相邻两点。这里按日历铺满，缺失的补 0。
+ */
+function fillDays(points: TrendPoint[], days: number, today: Date = new Date()): TrendPoint[] {
+  const byDay = new Map(points.map((p) => [p.day, p.bytesFreed]));
+  const out: TrendPoint[] = [];
+  for (let i = days - 1; i >= 0; i -= 1) {
+    const d = new Date(today);
+    d.setDate(d.getDate() - i);
+    const key = localDayKey(d);
+    out.push({ day: key, bytesFreed: byDay.get(key) ?? 0 });
+  }
+  return out;
+}
+
+/**
+ * 平滑折线路径（二次贝塞尔穿中点法）。
+ *
+ * 为什么不用 Catmull-Rom 转三次贝塞尔：那种插值在数据突变时会**过冲**，
+ * 画出负值或超过峰值的曲线——图上出现「比最大值还高」的点是硬伤。
+ * 穿中点法只用相邻两点的中点做控制点，曲线始终被数据点包住，不会过冲。
+ */
+function smoothPath(pts: { x: number; y: number }[]): string {
+  if (pts.length === 0) return "";
+  if (pts.length === 1) return `M ${pts[0].x} ${pts[0].y}`;
+  let d = `M ${pts[0].x} ${pts[0].y}`;
+  for (let i = 1; i < pts.length - 1; i += 1) {
+    const cx = (pts[i].x + pts[i + 1].x) / 2;
+    const cy = (pts[i].y + pts[i + 1].y) / 2;
+    d += ` Q ${pts[i].x} ${pts[i].y} ${cx} ${cy}`;
+  }
+  const last = pts[pts.length - 1];
+  return `${d} L ${last.x} ${last.y}`;
+}
 
 function TrendChart() {
-  const [points, setPoints] = useState<TrendPoint[] | null>(null);
+  const [days, setDays] = useState<number>(DEFAULT_TREND_DAYS);
+  const [raw, setRaw] = useState<TrendPoint[] | null>(null);
   const [failed, setFailed] = useState(false);
+  const [hover, setHover] = useState<number | null>(null);
 
   useEffect(() => {
+    let alive = true;
     (async () => {
       try {
-        const r = await api<TrendPoint[]>("cleanup_stats_trend", { days: TREND_DAYS });
-        setPoints(Array.isArray(r) ? r : []);
+        const r = await api<TrendPoint[]>("cleanup_stats_trend", { days });
+        if (!alive) return;
+        setRaw(Array.isArray(r) ? r : []);
       } catch {
         // 读失败不打扰用户：图表区显示占位，卡片数据照常
+        if (!alive) return;
         setFailed(true);
-        setPoints([]);
+        setRaw([]);
       }
     })();
-  }, []);
+    // 切范围时上一次请求可能还没回来，用 alive 丢弃过期响应，
+    // 否则快速点 7→30→90 会被慢的那个覆盖成错误范围。
+    return () => {
+      alive = false;
+    };
+  }, [days]);
+
+  // 切范围时清掉悬停：旧索引在新数据里指向的是另一天。
+  useEffect(() => {
+    setHover(null);
+  }, [days]);
 
   const box: React.CSSProperties = { ...cardStyle, marginTop: 12 };
   const title = (
-    <div style={{ ...labelStyle, marginBottom: 8 }}>最近 {TREND_DAYS} 天释放趋势</div>
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+      <span style={labelStyle}>最近 {days} 天释放趋势</span>
+      <span style={{ display: "flex", gap: 4 }} role="group" aria-label="时间范围">
+        {TREND_RANGES.map((r) => {
+          const on = r.days === days;
+          return (
+            <button
+              key={r.days}
+              onClick={() => setDays(r.days)}
+              aria-pressed={on}
+              style={{
+                padding: "2px 8px",
+                fontSize: 11,
+                borderRadius: 4,
+                border: `1px solid ${on ? "#2563eb" : "var(--border)"}`,
+                background: on ? "#2563eb" : "var(--bg)",
+                color: on ? "#fff" : "var(--text-muted)",
+                cursor: "pointer",
+              }}
+            >
+              {r.label}
+            </button>
+          );
+        })}
+      </span>
+    </div>
   );
 
-  if (points === null) {
+  if (raw === null) {
     return (
       <div style={box}>
         {title}
-        <div style={{ fontSize: 12, color: "var(--text-muted)" }}>加载中…</div>
+        <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 8 }}>加载中…</div>
       </div>
     );
   }
 
-  if (points.length === 0) {
+  const points = fillDays(raw, days);
+  const total = points.reduce((a, p) => a + p.bytesFreed, 0);
+
+  if (total === 0 && failed) {
     return (
       <div style={box}>
         {title}
-        <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
-          {failed ? "趋势数据加载失败，请稍后重试" : "暂无清理记录"}
+        <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 8 }}>
+          趋势数据加载失败，请稍后重试
         </div>
       </div>
     );
   }
 
-  // SVG 坐标系：固定 viewBox，宽度靠 CSS 拉伸（柱宽随之缩放，文字用固定字号
-  // 会一起被拉变形，所以文字用 SVG 内的 <text> + 不缩放的外层容器承载）。
+  // SVG 坐标系：固定 viewBox + preserveAspectRatio="none" 让宽度随容器拉伸。
   const W = 600;
   const H = 120;
+  const PAD_TOP = 8;
   const PAD_BOTTOM = 4;
-  const max = Math.max(...points.map((p) => p.bytesFreed), 1);
+  const plotH = H - PAD_TOP - PAD_BOTTOM;
+
+  const peak = Math.max(...points.map((p) => p.bytesFreed), 0);
+  // Y 轴自适应：留 15% 顶部余量，否则峰值点会贴着上边界看不出高低。
+  // peak=0（全范围没清理）时给一个虚拟上限，避免除零。
+  const yMax = peak > 0 ? peak * 1.15 : 1;
+
   const slot = W / points.length;
-  const barW = Math.max(2, slot * 0.7);
+  const xy = points.map((p, i) => ({
+    x: i * slot + slot / 2,
+    y: PAD_TOP + plotH - (p.bytesFreed / yMax) * plotH,
+  }));
+
+  const hovered = hover !== null ? points[hover] : null;
+  const hoveredXY = hover !== null ? xy[hover] : null;
 
   return (
     <div style={box}>
       {title}
-      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", margin: "6px 0 2px" }}>
         <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{points[0].day}</span>
         <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
-          峰值 {formatBytes(max)}
+          {total > 0 ? `合计 ${formatBytes(total)}` : "暂无清理记录"}
         </span>
         <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
           {points[points.length - 1].day}
         </span>
       </div>
-      <svg
-        viewBox={`0 0 ${W} ${H}`}
-        preserveAspectRatio="none"
-        role="img"
-        aria-label={`最近 ${TREND_DAYS} 天释放趋势柱状图`}
-        style={{ width: "100%", height: 120, display: "block" }}
-      >
-        {/* 基线 */}
-        <line
-          x1={0}
-          y1={H - PAD_BOTTOM}
-          x2={W}
-          y2={H - PAD_BOTTOM}
-          stroke="var(--border)"
-          strokeWidth={1}
-        />
-        {points.map((p, i) => {
-          const h = Math.max(
-            p.bytesFreed > 0 ? 2 : 0,
-            (p.bytesFreed / max) * (H - PAD_BOTTOM)
-          );
-          return (
+
+      <div style={{ position: "relative" }}>
+        <svg
+          viewBox={`0 0 ${W} ${H}`}
+          preserveAspectRatio="none"
+          role="img"
+          aria-label={`最近 ${days} 天释放趋势折线图`}
+          data-testid="trend-line"
+          style={{ width: "100%", height: 120, display: "block" }}
+          onMouseLeave={() => setHover(null)}
+        >
+          {/* 基线 */}
+          <line
+            x1={0}
+            y1={H - PAD_BOTTOM}
+            x2={W}
+            y2={H - PAD_BOTTOM}
+            stroke="var(--border)"
+            strokeWidth={1}
+          />
+          {/* 折线主体。全 0 时不画线（否则是一条贴着基线的实线，看起来像"有数据"） */}
+          {peak > 0 && (
+            <path
+              d={smoothPath(xy)}
+              fill="none"
+              stroke="#10b981"
+              strokeWidth={1.6}
+              strokeLinecap="round"
+              vectorEffect="non-scaling-stroke"
+            />
+          )}
+          {/* 有清理的日子画实心点：让「哪天真的清过」一眼可见 */}
+          {points.map((p, i) =>
+            p.bytesFreed > 0 ? (
+              <circle
+                key={`dot-${p.day}`}
+                cx={xy[i].x}
+                cy={xy[i].y}
+                r={1.8}
+                fill="#10b981"
+                vectorEffect="non-scaling-stroke"
+              />
+            ) : null
+          )}
+          {/* 悬停高亮 */}
+          {hoveredXY && (
+            <>
+              <line
+                x1={hoveredXY.x}
+                y1={PAD_TOP}
+                x2={hoveredXY.x}
+                y2={H - PAD_BOTTOM}
+                stroke="var(--border)"
+                strokeWidth={1}
+                strokeDasharray="2 2"
+                vectorEffect="non-scaling-stroke"
+              />
+              <circle
+                cx={hoveredXY.x}
+                cy={hoveredXY.y}
+                r={3}
+                fill="#2563eb"
+                vectorEffect="non-scaling-stroke"
+              />
+            </>
+          )}
+          {/* 命中区：每个槽位一条透明竖条，比 1.8px 的圆点好点得多 */}
+          {points.map((p, i) => (
             <rect
-              key={p.day}
-              x={i * slot + (slot - barW) / 2}
-              y={H - PAD_BOTTOM - h}
-              width={barW}
-              height={h}
-              fill={p.bytesFreed > 0 ? "#10b981" : "transparent"}
-              rx={1}
+              key={`hit-${p.day}`}
+              x={i * slot}
+              y={0}
+              width={slot}
+              height={H}
+              fill="transparent"
+              onMouseEnter={() => setHover(i)}
+              data-testid={`trend-hit-${p.day}`}
             >
               <title>{`${p.day}：${formatBytes(p.bytesFreed)}`}</title>
             </rect>
-          );
-        })}
-      </svg>
+          ))}
+        </svg>
+
+        {hovered && (
+          <div
+            data-testid="trend-tooltip"
+            style={{
+              position: "absolute",
+              top: 0,
+              left: `${((hover! + 0.5) / points.length) * 100}%`,
+              transform: "translateX(-50%)",
+              background: "var(--bg)",
+              border: "1px solid var(--border)",
+              borderRadius: 4,
+              padding: "3px 7px",
+              fontSize: 11,
+              color: "var(--text)",
+              whiteSpace: "nowrap",
+              pointerEvents: "none",
+              boxShadow: "0 1px 4px rgba(0,0,0,.12)",
+            }}
+          >
+            {hovered.day} · {formatBytes(hovered.bytesFreed)}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

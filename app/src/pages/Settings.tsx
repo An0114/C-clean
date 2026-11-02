@@ -52,6 +52,18 @@ interface Prefs {
 /** task-061：自动扫描间隔，与 `engine::prefs::{SCAN_DAILY, SCAN_WEEKLY, SCAN_MONTHLY}` 对齐。 */
 type ScanInterval = "daily" | "weekly" | "monthly";
 
+/**
+ * task-073：系统级定时扫描的任务状态。
+ *
+ * 与 `engine::ipc::commands::auto_scan::AutoScanTaskStatus`（camelCase）对齐。
+ * 字段名对不上会全 undefined，界面就会一直显示「未注册」——比报错更糟。
+ */
+interface AutoScanTaskStatus {
+  registered: boolean;
+  taskName: string;
+  time: string;
+}
+
 const SCAN_OPTIONS: { value: ScanInterval; label: string }[] = [
   { value: "daily", label: "每天" },
   { value: "weekly", label: "每周" },
@@ -168,6 +180,53 @@ export default function Settings({ onUpdateFound, onThemeChange }: SettingsProps
       setAutostartSaving(false);
     }
   }, []);
+
+  // task-073：系统级定时扫描（Windows 任务计划）。
+  // 状态来源是「任务是否真的注册在系统里」，不是本地 prefs——所以每次进页面
+  // 都要问一次后端，不能拿 prefs 猜。
+  const [taskStatus, setTaskStatus] = useState<AutoScanTaskStatus | null>(null);
+  const [taskSaving, setTaskSaving] = useState<boolean>(false);
+  const [taskError, setTaskError] = useState<string>("");
+
+  useEffect(() => {
+    (async () => {
+      try {
+        setTaskStatus(await api<AutoScanTaskStatus>("auto_scan_status", {}));
+        setTaskError("");
+      } catch (e) {
+        // **不谎报「未注册」**：查不到可能是 schtasks 被组策略/安全软件拦了，
+        // 用户需要知道真实原因，否则会以为开关一直是关的。
+        setTaskStatus(null);
+        setTaskError(String(e));
+      }
+    })();
+  }, []);
+
+  const onToggleTask = useCallback(
+    async (next: boolean) => {
+      setTaskSaving(true);
+      setTaskError("");
+      try {
+        // 时间固定 09:00：接口支持任意 HH:MM，但界面不暴露时间选择——
+        // 一个「每天几点」的输入框换不来多少价值，却多一个可能填错的东西。
+        const st = next
+          ? await api<AutoScanTaskStatus>("auto_scan_enable", { time: "09:00" })
+          : await api<AutoScanTaskStatus>("auto_scan_disable", {});
+        // 用后端回读的状态覆盖（schtasks 可能返回 0 但任务被立刻禁掉）
+        setTaskStatus(st);
+        setToast({
+          ok: true,
+          text: next ? "已注册系统级定时扫描（每天 09:00）" : "已取消系统级定时扫描",
+        });
+      } catch (e) {
+        setTaskError(String(e));
+        setToast({ ok: false, text: `系统级定时设置失败：${String(e)}` });
+      } finally {
+        setTaskSaving(false);
+      }
+    },
+    []
+  );
 
   useEffect(() => {
     (async () => {
@@ -865,6 +924,84 @@ export default function Settings({ onUpdateFound, onThemeChange }: SettingsProps
             先开启上面的开关，间隔选择才会生效。
           </div>
         )}
+
+        {/* task-073：系统级定时（Windows 任务计划）。
+            与上面的「应用内轮询」是两层：那个只在应用运行时生效，这个能在
+            应用完全没跑的时候把程序拉起来扫一遍再退出。 */}
+        <div style={{ marginTop: 16, borderTop: "1px solid var(--border)", paddingTop: 14 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text)" }}>
+                系统级定时（应用未运行时也扫描）
+              </div>
+              <div
+                style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 4, lineHeight: 1.5 }}
+              >
+                在 Windows「任务计划程序」里注册一个每天{" "}
+                <b>{taskStatus?.time ?? "09:00"}</b>{" "}
+                运行的任务，到点静默启动本程序扫一遍、发通知、然后自动退出
+                （<b>只扫描，不删除</b>）。关掉主开关后即使任务还在也会跳过。
+              </div>
+            </div>
+            <label
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                whiteSpace: "nowrap",
+                cursor: taskSaving || !prefs.autoScanEnabled ? "not-allowed" : "pointer",
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={Boolean(taskStatus?.registered)}
+                disabled={taskSaving || !prefs.autoScanEnabled}
+                onChange={(e) => onToggleTask(e.target.checked)}
+                aria-label="系统级定时扫描"
+              />
+              <span style={{ fontSize: 12, color: "var(--text)" }}>
+                {taskStatus === null
+                  ? "查询中…"
+                  : taskStatus.registered
+                    ? "已注册"
+                    : "未注册"}
+              </span>
+            </label>
+          </div>
+
+          {taskStatus && (
+            <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 8, lineHeight: 1.6 }}>
+              任务名 <code style={{ fontSize: 11 }}>{taskStatus.taskName}</code>
+              ，可在「任务计划程序」里核对。
+            </div>
+          )}
+
+          {!prefs.autoScanEnabled && (
+            <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 8 }}>
+              先开启上面的「定期在后台扫描」，系统级定时才会生效。
+            </div>
+          )}
+
+          {/* 查询/注册失败要如实显示原因。绝不能显示成「未注册」——
+              那会让用户以为开关是关的，实际可能是被组策略拦了。 */}
+          {taskError && (
+            <div
+              style={{
+                marginTop: 8,
+                background: "#fef2f2",
+                border: "1px solid #fecaca",
+                color: "#b91c1c",
+                padding: "6px 9px",
+                borderRadius: 4,
+                fontSize: 11,
+                lineHeight: 1.6,
+                wordBreak: "break-all",
+              }}
+            >
+              系统级定时不可用：{taskError}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* task-062：开机自启。状态真实来源是系统注册表（autostart 插件），不存 prefs。 */}
@@ -876,6 +1013,15 @@ export default function Settings({ onUpdateFound, onThemeChange }: SettingsProps
             <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 4, lineHeight: 1.5 }}>
               登录 Windows 后自动启动 C-Disk Cleaner，并在托盘常驻。
               <b>默认关闭</b>；关闭主窗口不会退出程序，需要从托盘菜单「退出」才真正结束。
+            </div>
+            {/* task-073：把「状态存在哪」写出来。用户想确认有没有真生效时，
+                自己能去任务管理器核对，比反复开关一遍更可靠。 */}
+            <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 6, lineHeight: 1.6 }}>
+              状态取自系统注册表{" "}
+              <code style={{ fontSize: 11 }}>
+                HKCU\Software\Microsoft\Windows\CurrentVersion\Run
+              </code>
+              ，也可在「任务管理器 → 启动」里核对。在那边手动禁用后，这里会如实显示为已关闭。
             </div>
           </div>
           <label

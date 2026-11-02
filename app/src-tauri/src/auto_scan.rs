@@ -52,12 +52,98 @@ pub fn spawn(app: AppHandle) {
     });
 }
 
-/// 一次检查。返回 `Some(说明)` 表示本轮做了什么（用于日志），`None` = 没到期/跳过。
-fn tick_once(app: &AppHandle) -> Result<Option<String>, String> {
+/// 一次扫描的结果（供日志与通知文案使用）。
+struct ScanOutcome {
+    session_id: i64,
+    items: i64,
+    bytes: i64,
+    ok: bool,
+}
+
+/// 真正跑一次扫描：拿锁 → 建 session → 编排 → 统计。
+///
+/// 返回 `Ok(None)` 表示**跳过**（用户正在手动扫描，锁被占用）。
+/// 「跳过」不是错误，所以不走 `Err`——否则日志里会堆一堆假故障。
+fn run_scan_now(app: &AppHandle) -> Result<Option<ScanOutcome>, String> {
     let paths = app.state::<crate::paths::AppPaths>();
 
+    // 与手动扫描互斥：拿不到锁说明用户正在扫，本轮跳过（不排队、不阻塞）。
+    let progress = app.state::<crate::progress::ProgressState>();
+    let Ok(emitter_guard) = progress.0.try_lock() else {
+        return Ok(None);
+    };
+
+    let conn = engine::db::conn::open(&paths.data_root).map_err(|e| e.to_string())?;
+
+    // 建 session（scope 记成 `auto`，历史页能看出这是后台扫的）。
+    conn.execute(
+        "INSERT INTO scan_session (started_at, status, scope) VALUES (unixepoch(), 'running', 'auto')",
+        [],
+    )
+    .map_err(|e| format!("insert auto scan_session: {e}"))?;
+    let session_id = conn.last_insert_rowid();
+
+    // 与 scan_start 完全同一条编排链路，只是不关心前端有没有人在听
+    // （emit 到 `scan://progress` 时若用户不在仪表盘页，没人听，无害）。
+    let orch = engine::scan::ScanOrchestrator::new(session_id, &conn, &*emitter_guard);
+    let outcome = orch.run_all(&paths.scripts_dir);
+    drop(emitter_guard);
+
+    let ok = outcome.is_ok();
+    let status = if ok { "completed" } else { "failed" };
+    let _ = conn.execute(
+        "UPDATE scan_session SET status = ?1, finished_at = unixepoch() WHERE id = ?2",
+        (status, &session_id),
+    );
+
+    // 统计本次结果（只读，不删任何东西）。
+    let (items, bytes): (i64, i64) = conn
+        .query_row(
+            "SELECT COUNT(*), COALESCE(SUM(size_bytes), 0)
+             FROM cleanup_item WHERE session_id = ?1",
+            [session_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap_or((0, 0));
+
+    Ok(Some(ScanOutcome {
+        session_id,
+        items,
+        bytes,
+        ok,
+    }))
+}
+
+/// 记「上次自动扫描时间」。写失败只打日志，不影响扫描结果。
+///
+/// **无论成败都要记**：不记的话，扫描失败时应用内轮询会每 30 分钟重试轰炸。
+fn mark_last_scan(app: &AppHandle) {
+    let paths = app.state::<crate::paths::AppPaths>();
+    if let Ok(conn) = engine::db::conn::open(&paths.data_root) {
+        let _ = engine::prefs::set_last_auto_scan_at(&conn, unix_now());
+    }
+}
+
+/// 通知文案。
+fn notify_body(o: &ScanOutcome) -> String {
+    if !o.ok {
+        "自动扫描失败，请打开应用查看详情".to_string()
+    } else if o.items == 0 {
+        "自动扫描完成：没发现可清理项".to_string()
+    } else {
+        format!(
+            "自动扫描完成：发现 {} 项可清理，约 {}（仅扫描，未删除）",
+            o.items,
+            human_bytes(o.bytes)
+        )
+    }
+}
+
+/// 应用内轮询的一次检查。返回 `Some(说明)` 表示本轮做了什么（用于日志），`None` = 没到期/跳过。
+fn tick_once(app: &AppHandle) -> Result<Option<String>, String> {
     // 1. 读偏好 + 判断是否到期（用独立连接，读完即释放，不占着锁）。
     let (enabled, interval, last, now) = {
+        let paths = app.state::<crate::paths::AppPaths>();
         let conn = engine::db::conn::open(&paths.data_root).map_err(|e| e.to_string())?;
         (
             engine::prefs::get_auto_scan_enabled(&conn),
@@ -71,71 +157,47 @@ fn tick_once(app: &AppHandle) -> Result<Option<String>, String> {
         return Ok(None);
     }
 
-    // 2. 与手动扫描互斥：拿不到锁说明用户正在扫，本轮跳过（不排队、不阻塞）。
-    let progress = app.state::<crate::progress::ProgressState>();
-    let Ok(emitter_guard) = progress.0.try_lock() else {
+    let Some(o) = run_scan_now(app)? else {
         return Ok(Some("用户正在手动扫描，跳过本轮自动扫描".into()));
     };
 
-    let conn = engine::db::conn::open(&paths.data_root).map_err(|e| e.to_string())?;
-
-    // 3. 建 session（scope 记成 `auto`，历史页能看出这是后台扫的）。
-    conn.execute(
-        "INSERT INTO scan_session (started_at, status, scope) VALUES (unixepoch(), 'running', 'auto')",
-        [],
-    )
-    .map_err(|e| format!("insert auto scan_session: {e}"))?;
-    let session_id = conn.last_insert_rowid();
-
-    // 4. 跑扫描（与 scan_start 完全同一条编排链路，只是不 emit 给前端也行——
-    //    emit 到 `scan://progress` 时如果用户不在仪表盘页，没人听，无害）。
-    let orch = engine::scan::ScanOrchestrator::new(session_id, &conn, &*emitter_guard);
-    let outcome = orch.run_all(&paths.scripts_dir);
-    drop(emitter_guard);
-
-    let status = if outcome.is_ok() {
-        "completed"
-    } else {
-        "failed"
-    };
-    let _ = conn.execute(
-        "UPDATE scan_session SET status = ?1, finished_at = unixepoch() WHERE id = ?2",
-        (status, &session_id),
-    );
-
-    // 5. 统计本次结果（只读，不删任何东西）。
-    let (items, bytes): (i64, i64) = conn
-        .query_row(
-            "SELECT COUNT(*), COALESCE(SUM(size_bytes), 0)
-             FROM cleanup_item WHERE session_id = ?1",
-            [session_id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .unwrap_or((0, 0));
-
-    // 6. 无论成败都记「上次自动扫描时间」，避免失败时每 30 分钟重试轰炸。
-    {
-        let conn2 = engine::db::conn::open(&paths.data_root).map_err(|e| e.to_string())?;
-        let _ = engine::prefs::set_last_auto_scan_at(&conn2, unix_now());
-    }
-
-    // 7. 通知（失败不影响扫描结果）。
-    let body = if outcome.is_err() {
-        "自动扫描失败，请打开应用查看详情".to_string()
-    } else if items == 0 {
-        "自动扫描完成：没发现可清理项".to_string()
-    } else {
-        format!(
-            "自动扫描完成：发现 {} 项可清理，约 {}（仅扫描，未删除）",
-            items,
-            human_bytes(bytes)
-        )
-    };
-    let _ = notify(app, &body);
+    // 2. 记时间（成败都记）+ 通知。
+    mark_last_scan(app);
+    let _ = notify(app, &notify_body(&o));
 
     Ok(Some(format!(
-        "完成 session={session_id} status={status} items={items} bytes={bytes}"
+        "完成 session={} ok={} items={} bytes={}",
+        o.session_id, o.ok, o.items, o.bytes
     )))
+}
+
+/// task-073：**计划任务模式**的一次扫描（`--auto-scan` 启动时调用）。
+///
+/// 与 [`tick_once`] 的区别：**不做「是否到期」判断**——触发时机由 Windows
+/// 任务计划决定（每天固定时刻），再按 `last_auto_scan_at` 拦一道就会永远不扫。
+///
+/// 但仍然尊重 `prefs.auto_scan_enabled`：任务被注册着、而用户在应用里关掉了
+/// 自动扫描，说明他改主意了。这时静默跳过，不擅自扫。
+pub fn run_once_for_task(app: &AppHandle) -> Result<String, String> {
+    let enabled = {
+        let paths = app.state::<crate::paths::AppPaths>();
+        let conn = engine::db::conn::open(&paths.data_root).map_err(|e| e.to_string())?;
+        engine::prefs::get_auto_scan_enabled(&conn)
+    };
+    if !enabled {
+        return Ok("prefs 里自动扫描已关闭，跳过".into());
+    }
+
+    let Some(o) = run_scan_now(app)? else {
+        return Ok("用户正在手动扫描，跳过".into());
+    };
+
+    mark_last_scan(app);
+    let _ = notify(app, &notify_body(&o));
+    Ok(format!(
+        "计划任务完成 session={} ok={} items={} bytes={}",
+        o.session_id, o.ok, o.items, o.bytes
+    ))
 }
 
 /// 发系统通知。用官方 notification 插件（dev / 安装态都可用）。
