@@ -17,8 +17,20 @@ fn ping() -> &'static str {
     engine::hello_engine()
 }
 
+/// task-073：静默扫描模式的启动开关。
+///
+/// **必须与 `engine::ipc::commands::auto_scan::AUTO_SCAN_FLAG` 一致**——
+/// 计划任务注册的就是这个字符串。改一边忘另一边，任务会拉起一个完整窗口，
+/// 变成「每天早上 9 点弹个窗」这种灾难（一致性由
+/// `engine/tests/auto_scan_test.rs` 的静态检查兜底）。
+const AUTO_SCAN_FLAG: &str = "--auto-scan";
+
 /// Tauri 应用入口：构造默认 Builder 并挂上命令，随后阻塞运行窗口。
 pub fn run() {
+    // 由 Windows 任务计划拉起时带 `--auto-scan`：不建窗口、不起轮询、不建托盘，
+    // 跑一次扫描（只扫不删）后自行退出。
+    let auto_scan_mode = std::env::args().any(|a| a == AUTO_SCAN_FLAG);
+
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         // bugfix/task-035-updater-acl：为前端 relaunch() 提供 process 插件后端。
@@ -34,12 +46,39 @@ pub fn run() {
         .manage(std::sync::Mutex::new(0_i64))
         // task-007：在 setup 闭包里拿 AppHandle，构造全局进度 State 并注入。
         // debt-cleanup-003：构造 AppPaths（data_root/rules_dir/scripts_dir/box_dir）并注入。
-        .setup(|app| {
+        .setup(move |app| {
             let paths = paths::AppPaths::from_app(app.handle())?;
             app.manage(paths);
             app.manage(progress::ProgressState::new(app.handle().clone()));
             // task-063：扫描取消标志（scan_cancel 置位，scan_start 每轮复位）。
             app.manage(commands::ScanCancelState::default());
+
+            if auto_scan_mode {
+                // ===== 计划任务模式 =====
+                // 只做「扫一遍 + 通知 + 退出」。**不建托盘**（否则托盘图标会闪
+                // 一下又消失）、**不起 30 分钟轮询**（进程马上就退出了）。
+                let handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    let code = match auto_scan::run_once_for_task(&handle) {
+                        Ok(msg) => {
+                            eprintln!("[auto-scan-task] {msg}");
+                            0
+                        }
+                        Err(e) => {
+                            eprintln!("[auto-scan-task] 失败: {e}");
+                            1
+                        }
+                    };
+                    // 给系统通知一点投递时间再退出：通知是异步的，
+                    // 进程立刻死掉的话 Windows 可能收不到（表现为「扫了但没提醒」）。
+                    std::thread::sleep(std::time::Duration::from_secs(2));
+                    handle.exit(code);
+                });
+                // 窗口保持 `visible: false`（tauri.conf.json），全程不显示。
+                return Ok(());
+            }
+
+            // ===== 正常启动 =====
             // task-061：起后台自动扫描线程（默认关闭，读 prefs 决定是否真的扫）。
             // 只在这里 spawn 一次；线程内部轮询，不做精确定时（理由见 auto_scan.rs）。
             auto_scan::spawn(app.handle().clone());
@@ -51,6 +90,19 @@ pub fn run() {
             }
             // task-064：保险箱 7 天自动 purge（启动跑一次 + 之后每 6 小时）。
             spawn_safe_box_purge(app.handle().clone());
+
+            // task-073：窗口在 `tauri.conf.json` 里配成 `visible: false`，
+            // 由这里显式显示——目的是让 `--auto-scan` 模式可以「从头到尾不闪窗」。
+            //
+            // **这一步失败不能让应用变成「看不见但还在跑」**：托盘已经建好了，
+            // 用户仍能从托盘菜单「打开主窗口」把窗口叫回来，所以只记日志。
+            if let Some(w) = app.get_webview_window("main") {
+                if let Err(e) = w.show() {
+                    eprintln!("[window] 显示主窗口失败（可从托盘打开）: {e}");
+                }
+            } else {
+                eprintln!("[window] 找不到 main 窗口，可能配置文件被改动");
+            }
             Ok(())
         })
         // task-062：拦截关闭 → 隐藏到托盘。
@@ -103,6 +155,10 @@ pub fn run() {
             // task-068：注册表健康中心（F 模块）
             commands::registry_health_scan,
             commands::registry_health_delete,
+            // task-073：系统级定时扫描（任务计划）
+            commands::auto_scan_enable,
+            commands::auto_scan_disable,
+            commands::auto_scan_status,
             // task-072：清理方案模板（P1-7）
             commands::plan_save,
             commands::plan_list,

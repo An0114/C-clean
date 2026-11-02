@@ -1338,3 +1338,77 @@ pub async fn plan_import(
     }
     Ok(env)
 }
+
+// ===================== task-073：系统级定时扫描（任务计划） =====================
+
+/// `auto_scan_enable`：注册「每天固定时刻静默扫描」的 Windows 计划任务。
+///
+/// # 为什么要静默模式
+///
+/// 任务指向的是**主程序本身**加 `--auto-scan`。没有这个开关的话，计划任务
+/// 每天拉起的就是一个完整 GUI 窗口——那不叫后台扫描，叫每天骚扰一次。
+/// `lib.rs` 里 `--auto-scan` 分支会跳过建窗口/托盘/轮询，扫完直接退出。
+///
+/// # 为什么用 `current_exe()`
+///
+/// 必须是绝对路径：计划任务里的相对路径会被解析到 `System32` 下，任务永远起不来。
+/// `current_exe()` 在 dev（`target/debug`）与安装态（`Program Files`）都是绝对路径。
+///
+/// # 时间参数
+///
+/// 只接受 `HH:MM`（`engine::ipc::commands::auto_scan::validate_time` 会拦掉
+/// 任何额外字符，防止 `/st 09:00 /ru SYSTEM` 这类参数注入）。
+#[tauri::command]
+pub async fn auto_scan_enable(
+    time: Option<String>,
+) -> Result<Envelope<engine::ipc::commands::auto_scan::AutoScanTaskStatus>, String> {
+    let exe = std::env::current_exe().map_err(|e| format!("取当前可执行文件路径失败: {e}"))?;
+    let t = time.unwrap_or_else(|| engine::ipc::commands::auto_scan::DEFAULT_TIME.to_string());
+
+    match engine::ipc::commands::auto_scan::handle_enable(&exe, &t) {
+        Ok(st) => {
+            eprintln!("[auto_scan_enable] 已注册任务「{}」每天 {t}", st.task_name);
+            Ok(Envelope::ok(st))
+        }
+        Err(e) => {
+            // 失败原因必须让用户看到（可能是组策略禁用任务计划 / 安全软件拦截）。
+            // 这里走 Err 而不是信封：Envelope 的 message 是 &'static str，
+            // 塞不进 schtasks 的原文。
+            eprintln!("[auto_scan_enable] 失败: {e}");
+            Err(e)
+        }
+    }
+}
+
+/// `auto_scan_disable`：删除定时扫描任务（任务本来不存在也算成功）。
+#[tauri::command]
+pub async fn auto_scan_disable(
+) -> Result<Envelope<engine::ipc::commands::auto_scan::AutoScanTaskStatus>, String> {
+    match engine::ipc::commands::auto_scan::handle_disable() {
+        Ok(st) => {
+            eprintln!("[auto_scan_disable] registered={}", st.registered);
+            Ok(Envelope::ok(st))
+        }
+        Err(e) => {
+            eprintln!("[auto_scan_disable] 失败: {e}");
+            Err(e)
+        }
+    }
+}
+
+/// `auto_scan_status`：查询任务是否已注册（只读）。
+///
+/// **失败走 Err 而不是「返回未注册」**：schtasks 调不起来（被安全策略拦、
+/// 系统目录异常）和「任务确实不存在」是两件事。谎报成「未注册」会让用户
+/// 以为开关是关的，实际可能是开着但查不到。
+#[tauri::command]
+pub async fn auto_scan_status(
+) -> Result<Envelope<engine::ipc::commands::auto_scan::AutoScanTaskStatus>, String> {
+    match engine::ipc::commands::auto_scan::handle_status() {
+        Ok(st) => Ok(Envelope::ok(st)),
+        Err(e) => {
+            eprintln!("[auto_scan_status] 失败: {e}");
+            Err(e)
+        }
+    }
+}

@@ -14,7 +14,8 @@
       {
         "title": "C-Disk Cleaner",
         "width": 900,
-        "height": 640
+        "height": 640,
+        "visible": false
       }
     ],
     "security": {
