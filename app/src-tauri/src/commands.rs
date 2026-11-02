@@ -1219,3 +1219,122 @@ pub async fn registry_health_delete(
     }
     Ok(env)
 }
+
+// ===================== task-072：清理方案模板（P1-7） =====================
+
+/// 方案导出目录：`<data_root>/plans/exports/`。
+///
+/// 与 `report_export` 同一思路——不弹系统「另存为」，因为本项目没引
+/// `tauri-plugin-dialog`（安装包体积与权限面都要涨）。导出后把绝对路径返回给
+/// 界面，用户复制到资源管理器即可；导入时把路径粘回来。
+fn plans_export_dir(paths: &AppPaths) -> std::path::PathBuf {
+    paths.data_root.join("plans").join("exports")
+}
+
+/// `plan_save`：把当前勾选的清理项保存成命名方案。
+///
+/// 收 `itemIds` 而不是三元组：前端 `PendingItem` 里没有 `category`，拼不出完整
+/// 三元组；由后端反查 `cleanup_item` 更可靠。
+///
+/// 一个都没勾时返回 **2001**（待清理清单为空），前端据此提示「先勾选条目」。
+#[tauri::command]
+pub async fn plan_save(
+    name: String,
+    item_ids: Vec<i64>,
+    paths: tauri::State<'_, AppPaths>,
+) -> Result<Envelope<i64>, String> {
+    let conn = engine::db::conn::open(&paths.data_root).map_err(|e| e.to_string())?;
+    let env = engine::ipc::commands::plan::handle_plan_save(
+        &conn,
+        &name,
+        &item_ids,
+        engine::ipc::commands::plan::now_secs(),
+    )?;
+    if let Some(id) = env.data {
+        eprintln!("[plan_save] 已保存方案 id={id}，条目 {} 条", item_ids.len());
+    }
+    Ok(env)
+}
+
+/// `plan_list`：列出所有方案，附「本次匹配到多少条 / 多大」。
+#[tauri::command]
+pub async fn plan_list(
+    paths: tauri::State<'_, AppPaths>,
+) -> Result<Envelope<Vec<engine::ipc::commands::plan::PlanSummary>>, String> {
+    let conn = engine::db::conn::open(&paths.data_root).map_err(|e| e.to_string())?;
+    let env = engine::ipc::commands::plan::handle_plan_list(&conn)?;
+    if let Some(v) = &env.data {
+        eprintln!("[plan_list] 共 {} 个方案", v.len());
+    }
+    Ok(env)
+}
+
+/// `plan_delete`：删除方案（前端已 confirm）。
+#[tauri::command]
+pub async fn plan_delete(
+    id: i64,
+    paths: tauri::State<'_, AppPaths>,
+) -> Result<Envelope<i64>, String> {
+    let conn = engine::db::conn::open(&paths.data_root).map_err(|e| e.to_string())?;
+    engine::ipc::commands::plan::handle_plan_delete(&conn, id)
+}
+
+/// `plan_apply`：把方案里的三元组映射成**当前**的清理项 id，供 Items 页恢复勾选。
+///
+/// 返回 `itemIds` + `unmatched`：匹配不到的路径要让用户看到「有 N 条本次没找到」，
+/// 不能悄悄少勾。
+#[tauri::command]
+pub async fn plan_apply(
+    id: i64,
+    paths: tauri::State<'_, AppPaths>,
+) -> Result<Envelope<engine::ipc::commands::plan::PlanApplied>, String> {
+    let conn = engine::db::conn::open(&paths.data_root).map_err(|e| e.to_string())?;
+    let env = engine::ipc::commands::plan::handle_plan_apply(&conn, id)?;
+    if let Some(r) = &env.data {
+        eprintln!(
+            "[plan_apply] 方案「{}」匹配 {} 条，未匹配 {} 条",
+            r.name,
+            r.item_ids.len(),
+            r.unmatched.len()
+        );
+    }
+    Ok(env)
+}
+
+/// `plan_export`：导出方案为 JSON，返回落盘绝对路径。
+#[tauri::command]
+pub async fn plan_export(
+    id: i64,
+    paths: tauri::State<'_, AppPaths>,
+) -> Result<Envelope<String>, String> {
+    let conn = engine::db::conn::open(&paths.data_root).map_err(|e| e.to_string())?;
+    let dir = plans_export_dir(&paths);
+    let env = engine::ipc::commands::plan::handle_plan_export(
+        &conn,
+        id,
+        &dir,
+        engine::ipc::commands::plan::now_secs(),
+    )?;
+    if let Some(p) = &env.data {
+        eprintln!("[plan_export] 已导出 → {p}");
+    }
+    Ok(env)
+}
+
+/// `plan_import`：从用户给定的 JSON 文件路径导入方案，返回新方案 id。
+#[tauri::command]
+pub async fn plan_import(
+    file_path: String,
+    paths: tauri::State<'_, AppPaths>,
+) -> Result<Envelope<i64>, String> {
+    let conn = engine::db::conn::open(&paths.data_root).map_err(|e| e.to_string())?;
+    let env = engine::ipc::commands::plan::handle_plan_import(
+        &conn,
+        &file_path,
+        engine::ipc::commands::plan::now_secs(),
+    )?;
+    if let Some(id) = env.data {
+        eprintln!("[plan_import] 已导入为新方案 id={id}");
+    }
+    Ok(env)
+}

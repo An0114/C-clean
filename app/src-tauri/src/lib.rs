@@ -102,7 +102,14 @@ pub fn run() {
             commands::residual_delete,
             // task-068：注册表健康中心（F 模块）
             commands::registry_health_scan,
-            commands::registry_health_delete
+            commands::registry_health_delete,
+            // task-072：清理方案模板（P1-7）
+            commands::plan_save,
+            commands::plan_list,
+            commands::plan_delete,
+            commands::plan_apply,
+            commands::plan_export,
+            commands::plan_import
         ])
         .run(tauri::generate_context!())
         .expect("error while running C-Disk Cleaner");
