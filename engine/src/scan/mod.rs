@@ -5,6 +5,8 @@
 //!   item 行写 `cleanup_item` 表并 emit 进度，done 行结束。
 
 pub mod big_files;
+/// Rust 原生扫描模块（task-074 起，架构债 R5）。
+pub mod modules;
 pub mod orchestrator;
 pub mod parser;
 pub mod registry_health;
@@ -16,6 +18,7 @@ pub mod winreg;
 pub mod winsxs;
 
 pub use big_files::{BigFileItem, BigFilesReport};
+pub use modules::ScanItem;
 pub use orchestrator::{OrchestratorError, OrchestratorSummary, ScanOrchestrator};
 pub use parser::{NdjsonEvent, ParseError};
 pub use registry_health::{RegistryHealthItem, RegistryHealthReport};
