@@ -234,10 +234,38 @@ const tdStyle: React.CSSProperties = {
   fontSize: 13,
 };
 
-export default function Items() {
+/** task-072：「方案」页应用方案后交给本页的载荷。 */
+export interface PlanApplyPayload {
+  /** 要恢复勾选的清理项 id（后端按方案三元组回查当前库得到）。 */
+  itemIds: number[];
+  /** 给用户看的一句话（含「有 N 条本次没找到」这类信息）。 */
+  notice: string;
+}
+
+interface ItemsProps {
+  /**
+   * task-072：待应用的方案（一次性）。App 在「方案」页点「应用」后传入。
+   *
+   * 为什么是 prop 而不是全局 store：本项目没有状态管理库，跨页通信用的是
+   * App 里的一份 state + prop 下发（`Dashboard` 的 `scanSignal` 就是同一套）。
+   */
+  planApply?: PlanApplyPayload | null;
+  /** 应用完通知外层清空载荷（避免重进本页时重复套用）。 */
+  onPlanConsumed?: () => void;
+  /** 把当前勾选报告给外层，「方案」页要用它显示「能保存多少项」。 */
+  onSelectionChange?: (ids: number[]) => void;
+}
+
+export default function Items({
+  planApply,
+  onPlanConsumed,
+  onSelectionChange,
+}: ItemsProps = {}) {
   const [status, setStatus] = useState<Status>("loading");
   const [rows, setRows] = useState<PendingItem[]>([]);
   const [msg, setMsg] = useState<string>("");
+  /** task-072：应用方案后的提示（载荷被清空后仍要让用户看到）。 */
+  const [planNotice, setPlanNotice] = useState<string>("");
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [cleaning, setCleaning] = useState(false);
   // task-052 G2：分页态。
@@ -307,6 +335,24 @@ export default function Items() {
     // 首次挂载只拉第一页；后续翻页走 gotoPage。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // task-072：应用方案 → 恢复勾选。
+  //
+  // **一次性消费**：套完立刻通知外层清空载荷，否则翻页回来、或从别的页再进
+  // 「清理」页时会把同一份方案再套一遍，把用户后来的手动勾选覆盖掉。
+  // 提示文案留在本地 state：载荷被清掉之后用户还得看得到「勾选了几项、几条没找到」。
+  useEffect(() => {
+    if (!planApply || planApply.itemIds.length === 0) return;
+    setSelected(new Set(planApply.itemIds));
+    setPlanNotice(planApply.notice);
+    setPreview(null); // 勾选变了，旧预览失效（与 C8 的处理一致）
+    onPlanConsumed?.();
+  }, [planApply, onPlanConsumed]);
+
+  // task-072：把当前勾选报告给外层——「方案」页的「保存」按钮要显示能存多少项。
+  useEffect(() => {
+    onSelectionChange?.(Array.from(selected));
+  }, [selected, onSelectionChange]);
 
   /**
    * 翻页：越界直接忽略；翻页时清空勾选。
@@ -556,6 +602,42 @@ export default function Items() {
 
   return (
     <div>
+      {/* task-072：应用方案后的提示条。可关掉——它只是「刚才发生了什么」，
+          不该一直占着版面。 */}
+      {planNotice && (
+        <div
+          data-testid="plan-notice"
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "flex-start",
+            gap: 12,
+            background: "#eff6ff",
+            border: "1px solid #bfdbfe",
+            color: "#1e40af",
+            padding: "8px 10px",
+            borderRadius: 6,
+            fontSize: 12,
+            marginBottom: 12,
+          }}
+        >
+          <span>{planNotice}</span>
+          <button
+            onClick={() => setPlanNotice("")}
+            style={{
+              border: "none",
+              background: "transparent",
+              color: "#1e40af",
+              cursor: "pointer",
+              fontSize: 12,
+              padding: 0,
+            }}
+            aria-label="关闭方案提示"
+          >
+            关闭
+          </button>
+        </div>
+      )}
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
         <button onClick={() => void load(page, pageSize)} disabled={busy}>
           刷新

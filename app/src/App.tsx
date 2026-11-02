@@ -1,7 +1,7 @@
 // task-027/029/030/031：App 加 Dashboard / Items / SafeBox / History / Settings tab 切换（不引 Router，useState）。
 // debt-cleanup-002 / Bug-1：外层加最小 Error Boundary——任何页面渲染期抛错
 // 不再整树白屏，而是在该 tab 区域显示「页面出错，点这里回仪表盘」。
-import { Component, useEffect, useRef, useState, type ReactNode } from "react";
+import { Component, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { listen } from "@tauri-apps/api/event";
@@ -10,6 +10,7 @@ import BigFiles from "./pages/BigFiles";
 import Dashboard from "./pages/Dashboard";
 import History from "./pages/History";
 import RegistryHealth from "./pages/RegistryHealth";
+import PlanTemplates, { type PlanApplyPayload } from "./pages/PlanTemplates";
 import Residual from "./pages/Residual";
 import Items from "./pages/Items";
 import SafeBox from "./pages/SafeBox";
@@ -29,6 +30,7 @@ import {
 type Tab =
   | "dashboard"
   | "items"
+  | "plans"
   | "bigfiles"
   | "residual"
   | "registry"
@@ -181,6 +183,23 @@ export default function App() {
   const [update, setUpdate] = useState<Update | null>(null);
   // task-062：托盘「立即扫描」的触发信号（递增即触发，Dashboard 内部监听变化）。
   const [scanSignal, setScanSignal] = useState(0);
+  // task-072：跨页通信——「清理」页的当前勾选 ↔「方案」页的保存/应用。
+  //
+  // 两页是兄弟 tab，谁也不该直接持有对方的 state。这里由 App 当中间人：
+  // - `itemsSelection`：Items 每次勾选变化上报，方案页用它显示「能存多少项」；
+  // - `planApply`：方案页点「应用」后放进来的载荷，Items 消费一次后清空。
+  // 与 `scanSignal` 是同一套做法（本项目没有状态管理库）。
+  const [itemsSelection, setItemsSelection] = useState<number[]>([]);
+  const [planApply, setPlanApply] = useState<PlanApplyPayload | null>(null);
+
+  // 三个回调必须是稳定引用：Items 的 effect 依赖它们，每次渲染新建函数会让
+  // effect 反复执行（勾选上报 effect 会因此无限触发 setState）。
+  const handleSelectionChange = useCallback((ids: number[]) => setItemsSelection(ids), []);
+  const handlePlanConsumed = useCallback(() => setPlanApply(null), []);
+  const handlePlanApply = useCallback((payload: PlanApplyPayload) => {
+    setPlanApply(payload);
+    setTab("items");
+  }, []);
   const [dismissed, setDismissed] = useState(false);
   const [bannerPhase, setBannerPhase] = useState<
     "idle" | "downloading" | "installing" | "error"
@@ -504,6 +523,9 @@ export default function App() {
         <button style={tabBtnStyle(tab === "items")} onClick={() => setTab("items")}>
           清理
         </button>
+        <button style={tabBtnStyle(tab === "plans")} onClick={() => setTab("plans")}>
+          方案
+        </button>
         <button style={tabBtnStyle(tab === "bigfiles")} onClick={() => setTab("bigfiles")}>
           大文件
         </button>
@@ -525,7 +547,16 @@ export default function App() {
       </div>
       <ErrorBoundary onReset={() => setTab("dashboard")}>
         {tab === "dashboard" && <Dashboard scanSignal={scanSignal} />}
-        {tab === "items" && <Items />}
+        {tab === "items" && (
+          <Items
+            planApply={planApply}
+            onPlanConsumed={handlePlanConsumed}
+            onSelectionChange={handleSelectionChange}
+          />
+        )}
+        {tab === "plans" && (
+          <PlanTemplates currentSelection={itemsSelection} onApply={handlePlanApply} />
+        )}
         {tab === "bigfiles" && <BigFiles />}
         {tab === "residual" && <Residual />}
         {tab === "registry" && <RegistryHealth />}

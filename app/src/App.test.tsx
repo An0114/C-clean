@@ -474,3 +474,30 @@ describe("tab 切换（task-068 注册表健康）", () => {
     expect(screen.queryByText("清理统计")).toBeNull();
   });
 });
+
+// ============ ⑦ tab 切换（task-072：清理方案模板）============
+//
+// 任务书验收 18「单测：tab 切换正确」。tab 状态在 App 里，只能在这一层测。
+// 顺带钉住「方案」按钮的位置：它在「清理」与「大文件」之间——用户是顺着
+// 「勾选 → 存成方案」的动线找它的。
+
+describe("tab 切换（task-072 方案模板）", () => {
+  it("Tab 栏有「方案」按钮，点击后渲染方案模板页", async () => {
+    mockedInvoke.mockImplementation(((cmd: string) => {
+      if (cmd === "plan_list") return Promise.resolve(ok([]));
+      return Promise.resolve(
+        ok({ totalBytesFreed: 0, successCount: 0, failedCount: 0, sessionCount: 0 })
+      );
+    }) as unknown as typeof invoke);
+
+    render(<App />);
+
+    const btn = await screen.findByText("方案");
+    fireEvent.click(btn);
+
+    expect(await screen.findByText("方案模板")).toBeTruthy();
+    // 空列表也要给出可执行的下一步，而不是一片空白
+    expect(screen.getByText(/还没有保存任何方案/)).toBeTruthy();
+    expect(screen.queryByText("清理统计")).toBeNull();
+  });
+});
