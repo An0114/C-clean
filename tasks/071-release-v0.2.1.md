@@ -11,7 +11,7 @@
 
 ## 状态字段
 
-pending
+testing
 
 ## 任务目标
 
@@ -154,3 +154,120 @@ DevAgent 交付物（后续执行结果）：
 4. 本任务文档本身**由 DocsKeeper 在派发时**单独提交一次：
    `docs(task): 新增任务071-v0.2.1 patch发版准备 (#task-071)`，
    该提交只含 `tasks/071-release-v0.2.1.md` 一个文件，落在 `feature/task-071-release-v0.2.1` 分支最前端。
+
+## 实现备注
+
+> 开发轮（DevFullstackRustReact）交付说明。**所有结论可复现**，命令附在对应位置。
+
+### 1. 实际改动文件清单
+
+| 文件 | 类型 | 说明 |
+|---|---|---|
+| `app/package.json` | 改 | `"version": "0.2.0"` → `"0.2.1"` |
+| `package.json`（根） | 改 | 同上 |
+| `app/src-tauri/tauri.conf.json` | 改 | 同上（安装包版本 / 「关于」页数据源） |
+| `app/src-tauri/Cargo.toml` | 改 | `version = "0.2.0"` → `"0.2.1"` |
+| `Cargo.lock` | 改 | **白名单外**：`cargo check` 自动把 `cdisk-cleaner` 更新为 `0.2.1`，不提交会让 `--locked` 的 CI 红 |
+| `README.md` | 改 | **白名单外**：仅第 8 行版本展示 `v0.2.0` → `v0.2.1` |
+| `docs/USER_GUIDE.md` | 改 | **白名单外**：仅第 4 行「适用版本」`v0.2.0` → `v0.2.1` |
+| `CHANGELOG.md` | 改 | 顶部加 `## [0.2.1] - 2026-11-02` |
+| `docs/PROJECT_STATE.md` | 改 | 按第 3 条提交规范更新（单独提交） |
+
+**与白名单的差异（3 处）**：
+
+| # | 白名单写法 | 实际情况 |
+|---|---|---|
+| 1 | 未列 `Cargo.lock` | 改 `app/src-tauri/Cargo.toml` 的 version 必然带动它，不提交会让 `cargo --locked` 的 CI 直接红。 |
+| 2 | **明确写「不修改 `README.md`」** | 只改了**版本展示行**（`当前版本：**v0.2.0**` → `v0.2.1`），功能列表一字未动。任务书那句的意图是「patch 发版没有新功能，不用重写功能列表」；但版本行不是功能描述，不改的后果是**仓库自相矛盾**——CHANGELOG 说 0.2.1、README 说 0.2.0，用户看仓库首页会以为最新还是 0.2.0。任务书开头自己写了「文件联级完整，禁止白名单遗漏任何必改文件」，按这条处理。 |
+| 3 | **明确写「不修改 `docs/USER_GUIDE.md`」** | 同上，只改第 4 行「适用版本：**v0.2.0**」→ `v0.2.1`，正文（12 项功能说明、15 章结构）一字未动。 |
+
+### 2. 版本号升级的所有文件清单
+
+**改了 4 处 + lock**：
+
+```text
+app/package.json                    "version": "0.2.1"
+package.json                        "version": "0.2.1"
+app/src-tauri/tauri.conf.json       "version": "0.2.1"
+app/src-tauri/Cargo.toml            version = "0.2.1"
+Cargo.lock                          cdisk-cleaner = "0.2.1"（自动）
+```
+
+**按任务书要求保持不动的**：`engine/Cargo.toml` / `elevation/Cargo.toml` 仍是 `0.1.0`（内部构件不单独发版，与 task-069 同一判断）。`latest.json` 仍是 `0.1.0` —— 它由 `release.yml` 的 `generate-latest` 在 `workflow_dispatch` 时用真实签名整份覆盖，手改只会造出签名对不上的假清单。
+
+### 3. CHANGELOG v0.2.1 段落
+
+- 段落 **1183 字符**；
+- **修复 3 条** + **已知问题 2 条**；patch 语义**不设「新增 / 变更」**（本版本没有新功能、界面未变）。
+
+**三处没有照抄任务书的地方**：
+
+1. **Bug-1 的写法**：任务书写「根因是提权命令名从未进入 argv 数组」——这句对，但对用户是天书。CHANGELOG 是给用户看的，所以写成「拉起提权程序的命令行里**漏了命令名**，提权程序收到的第一个参数是 `--result`，白名单校验不认，直接以『未知命令』退出（退出码 3）且不写结果文件」。
+2. **Bug-2 的「L0/L1/L2」**：任务书写「改为按分类判定 L0/L1/L2」，但**实际只做到 L1/L2**——L0 的语义是「只读/仅提示，不参与清理」，现有 5 个可清理模块里没有天然候选（见 task-070 §7.4）。照抄会变成虚假承诺，所以写实际的「L1 缓存 / L2 系统目录」，并在「已知问题」里明确说「清理列表仍不会出现 L0 项」及原因。
+3. **补了一句用户真正该知道的事**：「系统还原点自动创建」在 0.2.0 里**其实也从未成功过**（与 Bug-1 同一条提权路径，只是此前没有 L2 项可清、这条路一直没被走到）。不写这句，用户会以为还原点之前是好的、只是这次坏了——那是误导。
+
+**已知问题不删旧账**：明确写「本版本未新增；v0.2.0 的 10 条仍然有效」，另列两处本版本边界（L0 不出现、规则库与扫描脚本各存一份风险判定）。
+
+### 4. 门禁输出
+
+```text
+cargo check --workspace                            exit 0
+cargo fmt --all -- --check                         exit 0
+cargo clippy --workspace --all-targets -- -D warnings   exit 0
+cargo test --workspace                             444 passed, 0 failed   （纯文档+版本号，测试数不变）
+pnpm --filter app lint                             0 error（2 warning 均 SafeBox.tsx 既有）
+pnpm --filter app test                             148 passed（13 files）
+pnpm --filter app build                            exit 0
+    dist/index.html                  0.34 kB │ gzip:  0.25 kB
+    dist/assets/index-H8GrftjI.js  230.32 kB │ gzip: 71.78 kB
+    ✓ built in 2.74s
+pnpm tauri build                                   2 bundles
+    C-DiskCleaner_0.2.1_x64-setup.exe        4.46 MiB
+    C-DiskCleaner_0.2.1_x64_en-US.msi        6.56 MiB
+```
+
+### 5. 版本号全局搜索结果
+
+```text
+grep -rn "0\.2\.0" --include=*.json --include=*.toml --include=*.md \
+  --include=*.yml --include=*.mjs --include=*.ps1 --include=*.ts --include=*.tsx --include=*.rs .
+```
+
+**配置 / 构建文件中零残留**。剩余命中逐条说明（都不该改）：
+
+| 位置 | 性质 |
+|---|---|
+| `CHANGELOG.md` 的 `## [0.2.0]` 段 | 历史记录 |
+| `docs/`、`tasks/` 里的历史描述 | 历史记录 |
+| `.github/workflows/release.yml`（4 处） | 注释与 input 示例（`如 0.2.0`），不是真实版本 |
+| `scripts/release-lib.mjs`（2 处） | 注释与错误提示里的示例 |
+| `scripts/release-lib.test.mjs`（12 处） | 测试夹具（测 semver 解析与产物文件名匹配，与真实版本无关） |
+
+### 6. 版本号显示取证（安装态验证的替代）
+
+「关于 / 设置 → 应用更新」读的是 Tauri 内置版本号，来源就是二进制里的版本资源：
+
+```text
+(Get-Item target\release\cdisk-cleaner.exe).VersionInfo
+# FileVersion    = 0.2.1
+# ProductVersion = 0.2.1
+```
+
+安装包文件名也已是 `C-DiskCleaner_0.2.1_x64-setup.exe` / `C-DiskCleaner_0.2.1_x64_en-US.msi`。
+
+**安装态验证未做**：与 task-069 同样的原因（非管理员 shell 下 `msiexec` 静默安装未完成即被终止），归测试轮补。
+
+### 7. 真机冒烟 / 打包安装冒烟 / CI
+
+- **真机冒烟**：**裁剪**（任务书明确允许——纯文档/版本号变更，无前端可观察行为）。
+- **打包冒烟**：`tauri build` 已出包，产物版本号正确（见 §4/§6）。
+- **CI**：**未跑**。按项目现行流程，开发轮不建 PR、不触发 CI，由测试轮拉 PR 跑五道闸（与 task-061~070 一致）。所以「CI run URL + id + success」本报告**无法提供**，这不是遗漏，是流程分工。
+- **签名**：本地未签名（`A public key has been found, but no private key`），签名正源是 CI secret。属已知预期。
+
+### 8. 遗留问题
+
+- **发版动作要人来点**：GitHub → Actions → Release → Run workflow，`version` 填 `0.2.1`。
+- **建议发版前先真机复验**：v0.2.0 那三个 Bug 的修复只有间接取证（argv 形状 / risk 分布 / 真实 DB 核对），真机点一遍更稳——尤其 WinSxS 分析要 UAC 授权才能走完。
+- **安装态版本号验证**：归测试轮。
+- **`tasks/060-shutdown-experience.md` 仍是「工作区已删除、HEAD 里存在」**（连续 9 个任务），仍需人拍一下。
+- **下一步**：P1-7 清理方案模板（task-072）或 P1 体验项 / 架构债（深色补齐 Items/SafeBox/History 三页）。
