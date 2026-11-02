@@ -3,9 +3,18 @@
 > **特别声明**：本文件是项目唯一真实数据源，也是「每次任务结束必更新、必单独提交」的文件。后续所有 Agent 必须遵守：任何任务完成后都要先更新本文件，再单独提交一次（commit message 形如 `docs(state): ... (#task-00X)`），不得与业务代码混在同一个 commit。
 
 ## 当前目标
-**v0.2.1 patch 发版准备就绪（2026-11-02），等用户手动 `workflow_dispatch` 发版**：版本号已升、CHANGELOG 已加 v0.2.1 修复段；打包产物 `C-DiskCleaner_0.2.1_x64-setup.exe` / `.msi` 已出，二进制 `FileVersion` 实测 0.2.1。v0.2.1 = 只修 v0.2.0 真机验收的 3 个 Bug（提权 argv / 扫描风险等级 / 保险箱目录删除与来源），无新功能。历史决策不变：代码签名不做、品牌图标不做、G6 不修；跨盘恢复 fallback / RmShutdown 连带兄弟进程 / RmShutdown 30s 无进度三项维持现状。
+**v0.2.1 已发版；P1-7 清理方案模板已完成（2026-11-02），P1 体验项继续推进**：`cleanup_plan` 表接线完成（save/list/delete/apply/export/import 六条命令 + 方案页 + tab），方案存路径三元组、跨扫描可复用。下一步 = P1 体验项收尾（趋势图折线增强 / 开机自启任务计划集成）或架构债（5 个 `.ps1` 扫描脚本 → Rust 重写）。历史决策不变：代码签名不做、品牌图标不做、G6 不修；跨盘恢复 fallback / RmShutdown 连带兄弟进程 / RmShutdown 30s 无进度三项维持现状。
 
 ## 最近一次变更
+2026-11-02：**task-072 开发完成（P1-7 清理方案模板），状态 `testing`**（`feature/task-072-plan-templates`）：
+  - **① 方案后端**（`engine/src/ipc/commands/plan.rs` 新建）：`save_plan` / `list_plans` / `delete_plan` / `apply_plan` / `export_plan` / `import_plan` + 6 个 handler。**核心设计：存路径三元组 `{module_code, category, path}` 而不是 item id**——`cleanup_item.id` 每次扫描都是新的一批，用 id 存方案下次扫描后整份失效（表注释「保证模板跨扫描复用」就是这个意思）。三个随之而来的决定：回查**取 id 最大的那行**（同路径跨扫描会累积多行，全取会让 12 条方案勾出 30 个框）；匹配不到的进 `unmatched` **不静默丢弃**；`matchedCount` 与 `itemCount` **分开返回**（12 条只匹配 3 条时必须能说清，只显示 3 会让人以为数据丢了）。`save_plan` 收 `item_ids` 而不是三元组——前端 `PendingItem` 没有 `category`，拼不出完整三元组。
+  - **② IPC 接线**：6 条 Tauri command，参数走 Tauri 2 的 camelCase→snake_case（`itemIds` / `filePath`）。导出目录 `<data_root>/plans/exports/`，**不弹「另存为」**——本项目没引 `tauri-plugin-dialog`（体积 + 权限面），沿用 `report_export` 的「写固定目录 + 返回绝对路径」；文件名做清洗（方案名带 `/`、`:` 也不会跑到别的目录）。
+  - **③ 方案模板页**（`app/src/pages/PlanTemplates.tsx` 新建）：列表（名称/创建时间/条目数/大小）+ 保存 + 应用 + 导出 + 导入 + 删除。四个界面决定：**「12 条（本次匹配 3 条）」两个数都显示**；保存按钮写清「（N 项）」且 N=0 时禁用并说明去哪勾选；**应用时一条都没匹配上就不切页**（就地报错，静默切过去让用户看到「什么都没勾」更糟）；导出后**显示完整路径**（没有文件选择框，路径是唯一抓手）。
+  - **④ tab 注册 + 跨页接线**：Tab 加 `"plans"`（放在「清理」与「大文件」之间，顺着「勾选 → 存成方案」的动线）；App 当中间人传 `itemsSelection` / `planApply`（与 `Dashboard` 的 `scanSignal` 同一套，本项目无状态管理库），三个回调 `useCallback` 固定引用（否则勾选上报 effect 无限触发 setState）。**白名单外联级改动 `app/src/pages/Items.tsx`**：加 3 个**可选** prop（`planApply` / `onPlanConsumed` / `onSelectionChange`）+ 可关闭提示条；不传时行为与改动前完全一致，既有 148 条前端测试零回归。
+  - **门禁**：check/fmt/clippy 0、`cargo test --workspace` **468 passed**（+24）、lint 0 error（2 warning 均 SafeBox.tsx 既有）、vitest **166 passed（14 files，+18）**、build 238.23 kB、`tauri build` 见下。
+  - **端到端写路径**（任务书硬要求）：`end_to_end_save_then_apply_through_handlers` 走真实 SQLite + 真实信封层、零 mock——勾选两条 → 保存 → **重新扫描（旧 item 全删、id 全变）** → 应用 → 拿回当前 id 并逐条校验存在。UI 那一段由 `PlanTemplates.test.tsx`（17 条）+ `App.test.tsx`（+1 条 tab）覆盖。
+  - **未做**：真机/安装态冒烟（任务书要求「必做、不可裁剪」，但按项目流程开发轮不做——本机 WebView2 起不来）；CI（开发轮不跑）。
+
 2026-11-02：**task-071 开发完成（v0.2.1 patch 发版准备），状态 `testing`**（`feature/task-071-release-v0.2.1`）：
   - **① 版本号 `0.2.0` → `0.2.1`**：四处（`app/package.json` / 根 `package.json` / `app/src-tauri/tauri.conf.json` / `app/src-tauri/Cargo.toml`）+ `Cargo.lock`。`engine` / `elevation` 保持 `0.1.0`（内部构件不单独发版，与 task-069 同一判断）。**另同步两处版本展示行**（`README.md` 当前版本行、`docs/USER_GUIDE.md` 适用版本行）——任务书写「不修改 README / 用户手册」，但那句的意图是不重写功能列表，这两行是版本号展示；不改会让仓库自相矛盾（CHANGELOG 说 0.2.1、README 说 0.2.0）。
   - **② `CHANGELOG.md` v0.2.1 段落**：`## [0.2.1] - 2026-11-02`，**1183 字符**，修复 **3** 条 + 已知问题 **2** 条；patch 语义**不设「新增 / 变更」**。三条修复的根因按实际写（任务书对 Bug-2 写的「L0/L1/L2 三级」实际只做到 L1/L2，照抄会变成虚假承诺）；额外写明**「系统还原点自动创建」在 0.2.0 里其实也从未成功过**（同一条提权路径，只是没有 L2 项可清所以没暴露）——不写这句用户会以为还原点之前是好的。已知问题不删旧账：明确「本版本未新增，v0.2.0 的 10 条仍有效」，另列两处本版本边界（L0 不出现、规则库与脚本各存一份判定）。
@@ -570,6 +579,7 @@
 - [x] 069：**v0.2.0 发版准备（M1 收官后的发版节点）**——**① 版本号 `0.1.7` → `0.2.0`**（四处 + `Cargo.lock`；`engine`/`elevation` 的 `0.1.0` 与 `latest.json` 的 `0.1.0` **刻意不动**，理由见「最近一次变更」）；**② `CHANGELOG.md` v0.2.0 段落**（3454 字符 / 新增 17 / 变更 4 / 修复 2 / 已知问题 10；**补入任务书漏计的 task-061 三项**——061 的合并晚于 v0.1.7 发版，随本版本交付）；**③ `README.md`**（功能段 7 条 → 三组 17 条 + 八个页签总览 + 四条深度清理各写「为什么不这么做」+ 技术栈/安全基线同步）；**④ `docs/USER_GUIDE.md`**（8 章 331 行 → **15 章 766 行**，覆盖 12 项说明，章节顺序与页签一致，修掉三处与实现不符的说法，新增 5 条 FAQ，30 条内链锚点程序化校验全通过）（`feature/task-069-release-v0.2.0`；**开发轮完成，状态 `testing`**；门禁 check/clippy/fmt 0、`cargo test --workspace` **431 passed**、vitest **148**（13 files）、build 230.32 kB、`tauri build` **NSIS 4.44 MiB + MSI 6.55 MiB** 且二进制 `FileVersion=0.2.0`；按新流程开发轮不跑 CI、不做安装态冒烟，移交测试 Agent）
 - [x] 070：**v0.2.0 真机验收 3 Bug 修复（v0.2.1 patch 前置）**——**① Bug-1（P0）WinSxS 退出码 3**：根因是 `run_elevated` 漏传命令名（`argv[1]` 变成 `--result`），提权 exe 判未知命令退出 3；新增 `build_argv` + 4 条单测；**② Bug-2（P1）扫描只出 L1**：5 个 `.ps1` 把风险等级写死成 `1`，改为按分类（缓存 L1 / `windows_temp` 与 `update_download` L2）+ 4 条静态契约测试（含检测器自检）；**③ Bug-3（P1）残留入箱永久删除失败 + 来源缺失**：目录条目用了 `remove_file`、移入时 `source_task_id` 传 None；抽 `remove_entry()` + 建残留批次 `cleanup_task` 行 + 5 条单测（`feature/task-070-v0.2.1-bugfixes`；**开发轮完成，状态 `testing`**；门禁 check/clippy/fmt 0、`cargo test --workspace` **444 passed**（+13）、vitest 148、build 230.32 kB、`tauri build` NSIS 4.45 MiB + MSI 6.56 MiB；**真机冒烟未做**，按流程归测试轮）
 - [x] 071：**v0.2.1 patch 发版准备**——**① 版本号 `0.2.0` → `0.2.1`**（四处 + `Cargo.lock`；`engine`/`elevation` 保持 0.1.0；**另同步 README / 用户手册的版本展示行**，任务书那句「不修改」指的是功能列表）；**② `CHANGELOG.md` v0.2.1 段落**（1183 字符 / 修复 3 条 + 已知问题 2 条；patch 不设新增变更；根因按实际写，并补明「还原点在 0.2.0 里也从未成功过」）（`feature/task-071-release-v0.2.1`；**开发轮完成，状态 `testing`**；门禁 check/clippy/fmt 0、`cargo test --workspace` **444 passed**、vitest 148、build 230.32 kB、`tauri build` **NSIS 4.46 MiB + MSI 6.56 MiB** 且二进制 `FileVersion=0.2.1`；按新流程开发轮不跑 CI、不做安装态冒烟，移交测试 Agent）
+- [x] 072：**P1-7 清理方案模板**——**① 后端**（`ipc/commands/plan.rs`：save/list/delete/apply/export/import + 6 handler；**存路径三元组不存 item id**，跨扫描可复用；回查取最新行、匹配不到的进 `unmatched`、`matchedCount` 与 `itemCount` 分开给）；**② IPC 接线**（6 条 Tauri command；导出到 `<data_root>/plans/exports/` 不弹另存为——没引 dialog 插件；文件名清洗）；**③ 方案页**（列表/保存/应用/导出/导入/删除；两个条目数都显示；全未匹配不切页；导出后显示完整路径）；**④ tab + 跨页**（App 当中间人，`useCallback` 固定回调；**白名单外改 `Items.tsx` 加 3 个可选 prop + 提示条**）（`feature/task-072-plan-templates`；**开发轮完成，状态 `testing`**；门禁 check/clippy/fmt 0、`cargo test --workspace` **468 passed**（+24）、vitest **166**（+18）、build 238.23 kB；**真机冒烟未做**，按流程归测试轮）
 > 注：040~047 的完成明细未回填本清单（历史遗漏），以「最近一次变更」段与 `tasks/040-*.md`~`tasks/047-*.md` 为准。
 > 编号顺延（2026-10-24）：原定 050 的「safe_box 增强」顺延为 **051**，050 让位给发版阻塞级的打包资源路径缺陷。
 
@@ -591,16 +601,18 @@
 - [B 中] **installer 未做代码签名（评估结论当前不做）**：未购 EV/OV 证书，SmartScreen 警告需手动「更多信息→仍要运行」。详见 `docs/research/code-signing-evaluation.md` 的三个触发条件。
 - [B 低] **品牌图标（决策不做）**：沿用 Tauri 默认占位，待后续有设计出 1024×1024 源 PNG 后再跑 `tauri icon`。
 ## 下一步计划
-1. **v0.2.1 patch 发版准备就绪，等用户手动 `workflow_dispatch` 发版**。触发方式：GitHub → Actions → Release → Run workflow，`version` 填 `0.2.1`。CI 会重跑 `tauri build`、用 secret 签名、生成 `latest.json` 并上传 `.exe`/`.msi`/`.sig`/`latest.json`。本地已验证「能出包 + 版本号对」（二进制 `FileVersion=0.2.1`），CI 那一步只多签名。
-2. **发版前建议先做真机复验**：v0.2.0 的三个 Bug 修复只在开发轮做过间接取证（argv 形状 / risk 分布 / 真实 DB 核对），真机点一遍再发 patch 更稳——尤其 WinSxS 分析要 UAC 授权才能走完。
-3. **发版后推进 P1-7 清理方案模板（task-072）**：预设勾选组合（「开发机」「办公机」），或先做 P1 体验项（趋势图按类别拆柱 / 自动扫描避开工作时间）与架构债（深色补齐 Items/SafeBox/History 三页）。
-4. **两个待决策项**（都不阻塞发版）：
-   - **L0 要不要进清理列表**：现有 5 个可清理模块只出 L1/L2，L0 的语义（只读/仅提示）没有天然候选。要 L0 就得把某个模块降成「只能看不能清」（比如 prefetch），属产品决策。
-   - **风险等级单一真值源**：风险只由 5 个 `.ps1` 决定，`rules/cache_rules.json` 的 `modules` 段（含 `risk_level`/`description`/`impact_note`）没有消费者，`grade/` 分级模块从未实现。要收敛需同时动规则库 + checksum + 脚本，属重构。
+1. **P1 体验项收尾（候选，按用户取舍）**：
+   - **P1-5 趋势图增强**：现在只有「最近 30 天释放量」柱状图，可加按类别拆柱 / 空数据提示 / 悬停明细；
+   - **P1-1 开机自启 + 任务计划集成**：自启已有（task-062），缺「purge 到点必删」的计划任务（当前是「运行期间定期 + 启动补一次」）。
+2. **架构债（更值得先做）**：5 个 `.ps1` 扫描脚本 → Rust 重写。现在是外部进程跑脚本、靠 stdout 的 NDJSON 回传，是整条链路里最脆的一环（编码、执行策略、杀软拦截都踩过）。另可补 Items/SafeBox/History 三页深色适配（新增的 BigFiles/Residual/RegistryHealth/PlanTemplates 已全走 CSS 变量）。
+3. **v0.2.2 发版窗口**：task-072 是新功能（不是 patch），攒够一批再发 `0.3.0` 或 `0.2.2` 均可，按版本线规则定。
+4. **两个待决策项**（都不阻塞）：
+   - **L0 要不要进清理列表**：现有 5 个可清理模块只出 L1/L2，L0 的语义（只读/仅提示）没有天然候选。
+   - **风险等级单一真值源**：风险只由 5 个 `.ps1` 决定，`rules/cache_rules.json` 的 `modules` 段没有消费者，`grade/` 分级模块从未实现。
 5. **遗留边界不变**：Top100 截断、残留「文件残留」误报无法归零、计划任务扫描非管理员恒空、DISM 15 分钟上限、深色未覆盖三页、跨盘恢复不支持、未做代码签名。
 
 ## 当前负责人 Agent
-**测试 Agent（提示词 9）**——`feature/task-071-release-v0.2.1` 开发轮已完成、状态 `testing`，待测试轮：独立重跑全部门禁 + 开 PR 触发 CI + **重点核对（纯文档/版本号变更，冒烟可裁剪）**：① 四处版本号均为 `0.2.1`（`app/package.json` / 根 `package.json` / `tauri.conf.json` / `app/src-tauri/Cargo.toml`），`Cargo.lock` 里 `cdisk-cleaner = 0.2.1`，`engine`/`elevation` 仍是 `0.1.0`；② `pnpm tauri build` 产物为 `C-DiskCleaner_0.2.1_x64-setup.exe` + `.msi`，二进制 `FileVersion`/`ProductVersion` 为 `0.2.1`；③ **NSIS 装到干净目录后「设置 → 应用更新」显示 0.2.1**（任务书要求的安装态验证，开发轮装不上，必须测试轮补）；④ `CHANGELOG.md` 顶部是 `## [0.2.1] - 2026-11-02`，只有「修复」与「已知问题」两段、修复 3 条；⑤ `README.md` 版本行与 `docs/USER_GUIDE.md` 适用版本行都是 v0.2.1（这两处是白名单外补的，测试时别当成多改）；⑥ **顺带真机复验 v0.2.0 那三个 Bug**（WinSxS 分析要 UAC、清理页应出现 L1/L2 两种徽标、残留入箱后来源显示 `#N` 且能永久删除）。上一手：DevFullstackRustReact（task-071 开发）。再上一手：DocsKeeper（task-071 派发）。
+**测试 Agent（提示词 9）**——`feature/task-072-plan-templates` 开发轮已完成、状态 `testing`，待测试轮：独立重跑全部门禁 + 开 PR 触发 CI + **真机冒烟（任务书要求不可裁剪，开发轮做不了）**：① Tab 栏出现「方案」按钮（在「清理」与「大文件」之间，共 9 个 tab）；② 点进去显示「方案模板」页，空态文案是「还没有保存任何方案」；③ 去「清理」页勾 3 项 → 回「方案」页 → 按钮显示「保存（3 项）」→ 起名保存 → 列表出现该方案，条目数 3；④ 点「应用」→ 自动切到「清理」页，那 3 项**已被勾选**，顶部有蓝色提示条（可关闭）；⑤ 点「导出」→ 显示完整路径（在 `%APPDATA%\com.and0114.cclean\plans\exports\` 下）→ 把路径粘到导入框 → 列表多一条；⑥ 点「删除」→ confirm → 列表少一条；⑦ **重新扫描一次再应用同一个方案**（这是「三元组而非 id」的关键验证：方案应该仍然可用）；⑧ 深色主题下页面跟随；⑨ CDP console 0 红错（G6 除外）。另：安装态（NSIS 干净目录）复跑 ①②④⑤。上一手：DevFullstackRustReact（task-072 开发）。再上一手：DocsKeeper（task-072 派发）。
 
 ## Git 提交记录
 | Commit | 任务 | 说明 |
@@ -1060,6 +1072,11 @@
 | 09811dd | #task-071 | chore(release): 版本号 0.2.0 → 0.2.1 (patch) |
 | 9938c11 | #task-071 | docs(changelog): v0.2.1 段落（3 个真机验收 Bug 修复） |
 | （本次） | #task-071 | docs(state): 任务071完成，v0.2.1 patch 发版准备就绪 |
+| 0a7d17d | #task-072 | feat(plan): 清理方案后端（save/list/delete/apply/export/import） |
+| f4ddf14 | #task-072 | feat(ipc): 6 条 plan 命令接线 |
+| 5bd0190 | #task-072 | feat(ui): 方案模板页面（列表 + 保存/应用/导出/导入/删除） |
+| a758e51 | #task-072 | feat(ui): App tab 注册「方案」按钮 + Items 恢复勾选 + 深色适配 |
+| （本次） | #task-072 | docs(state): 任务072完成，P1-7 清理方案模板就绪 |
 
 ---
 变更轨迹：
@@ -1194,3 +1211,4 @@
 - 2026-10-31  task-069  v0.2.0 发版准备：**版本号 0.1.7 → 0.2.0**（四处 + `Cargo.lock`；`engine`/`elevation` 的 0.1.0 与 `latest.json` 的 0.1.0 **刻意不动**——前者是内部构件不单独发布，后者由 `release.yml` 的 `generate-latest` 用真实签名整份覆盖，手改只会造出签名对不上的假清单）；**CHANGELOG v0.2.0**（3454 字符 / 新增 17 / 变更 4 / 修复 2 / 已知问题 10；**补入任务书漏计的 task-061 三项**——061 合并 `b92a763`(10-30) 晚于 v0.1.7 发版 `360df74`(10-29)，随本版本交付，不补就是「代码里有、CHANGELOG 里没有」；已知问题不删旧账，v0.1.7 的 5 条全留 + 新增 5 条边界）；**README**（功能段 7 条 → 三组 17 条 + 八个页签总览 + 四条深度清理各写「为什么不做这个操作」+ 技术栈补 DISM/还原点/托盘通知/注册表 FFI + 安全基线加「不可逆操作前留退路」）；**用户手册**（8 章 331 行 → **15 章 766 行**，章节顺序与页签一致，覆盖 12 项说明，修掉三处与实现不符的说法：普通清理页不显示还原点序号 / `释放 X` 是文件大小之和而非磁盘差值 / 弹 UAC 的程序名是 `cclean-elevation.exe`，新增 5 条 FAQ，30 条内链锚点程序化校验全通过）。门禁 check/clippy/fmt 0、cargo test **431 passed**、vitest **148**（13 files）、build 230.32 kB、**tauri build 出包 NSIS 4.44 MiB + MSI 6.55 MiB**，二进制 `FileVersion`/`ProductVersion` 实测 **0.2.0**（这是「关于」页的数据源）。**本地未签名**（私钥正源在 CI secret）；**安装态冒烟未做**（非管理员 shell 下 msiexec 未完成即被终止、无残留），移交测试 Agent
 - 2026-11-01  task-070  v0.2.0 真机验收 3 Bug 修复：**Bug-1（P0）WinSxS 退出码 3**——根因不是 DISM，而是 `run_elevated` **漏传命令名**（只拼了 `--result "path"`，提权 exe 的 `argv[1]` 是 `--result` → 白名单不认 → `EXIT_UNKNOWN_CMD(3)` 退出且不写结果 JSON → 前端只看到「退出码 3 + 空输出」）；`create_restore_point` 同一条路也是坏的，被 Bug-2 掩盖。证据：两种 argv 形状对比（exit 3 vs exit 4 + `DISM 退出码 740`）+ DISM 日志里无本次调用痕迹。修法：新增 `build_argv(cmd,args)`。**Bug-2（P1）扫描只出 L1**——5 个 `.ps1` 把风险等级写死成字面量 `1`；顺带查清 `rules/cache_rules.json` 的 `modules` 段在扫描链路上**无消费者**（`grade/` 从未实现），改规则库对行为零影响却要连带改 checksum，故未改；改为按分类给风险（缓存 L1 / `windows_temp`+`update_download` L2），实测 `risk=1:61 + risk=2:29`。**Bug-3（P1）永久删除失败 + 来源缺失**——目录条目用 `remove_file` 必然失败（task-067 起保险箱会放整目录）、移入时 `source_task_id` 传 None；只读查用户真实库确认「`src=None` 的三条全是目录、`src=1` 的两条是文件」；修法：抽 `remove_entry()`（`symlink_metadata` 判类型）+ 建残留批次 `cleanup_task` 行（`freed_bytes=0`、snapshot 标 `residual_scan`、`session_id=NULL`）。门禁 check/fmt/clippy 0、cargo test **444 passed**（+13）、vitest 148、build 230.32 kB、**tauri build NSIS 4.45 MiB + MSI 6.56 MiB**。**真机/安装态冒烟未做**（本机 WebView2 起不来、UAC 无法自动化），三条 Bug 的最终确认归测试轮
 - 2026-11-02  task-071  v0.2.1 patch 发版准备：**版本号 `0.2.0` → `0.2.1`**（四处 + `Cargo.lock`；`engine`/`elevation` 保持 `0.1.0`；**另补两处版本展示行**——`README.md` 当前版本、`docs/USER_GUIDE.md` 适用版本，任务书「不修改 README/手册」指的是功能列表，版本行不改会让仓库自相矛盾）；**CHANGELOG v0.2.1 段落**（1183 字符 / 修复 3 条 + 已知问题 2 条；patch 语义不设新增变更；三条根因按实际写，并补明**「系统还原点自动创建」在 0.2.0 里也从未成功过**——同一条提权路径，只是没有 L2 项可清所以没暴露；已知问题明确「本版本未新增，v0.2.0 的 10 条仍有效」+ 两处本版本边界：L0 不出现、规则库与脚本各存一份判定）。门禁 check/fmt/clippy 0、cargo test **444 passed**、vitest **148**（13 files）、build 230.32 kB、**tauri build 出 `C-DiskCleaner_0.2.1_x64-setup.exe`（4.46 MiB）+ `.msi`（6.56 MiB）**，二进制 `FileVersion`/`ProductVersion` 实测 **0.2.1**。**安装态版本号验证未做**（非管理员 shell 装不上），归测试轮
+- 2026-11-02  task-072  P1-7 清理方案模板：**后端**（`ipc/commands/plan.rs` 新建，save/list/delete/apply/export/import + 6 handler；**存路径三元组不存 item id**——`cleanup_item.id` 每次扫描都是新的一批，用 id 存方案下次扫描整份失效；回查**取 id 最大那行**（同路径跨扫描会累积多行，全取会让 12 条方案勾出 30 个框）、匹配不到的进 `unmatched` 不静默丢弃、`matchedCount` 与 `itemCount` 分开返回；`save_plan` 收 `item_ids` 因为前端 `PendingItem` 没有 `category`）；**IPC**（6 条 command，导出到 `<data_root>/plans/exports/` 不弹另存为——没引 dialog 插件，文件名清洗）；**方案页**（列表/保存/应用/导出/导入/删除；「12 条（本次匹配 3 条）」两个数都显示；全未匹配不切页；导出后显示完整路径）；**tab + 跨页**（Tab 加 `plans` 放在「清理」与「大文件」之间；App 当中间人传 `itemsSelection`/`planApply`，三个回调 `useCallback` 固定引用；**白名单外改 `Items.tsx` 加 3 个可选 prop + 可关闭提示条**，不传时行为不变、既有 148 条前端测试零回归）。门禁 check/fmt/clippy 0、cargo test **468 passed**（+24）、vitest **166**（14 files，+18）、build 238.23 kB、**tauri build 出 NSIS 4.48 MiB + MSI 6.62 MiB**。**端到端写路径**：`end_to_end_save_then_apply_through_handlers` 走真实 SQLite + 真实信封层零 mock（勾选→保存→重扫换 id→应用→拿回当前 id 并逐条校验）。**真机/安装态冒烟未做**（本机 WebView2 起不来），归测试轮
