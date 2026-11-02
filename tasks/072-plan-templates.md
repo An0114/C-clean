@@ -11,7 +11,7 @@
 
 ## 状态字段
 
-pending
+testing
 
 ## 任务目标
 
@@ -218,3 +218,157 @@ DevAgent 交付物（后续执行结果）：
 4. 本任务文档本身**由 DocsKeeper 在派发时**单独提交一次：
    `docs(task): 新增任务072-P1-7 清理方案模板 (#task-072)`，
    该提交只含 `tasks/072-plan-templates.md` 一个文件，落在 `feature/task-072-plan-templates` 分支最前端。
+
+## 实现备注
+
+> 开发轮（DevFullstackRustReact）交付说明。**所有结论可复现**，命令附在对应位置。
+
+### 1. 实际改动文件清单
+
+| 文件 | 类型 | 说明 |
+|---|---|---|
+| `engine/src/ipc/commands/plan.rs` | **新建** | `save_plan` / `list_plans` / `delete_plan` / `apply_plan` / `export_plan` / `import_plan` + 6 个 handler + `PlanItemRef` / `PlanSummary` / `PlanApplied` / `PlanFile` |
+| `engine/src/ipc/commands/mod.rs` | 改 | `pub mod plan;` |
+| `engine/tests/plan_test.rs` | **新建** | 24 条（含端到端写路径） |
+| `app/src-tauri/src/commands.rs` | 改 | **白名单外**：6 条 Tauri command（任务书写的 `engine/src/lib.rs` 只是模块声明，真正让前端能 invoke 的是这里） |
+| `app/src-tauri/src/lib.rs` | 改 | **白名单外**：注册 6 条命令 |
+| `app/src/pages/PlanTemplates.tsx` | **新建** | 方案列表 + 保存/应用/导出/导入/删除 |
+| `app/src/pages/PlanTemplates.test.tsx` | **新建** | 17 条 |
+| `app/src/App.tsx` | 改 | Tab 类型 + 「方案」按钮 + 跨页 state + 渲染 |
+| `app/src/App.test.tsx` | 改 | **白名单外**：+1 条 tab 切换（验收 18） |
+| `app/src/pages/Items.tsx` | 改 | **白名单外**：3 个可选 prop + 可关闭提示条（见 §5） |
+| `docs/PROJECT_STATE.md` | 改 | 按第 5 条提交规范更新 |
+
+**与白名单的差异（4 处）**：
+
+| # | 白名单写法 | 实际情况 |
+|---|---|---|
+| 1 | `engine/src/lib.rs`（注册 IPC handler，如需要） | **无需改动**（`pub mod ipc` 早已存在）。但真正让前端能 invoke 的是 `app/src-tauri/src/{commands,lib}.rs`，**这两个没在白名单里**，已一并提交（与 task-065~068 同样的遗漏）。 |
+| 2 | 未列 `app/src/pages/Items.tsx` | **必须改**：验收标准 11「应用方案 → 恢复选择到 Items 页」绕不过它——勾选状态（`selected: Set<number>`）在 Items 内部，不加 prop 就无处落地。改动极小且全可选，见 §5。 |
+| 3 | 未列 `app/src/App.test.tsx` | 验收 18「单测：tab 切换正确」只能在 App 层测（tab 状态在 App 里），新增 1 条。 |
+| 4 | `app/src/utils/invoke.ts`（加 plan API 封装，如需要） | **未改动**：现有模式是 10 个页面全部直调 `api<T>` / `apiRaw<T>`，`invoke.ts` 只有两个通用解包函数、没有任何 per-command 封装（与 task-065~068 同样判断）。 |
+
+### 2. cleanup_plan 表结构确认
+
+```sql
+CREATE TABLE IF NOT EXISTS cleanup_plan (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    name        TEXT    NOT NULL,
+    note        TEXT,
+    is_template INTEGER NOT NULL DEFAULT 0,
+    item_refs   TEXT    NOT NULL,   -- JSON 数组：{module_code, category, path}
+    created_at  INTEGER NOT NULL,
+    updated_at  INTEGER NOT NULL
+);
+```
+
+- **没有索引**（表小，几十行以内，全表扫无感）；
+- **`item_refs` 存三元组、不存 item id**——表注释写的是「不绑定 session_id，保证模板跨扫描复用」，这是本任务最核心的设计约束，下面所有决定都由它推出；
+- `is_template` / `note` 本任务**只写不读**（`is_template` 恒 0、`note` 恒 NULL）：TRD 提到「可复用模板」与备注，但界面上没做这两个概念，留字段不动比编一个假 UI 好。
+
+### 3. 方案数据格式（JSON schema）
+
+导出文件（`<data_root>/plans/exports/<清洗后的方案名>-<unix秒>.json`）：
+
+```json
+{
+  "format": "cclean-plan",
+  "version": 1,
+  "name": "开发机日常",
+  "note": null,
+  "exportedAt": 1762000000,
+  "itemRefs": [
+    { "moduleCode": "temp", "category": "user_temp", "path": "C://Users//...//a.tmp" }
+  ]
+}
+```
+
+导入校验三条：`format` 必须是 `cclean-plan`、`version` 必须是 `1`、`itemRefs` 不能为空。
+**不校验的话，用户误选一个普通 JSON 也会「导入成功」出一条空方案**——这种假成功比报错更难排查。
+
+### 4. 应用方案时 Items 页恢复勾选的实现方式
+
+```
+方案页「应用」→ plan_apply(id)
+  → 后端按三元组回查当前 cleanup_item（每条取 id 最大那行）
+  → 返回 { itemIds, unmatched, sizeBytes }
+  → PlanTemplates 调 App 的 onApply({ itemIds, notice })
+  → App: setPlanApply(payload) + setTab("items")
+  → Items 的 useEffect 消费载荷：setSelected(new Set(itemIds))
+     + setPlanNotice(notice) + setPreview(null) + onPlanConsumed()
+```
+
+三个关键点：
+
+1. **一次性消费**：套完立刻 `onPlanConsumed()` 让 App 清空载荷。不清的话，翻页回来、或从别的页再进「清理」页时会**把同一份方案再套一遍**，把用户后来的手动勾选覆盖掉。
+2. **提示留在 Items 本地 state**（`planNotice`）：载荷被清空后用户还得看得到「勾选了几项、几条没找到」，所以不能只靠载荷里的文案。
+3. **同时清掉 dry-run 预览**：勾选变了旧预览就失效（与既有 C8 处理一致），留着会让人以为预览的就是新勾选。
+
+**跨页通信为什么用 prop 而不是全局 store**：本项目没有状态管理库，`Dashboard` 的 `scanSignal` 就是「App 持一份 state + prop 下发」的先例，照抄即可。三个回调必须 `useCallback` 固定引用——Items 的 effect 依赖它们，每次渲染新建函数会让「勾选上报」effect 无限触发 `setState`。
+
+### 5. 白名单外改 Items.tsx 的具体内容（保持零回归）
+
+只加 3 个**全部可选**的 prop + 一条可关闭提示条：
+
+```tsx
+interface ItemsProps {
+  planApply?: PlanApplyPayload | null;          // 待应用的方案（一次性）
+  onPlanConsumed?: () => void;                  // 消费后清空
+  onSelectionChange?: (ids: number[]) => void;  // 上报勾选给方案页
+}
+```
+
+不传时行为与改动前**完全一致**——既有 148 条前端测试零改动、零回归。
+
+### 6. 门禁输出
+
+```text
+cargo check --workspace --all-targets              exit 0
+cargo fmt --all -- --check                         exit 0
+cargo clippy --workspace --all-targets -- -D warnings   exit 0
+cargo test --workspace                             468 passed, 0 failed   （本任务新增 24 条）
+pnpm --filter app lint                             0 error（2 warning 均 SafeBox.tsx 既有）
+pnpm --filter app test                             166 passed（14 files，+18）
+pnpm --filter app build                            exit 0
+    dist/index.html                  0.34 kB │ gzip:  0.25 kB
+    dist/assets/index-D_eG-SOz.js  238.23 kB │ gzip: 73.90 kB
+pnpm tauri build                                   2 bundles
+    C-DiskCleaner_0.2.1_x64-setup.exe        4.48 MiB
+    C-DiskCleaner_0.2.1_x64_en-US.msi        6.62 MiB
+```
+
+新增 24 条后端用例要点：**`end_to_end_save_then_apply_through_handlers`**（真实 SQLite + 真实信封层、零 mock：勾选→保存→重扫换 id→应用→拿回当前 id 并逐条校验存在）、`apply_still_works_after_rescan_with_new_ids`、`apply_picks_newest_row_when_path_duplicated`、`apply_reports_unmatched_paths`、`save_dedupes_same_path`、`save_skips_items_that_are_gone`、`save_rejects_empty_selection`、`save_rejects_blank_name`、`export_writes_valid_plan_file`（含 camelCase 反面断言）、`export_sanitizes_plan_name_in_filename`、4 条导入校验、4 条 handler 信封用例。
+
+前端 18 条：`PlanTemplates.test.tsx` 17 条（列表渲染 / 空态 / 保存禁用两态 / 实参 trim / 2001 文案 / 匹配数不一致 / 「—」而非 0 B / 应用三态 / 导出路径 / 导入空路径不发 IPC / 导入 trim / 删除 confirm 两态 / 列表失败不假装空）+ `App.test.tsx` 1 条 tab 切换。
+
+### 7. 端到端写路径（任务书硬要求）
+
+**已做，但不是真机做的**（本机 WebView2 渲染进程起不来，GUI 取证拿不到）：
+
+- 后端一段：`end_to_end_save_then_apply_through_handlers` 用真实 SQLite + 真实 `Envelope`，**零 mock**，覆盖「保存 → 重新扫描（旧 item 全删、id 全变）→ 应用 → 拿回当前 id」；
+- UI 一段：`PlanTemplates.test.tsx` 覆盖「应用 → 把 itemIds 与提示交给外层」，`App.test.tsx` 覆盖「方案 tab 能切过去」。
+
+**没有覆盖的**：真实窗口里点一遍。这归测试轮（任务书也标了「真机冒烟必做、不可裁剪」）。
+
+### 8. 真机冒烟 / 打包安装冒烟 / CI
+
+- **真机冒烟**：**未执行**。任务书要求「必做、不可裁剪」，但按 `docs/PROJECT_STATE.md` 的流程约定，开发轮不做 GUI/安装态冒烟（本机 WebView2 渲染进程创建即崩）。**这是本任务最大的未闭环项**，9 条冒烟重点已写进 `docs/PROJECT_STATE.md` 的「当前负责人 Agent」段。
+- **打包安装冒烟**：`tauri build` 已出包（NSIS 4.48 MiB + MSI 6.62 MiB，比 v0.2.1 的 4.46/6.56 各涨约 20/60 KB——新增一个页面 + 6 条命令的合理增量），安装态复跑归测试轮。
+- **CI**：**未跑**。按项目现行流程，开发轮不建 PR、不触发 CI，由测试轮拉 PR 跑五道闸（与 task-061~071 一致）。
+
+### 9. 与本任务文档不符的偏差（5 项）
+
+1. **提交拆法**：任务书要求「4 个代码提交（按功能单元）」，但**单元 1 与单元 2 同在一个新建文件 `plan.rs` 里**，物理上无法干净拆成两次提交。实际拆成 5 个代码/测试提交：后端逻辑 / IPC 接线 / 方案页 / tab+跨页 / 端到端用例，每个都是可独立编译的原子变更。
+2. **`engine/src/lib.rs` 无需改动**，但 `app/src-tauri/src/{commands,lib}.rs` 漏在白名单外（见 §1）。
+3. **白名单漏 `app/src/pages/Items.tsx`**（验收 11 绕不过）与 `app/src/App.test.tsx`（验收 18 只能在 App 层测）。
+4. **`app/src/utils/invoke.ts` 未改动**（现有模式无 per-command 封装）。
+5. **导出/导入没有系统文件选择框**：本项目没引 `tauri-plugin-dialog`，所以导出写到固定目录并返回路径、导入靠粘贴路径。任务书写的「下载 JSON 文件 / 选择导入」在无对话框插件的前提下做不到——**这是能力边界，不是实现取巧**。若后续要真·文件选择框，需引 `tauri-plugin-dialog`（会涨安装包体积、多一份 capability 配置），建议单开任务。
+
+### 10. 遗留问题
+
+- **真机验收归测试轮**（9 条，其中第 ⑦ 条「重新扫描后再应用同一方案」是本任务「三元组而非 id」的关键验证）。
+- **没有文件选择框**：见 §9.5。
+- **`is_template` / `note` 字段未使用**：界面上没有「模板」与「备注」概念，字段留着不动。
+- **方案没有数量上限**：用户可以存几百个方案。目前没有分页/搜索，列表全量渲染。几十个以内无感，多了要补。
+- **`tasks/060-shutdown-experience.md` 仍是「工作区已删除、HEAD 里存在」**（连续 10 个任务），仍需人拍一下。
+- **下一步**：P1 体验项收尾（趋势图折线增强 / 开机自启任务计划集成）或架构债（5 个 `.ps1` → Rust 重写）+ 深色补齐 Items/SafeBox/History 三页。
