@@ -877,6 +877,15 @@ export default function Settings({ onUpdateFound, onThemeChange }: SettingsProps
               登录 Windows 后自动启动 C-Disk Cleaner，并在托盘常驻。
               <b>默认关闭</b>；关闭主窗口不会退出程序，需要从托盘菜单「退出」才真正结束。
             </div>
+            {/* task-073：把「状态存在哪」写出来。用户想确认有没有真生效时，
+                自己能去任务管理器核对，比反复开关一遍更可靠。 */}
+            <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 6, lineHeight: 1.6 }}>
+              状态取自系统注册表{" "}
+              <code style={{ fontSize: 11 }}>
+                HKCU\Software\Microsoft\Windows\CurrentVersion\Run
+              </code>
+              ，也可在「任务管理器 → 启动」里核对。在那边手动禁用后，这里会如实显示为已关闭。
+            </div>
           </div>
           <label
             style={{

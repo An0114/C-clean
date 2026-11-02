@@ -608,4 +608,38 @@ describe("Settings 开机自启（task-062）", () => {
     await waitFor(() => expect(box.checked).toBe(false));
     expect(await screen.findByText(/设置开机自启失败/)).toBeInTheDocument();
   });
+
+  // task-073：以下两条补的是「状态可信度」这一层。
+  it("后端回读的状态与请求不一致时，以回读为准（不谎报已开启）", async () => {
+    // 真实场景：组策略禁用了 Run 键写入，或安全软件静默拦掉。
+    // 插件的 enable() 可能返回 Ok，但回读 is_enabled() 仍是 false。
+    // 这种时候 UI 必须显示「已关闭」——否则用户以为设上了，实际没有。
+    mockAutostart(false, (want) => !want);
+
+    render(<Settings />);
+    await screen.findByText("开机自启");
+
+    const boxes = screen.getAllByRole("checkbox") as HTMLInputElement[];
+    const box = boxes[boxes.length - 1];
+    fireEvent.click(box);
+
+    // 请求 true，后端回读 false → 最终必须回到不勾
+    await waitFor(() => expect(box.checked).toBe(false));
+    // 「已关闭」在页面上有多处（自动重启 / 自动扫描 / 开机自启），不能按唯一文本查。
+    // 真正的判据是：没有任何开关处于「已开启」（本用例里三个开关都该是关的）。
+    expect(screen.queryByText("已开启")).toBeNull();
+  });
+
+  it("说明开关状态存在注册表哪里（用户能自己去任务管理器核对）", async () => {
+    mockAutostart(false);
+
+    render(<Settings />);
+    await screen.findByText("开机自启");
+
+    // 路径写在界面上，用户不必翻文档就能核实「到底生效没有」
+    expect(
+      screen.getByText(/HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run/)
+    ).toBeInTheDocument();
+    expect(screen.getByText(/任务管理器 → 启动/)).toBeInTheDocument();
+  });
 });
