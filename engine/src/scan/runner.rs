@@ -198,6 +198,61 @@ impl<'conn, 'emitter> ScanRunner<'conn, 'emitter> {
         })
     }
 
+    /// task-074：把一批 **Rust 侧扫描结果**入库并发进度。
+    ///
+    /// # 为什么复用 `insert_item` 而不是另写一份 INSERT
+    ///
+    /// 两条路径（ps1 / Rust）写进 `cleanup_item` 的行必须**完全一样**：
+    /// `risk_level` 的整数→`'L1'`/`'L2'` 映射、`description` 的空串兜底、
+    /// `session_id` 绑定。任何一处各写一份，就会出现「同一个文件在 Rust 模式是
+    /// L2、ps1 模式是 L1」这种最难查的 bug——这正是架构债 R5 要消灭的东西，
+    /// 不能重写的时候又造一个新的。
+    ///
+    /// # `done_seen: true`
+    ///
+    /// Rust 路径没有 done 事件，但语义上是「完整跑完」（函数返回即全部条目
+    /// 都已入库）。调用方拿它跟 ps1 的返回值对比时不会被误判成「脚本没跑完」。
+    pub fn insert_batch(
+        &self,
+        items: &[crate::scan::modules::ScanItem],
+    ) -> Result<ScanSummary, RunError> {
+        let mut items_inserted: i64 = 0;
+        let mut total_bytes: i64 = 0;
+
+        for it in items {
+            self.insert_item(
+                &it.module_code,
+                &it.category,
+                &it.path,
+                it.size_bytes,
+                it.risk_level,
+            )?;
+            items_inserted += 1;
+            // 饱和加法：文件大小之和理论上不会溢出，但扫描结果来自外部文件系统，
+            // 宁可截断也不要 panic（debug 下 u64/i64 溢出会直接 abort）。
+            total_bytes = total_bytes.saturating_add(it.size_bytes);
+
+            let n = self.scanned_count.fetch_add(1, Ordering::Relaxed) + 1;
+            self.emitter.emit(&ScanProgress {
+                session_id: self.session_id,
+                // 与 ps1 路径同一套亚线性插值，进度条表现一致
+                percent: interpolate_percent(
+                    self.percent_span.0,
+                    self.percent_span.1,
+                    items_inserted as u64,
+                ),
+                current_path: it.path.clone(),
+                scanned_items: n as u64,
+            });
+        }
+
+        Ok(ScanSummary {
+            items_inserted,
+            total_bytes,
+            done_seen: true,
+        })
+    }
+
     /// 参数化 INSERT 一条 cleanup_item。
     ///
     /// 表 schema（v1__init.sql）：

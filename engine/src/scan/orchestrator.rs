@@ -20,6 +20,49 @@ const SCRIPTS: &[&str] = &[
     "scan_dev_cache.ps1",
 ];
 
+/// task-074：temp 模块对应的 ps1 文件名。
+///
+/// 单独提出来是因为它现在有两个身份：**Rust 实现的环境变量开关按它判断**，
+/// 以及 ps1 回退时的脚本文件名。写两处字符串迟早会有一处改漏。
+const TEMP_SCRIPT: &str = "scan_temp.ps1";
+
+/// task-074：temp 模块是否走 Rust 实现。
+///
+/// **默认开启**；`CCLEAN_RUST_TEMP=0`（或 `false` / `off` / `no`）回退 ps1。
+///
+/// # 为什么默认开启
+///
+/// Rust 实现是等价重写、有单测覆盖。默认关闭等于「写了但不用」——回退开关的
+/// 价值也没了（不会有人主动去开一个从没跑过的新实现）。
+///
+/// # 为什么用环境变量而不是配置文件
+///
+/// 它是**排障用的临时开关**，不是用户偏好：用户不需要知道这个选项，出问题时
+/// 支持人员能一条命令回退。写进 prefs 反而要加 UI、加迁移、加文档。
+///
+/// 抽成 `pub` 是为了能单测——`run_all` 需要真实 DB + emitter，为测一个布尔
+/// 判断去搭那套太重。
+pub fn rust_temp_enabled() -> bool {
+    rust_temp_enabled_from(std::env::var("CCLEAN_RUST_TEMP").ok().as_deref())
+}
+
+/// [`rust_temp_enabled`] 的纯函数内核。
+///
+/// 抽出来是为了可测：`std::env::set_var` 在多线程测试里会污染同进程的其他
+/// 用例（Rust 2024 起还变成了 `unsafe`），而这条判断恰恰是最容易写错的地方
+/// ——「`0` 是关」写反成「`0` 是开」，回退开关就彻底失效了。
+fn rust_temp_enabled_from(val: Option<&str>) -> bool {
+    match val {
+        // 空串按「开启」处理：`set CCLEAN_RUST_TEMP=` 是最常见的清空写法，
+        // 用户的意图是「恢复默认」，不是「关掉」。
+        Some(v) => !matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "off" | "no"
+        ),
+        None => true,
+    }
+}
+
 /// 5 个脚本跑完的汇总。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct OrchestratorSummary {
@@ -116,6 +159,36 @@ impl<'conn, 'emitter> ScanOrchestrator<'conn, 'emitter> {
             let to = ((idx + 1) * 100 / total) as u8;
 
             let path = scripts_dir.join(name);
+
+            // task-074：temp 走 Rust 实现（默认），`CCLEAN_RUST_TEMP=0` 回退 ps1。
+            //
+            // **必须放在「脚本是否存在」检查之前**：走 Rust 就不需要 ps1 文件。
+            // 放在后面的话，将来正式删掉 `scan_temp.ps1` 时，这个模块会被判
+            // `missing script` 失败——而它其实跑得好好的。
+            if *name == TEMP_SCRIPT && rust_temp_enabled() {
+                let runner = ScanRunner::new(self.session_id, self.conn, self.emitter)
+                    .with_percent_span(from, to);
+                let items = crate::scan::modules::temp::scan();
+                match runner.insert_batch(&items) {
+                    Ok(s) => {
+                        summary.total_items += s.items_inserted;
+                        summary.total_bytes += s.total_bytes;
+                        summary.scripts_succeeded.push(name.to_string());
+                        eprintln!(
+                            "[orchestrator] {name} 走 Rust 实现，入库 {} 项",
+                            s.items_inserted
+                        );
+                        self.emit_progress(to, name, summary.total_items as u64);
+                    }
+                    Err(e) => {
+                        // DB 错在 ps1 路径里也是致命的，这里保持一致
+                        eprintln!("[orchestrator] rust {name} failed: {e}");
+                        summary.scripts_failed.push(name.to_string());
+                    }
+                }
+                continue;
+            }
+
             if !path.exists() {
                 eprintln!("[orchestrator] missing script: {name}");
                 summary.scripts_failed.push(name.to_string());
@@ -200,6 +273,41 @@ mod tests {
         // scan_cancel 做的就是这一步
         flag.store(true, Ordering::Relaxed);
         assert!(cancel_requested(&opt), "置位后应立即读到 true");
+    }
+
+    // ===== task-074：Rust / ps1 开关 =====
+
+    #[test]
+    fn rust_temp_defaults_on_when_env_absent() {
+        // 没设环境变量 = 默认走 Rust。默认关闭等于「写了但不用」。
+        assert!(rust_temp_enabled_from(None));
+    }
+
+    #[test]
+    fn rust_temp_off_for_falsy_values() {
+        // 这四种写法都要能关掉。少认一种，用户按习惯写了却没生效，
+        // 会以为「回退开关是坏的」。
+        for v in ["0", "false", "FALSE", "off", "no", "  0  ", "Off"] {
+            assert!(!rust_temp_enabled_from(Some(v)), "{v:?} 应关闭");
+        }
+    }
+
+    #[test]
+    fn rust_temp_on_for_truthy_and_empty() {
+        // 空串按「恢复默认」处理（`set CCLEAN_RUST_TEMP=` 是最常见的清空写法）
+        for v in ["", "  ", "1", "true", "on", "yes", "anything-else"] {
+            assert!(rust_temp_enabled_from(Some(v)), "{v:?} 应开启");
+        }
+    }
+
+    #[test]
+    fn temp_script_name_is_in_scripts_list() {
+        // TEMP_SCRIPT 是 Rust 分支的判断依据；如果 SCRIPTS 里改了名字而这里
+        // 没改，Rust 实现就永远不会被走到，且**没有任何报错**——静默失效。
+        assert!(
+            SCRIPTS.contains(&TEMP_SCRIPT),
+            "TEMP_SCRIPT={TEMP_SCRIPT} 不在 SCRIPTS 里，Rust 分支永远不会命中"
+        );
     }
 
     #[test]
