@@ -384,3 +384,73 @@ fn plan_item_ref_serializes_camel_case() {
     assert_eq!(v["moduleCode"], "temp");
     assert!(v.get("module_code").is_none(), "不能出现 snake_case 键");
 }
+
+// ===================== 端到端写路径（任务书硬要求） =====================
+
+/// 「勾选清理项 → 保存方案 → 应用方案 → 拿回可勾选的 id」全链路，
+/// 走真实 SQLite + 真实信封层，**没有任何 mock**。
+///
+/// 这是本任务「端到端写路径」的证据：UI 那一段（Items 页把 id 变成勾选框）
+/// 由 `PlanTemplates.test.tsx` + `App.test.tsx` 覆盖，中间这一层必须用真库证明。
+#[test]
+fn end_to_end_save_then_apply_through_handlers() {
+    use engine::ipc::commands::plan::{handle_plan_apply, handle_plan_save};
+
+    let (_d, conn, sid) = setup();
+    let a = add_item(&conn, sid, "temp", "user_temp", r"C:/T/a.tmp", 1024);
+    let b = add_item(
+        &conn,
+        sid,
+        "prefetch",
+        "prefetch",
+        r"C:/Windows/Prefetch/b.pf",
+        2048,
+    );
+
+    // ① 勾选两条 → 保存
+    let saved = handle_plan_save(&conn, "端到端", &[a, b], 100).unwrap();
+    assert_eq!(saved.code, 0);
+    let plan_id = saved.data.expect("保存成功应返回方案 id");
+
+    // ② 重新扫描：旧条目全删、新条目换 id（真实场景：用户第二天再扫一次）
+    let new_ids = rescan_with(
+        &conn,
+        &[
+            ("temp", "user_temp", r"C:/T/a.tmp", 1024),
+            ("prefetch", "prefetch", r"C:/Windows/Prefetch/b.pf", 2048),
+        ],
+    );
+    assert_ne!(
+        new_ids[0], a,
+        "重扫后 id 必须变了，否则这条用例证明不了什么"
+    );
+
+    // ③ 应用方案 → 拿回**当前**的 id
+    let applied = handle_plan_apply(&conn, plan_id).unwrap();
+    assert_eq!(applied.code, 0);
+    let r = applied.data.unwrap();
+    assert_eq!(r.item_ids.len(), 2);
+    assert_eq!(r.unmatched.len(), 0);
+    assert_eq!(r.size_bytes, 1024 + 2048);
+
+    // ④ 拿回的 id 必须真的存在于当前库（前端就是拿它们去 setSelected）
+    for id in &r.item_ids {
+        let exists: i64 = conn
+            .query_row("SELECT COUNT(*) FROM cleanup_item WHERE id=?1", [id], |x| {
+                x.get(0)
+            })
+            .unwrap();
+        assert_eq!(exists, 1, "返回的 id={id} 必须存在于当前 cleanup_item");
+    }
+    assert_eq!(
+        r.item_ids
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>(),
+        new_ids
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>(),
+        "应精确匹配到重扫后的两条"
+    );
+}
