@@ -912,4 +912,101 @@ mod tests {
         assert!(orch.drive_selected('D'));
         assert!(!orch.drive_selected('E'));
     }
+
+    /// task-077 真机冒烟：扫真实固定盘，打印按盘汇总（`#[ignore]`，CI 默认不跑）。
+    ///
+    /// 跑法：
+    /// ```text
+    /// cargo test -p engine --lib scan::orchestrator -- --ignored --nocapture real_scan_multi_drive
+    /// ```
+    ///
+    /// # 它验证的核心事实
+    ///
+    /// 5 个模块的根目录全部锚定在**用户 / 系统目录**上（`%TEMP%` / `%APPDATA%` /
+    /// `%SystemRoot%`），所以：
+    ///
+    /// - 默认（不限盘）时，条目全部落在**用户目录所在的那个盘**，其他固定盘
+    ///   如实显示 0 项；
+    /// - 只选「用户目录不在的那个盘」时，5 个模块**全部跳过**，结果是 0 项而
+    ///   **不是** `AllScriptsFailed`——这是「用户选了一个没有清理目标的盘」的
+    ///   正确语义，不是错误。
+    ///
+    /// 这两条如果不写下来，下一个人很容易把「D 盘 0 项」当成 bug。
+    #[test]
+    #[ignore = "真机冒烟：枚举真实固定盘并扫描"]
+    fn real_scan_multi_drive_smoke() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::migrate::migrate(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO scan_session (id, started_at, status, scope) VALUES (1, 1000, 'running', 'full')",
+            [],
+        )
+        .unwrap();
+
+        let drives = crate::scan::drive_enum::fixed_drives();
+        println!("固定盘: {drives:?}");
+        let empty = tempfile::tempdir().unwrap();
+        let emitter = crate::ipc::progress::NoopEmitter;
+
+        // ① 默认：不限盘
+        let all = ScanOrchestrator::new(1, &conn, &emitter)
+            .run_all(empty.path())
+            .expect("默认扫描应成功");
+        println!(
+            "① 不限盘：items={} bytes={} ok={:?} skipped={:?}",
+            all.total_items, all.total_bytes, all.scripts_succeeded, all.scripts_skipped
+        );
+        for d in &all.per_drive {
+            println!("   {}: {} 项 / {} 字节", d.drive, d.items, d.bytes);
+        }
+        assert_eq!(all.scripts_succeeded.len(), 5, "5 个模块都应走 Rust 成功");
+        assert!(!all.per_drive.is_empty(), "per_drive 不该为空");
+
+        // ② 只选「用户目录不在的那个盘」→ 全跳过，但仍返回 Ok
+        let user_drive = std::env::var("LOCALAPPDATA")
+            .ok()
+            .and_then(|v| crate::scan::drive_enum::drive_letter_of(&v))
+            .expect("本机应有 LOCALAPPDATA");
+        if let Some(other) = drives.iter().map(|d| d.letter).find(|d| *d != user_drive) {
+            // 用**独立的 session**：① 已经往 session 1 里写了七千多行，
+            // 共用的话 `per_drive` 会同时含 C: 的旧数据，断言就说明不了问题。
+            conn.execute(
+                "INSERT INTO scan_session (id, started_at, status, scope) VALUES (2, 2000, 'running', 'full')",
+                [],
+            )
+            .unwrap();
+            let only_other = ScanOrchestrator::new(2, &conn, &emitter)
+                .with_drives(vec![other])
+                .run_all(empty.path())
+                .expect("只选无目标的盘不该是错误");
+            println!(
+                "② 只选 {other}: → items={} skipped={:?}",
+                only_other.total_items, only_other.scripts_skipped
+            );
+            assert!(
+                only_other.total_items == 0,
+                "该盘上没有缓存扫描目标，不该有条目"
+            );
+            assert_eq!(
+                only_other.scripts_skipped.len(),
+                5,
+                "5 个模块的根目录都不在这个盘上，应全部跳过"
+            );
+            assert!(
+                only_other
+                    .per_drive
+                    .iter()
+                    .any(|d| d.drive == other && d.items == 0),
+                "被选中但 0 项的盘也要出现在 per_drive 里（前端要显示「0 项」）"
+            );
+            // 独立 session 下不该出现别的盘的条目
+            assert!(
+                only_other.per_drive.iter().all(|d| d.drive == other),
+                "本次只选了 {other}:，per_drive 不该出现其他盘: {:?}",
+                only_other.per_drive
+            );
+        } else {
+            println!("② 跳过：本机只有一个固定盘");
+        }
+    }
 }
