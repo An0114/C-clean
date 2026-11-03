@@ -21,6 +21,7 @@
 //! 每个模块迁移完都保留 ps1 作为回退（环境变量控制），确认稳定后再删脚本。
 
 pub mod browser_cache;
+pub mod dev_cache;
 pub mod prefetch;
 pub mod temp;
 
