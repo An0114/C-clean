@@ -16,6 +16,12 @@
 //! 测试然后退出，不会删任何文件——但依然按上面的方式保证不残留。
 
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+/// 真实 schtasks 用例都操作同一个任务名（`TASK_NAME`），必须串行执行。
+/// 否则 roundtrip 刚 `enable()` 创建任务，并发的 `disable_is_idempotent` 用例就把它
+/// `disable()` 删掉，导致 roundtrip 「create 后应能查到」断言偶发失败（CI 红、本地并行偶现）。
+static SCHTASKS_LOCK: Mutex<()> = Mutex::new(());
 
 use engine::ipc::commands::auto_scan::{
     build_create_args, build_run_value, handle_status, is_registered, validate_time,
@@ -112,6 +118,7 @@ fn task_name_is_what_users_see_in_task_scheduler() {
 
 #[test]
 fn schtasks_roundtrip_creates_then_deletes() {
+    let _guard = SCHTASKS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // ① 先探测：本机已经有这个任务 → 说明用户真的开着，绝不覆盖/删除。
     match is_registered() {
         Ok(true) => {
@@ -148,6 +155,7 @@ fn schtasks_roundtrip_creates_then_deletes() {
 
 #[test]
 fn disable_is_idempotent_when_task_absent() {
+    let _guard = SCHTASKS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // 任务本来就不存在时，点「关闭」不该报错——目标状态已经达成了。
     if is_registered().unwrap_or(true) {
         // 已注册的话这条用例没有意义（会真的删掉用户的任务）
@@ -180,6 +188,7 @@ fn schtasks_available() -> bool {
 
 #[test]
 fn status_reports_task_name_and_time() {
+    let _guard = SCHTASKS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     if !schtasks_available() {
         eprintln!("[跳过] 本机 schtasks 不可用（被安全策略拦截），无法查询任务状态");
         return;
