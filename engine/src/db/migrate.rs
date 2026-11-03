@@ -21,10 +21,18 @@ use crate::db::DbError;
 ///
 /// 版本历史：
 /// - v1（task-002）：九张表初始 schema；
-/// - v2（task-056）：`safe_box` 加 `restored_at` 审计列（restore 改为 UPDATE 不再 DELETE）。
+/// - v2（task-056）：`safe_box` 加 `restored_at` 审计列（restore 改为 UPDATE 不再 DELETE）；
+/// - v3（task-077）：`cleanup_item` 加 `drive_letter` 派生列（盘符）+ 组合索引。
+///
+/// # 为什么 v3 不是任务书说的 v2
+///
+/// 任务书写 `v2__drive_letter.sql`，但 v2 已被 task-056 占用。`migrate()` 只执行
+/// 「版本号 > 当前 user_version」的迁移，两个 v2 里后一个永远不会跑——库停在
+/// 「有 restored_at、没有 drive_letter」的状态，且没有任何报错。
 static MIGRATIONS: &[(u32, &str)] = &[
     (1, include_str!("migrations/v1__init.sql")),
     (2, include_str!("migrations/v2__safe_box_restored_at.sql")),
+    (3, include_str!("migrations/v3__drive_letter.sql")),
 ];
 
 /// 对连接执行所有「版本号 > 当前 user_version」的迁移，返回迁移后的最新版本号。
@@ -43,4 +51,151 @@ pub fn migrate(conn: &Connection) -> Result<u32, DbError> {
         latest = *version;
     }
     Ok(latest)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 开一个内存库并迁移到最新。
+    fn migrated() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        conn
+    }
+
+    /// 插一条 cleanup_item（只填 NOT NULL 必需字段）。
+    ///
+    /// 先补一条 `scan_session`：`cleanup_item.session_id` 有外键约束，
+    /// 直接插 1 会 `FOREIGN KEY constraint failed`（787）。
+    fn insert(conn: &Connection, path: &str) {
+        conn.execute(
+            "INSERT OR IGNORE INTO scan_session (id, started_at, status, scope)
+             VALUES (1, 1000, 'running', 'full')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO cleanup_item (session_id, module_code, category, path, size_bytes, risk_level, description)
+             VALUES (1, 'temp', 'user_temp', ?1, 100, 'L1', '')",
+            [path],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn migrate_reaches_v3() {
+        // 版本号是「迁移真的跑到最后一个」的唯一硬证据
+        let conn = migrated();
+        let v: i64 = conn
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, 3, "最新版本应为 v3（v2 已被 safe_box 占用）");
+    }
+
+    #[test]
+    fn v3_adds_drive_letter_column() {
+        let conn = migrated();
+        // **必须是 table_xinfo**：`PRAGMA table_info` 不列出生成列（无论
+        // VIRTUAL 还是 STORED），用它断言「列存在」会永远失败。
+        let mut stmt = conn.prepare("PRAGMA table_xinfo(cleanup_item)").unwrap();
+        let cols: Vec<String> = stmt
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert!(
+            cols.iter().any(|c| c == "drive_letter"),
+            "cleanup_item 应有 drive_letter 列，实际: {cols:?}"
+        );
+    }
+
+    #[test]
+    fn v3_creates_drive_letter_index() {
+        let conn = migrated();
+        let mut stmt = conn.prepare("PRAGMA index_list(cleanup_item)").unwrap();
+        let idx: Vec<String> = stmt
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert!(
+            idx.iter().any(|n| n == "idx_cleanup_item_drive_letter"),
+            "缺少 drive_letter 索引，实际: {idx:?}"
+        );
+    }
+
+    #[test]
+    fn drive_letter_is_derived_from_path() {
+        // 生成列必须自动算出来，不需要（也不允许）写入方提供
+        let conn = migrated();
+        for (path, want) in [
+            (r"C:/Users/An/AppData/Local/Temp/a.tmp", Some("C")),
+            (r"d:/games/b.bin", Some("D")),
+            (r"c:/slash/style", Some("C")),
+            // canonicalize 的长路径前缀也要认（与 Rust 侧 drive_letter_of 对齐）
+            (r"\\?\E:/Windows/Temp/c.tmp", Some("E")),
+            // UNC / 相对路径没有盘符 → NULL，不能变成 '\' 或 ''
+            (r"\\server\share\file", None),
+            (r"relative\dir\f", None),
+        ] {
+            insert(&conn, path);
+            let got: Option<String> = conn
+                .query_row(
+                    "SELECT drive_letter FROM cleanup_item WHERE path = ?1",
+                    [path],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                got.as_deref(),
+                want,
+                "path={path:?} 的 drive_letter 应为 {want:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn drive_letter_matches_rust_helper() {
+        // 两处判定必须逐条一致：DB 生成列 ↔ scan::drive_enum::drive_letter_of。
+        // 不一致的表现是「Rust 过滤时认为在 D 盘、DB 里记成 C 盘」，最难查的那种。
+        let conn = migrated();
+        for path in [
+            r"C:/a",
+            r"z:/b",
+            r"\\?\F:/c",
+            r"\\server\share\d",
+            r"relative\e",
+        ] {
+            insert(&conn, path);
+            let db: Option<String> = conn
+                .query_row(
+                    "SELECT drive_letter FROM cleanup_item WHERE path = ?1",
+                    [path],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            let rust = crate::scan::drive_enum::drive_letter_of(path).map(|c| c.to_string());
+            assert_eq!(db, rust, "path={path:?}：DB 与 Rust 判定不一致");
+        }
+    }
+
+    #[test]
+    fn migrate_is_idempotent() {
+        // 重复打开同一库不该重复执行迁移（ALTER TABLE 第二次会报「列已存在」）
+        let conn = migrated();
+        assert_eq!(migrate(&conn).unwrap(), 3);
+        assert_eq!(migrate(&conn).unwrap(), 3);
+    }
+
+    #[test]
+    fn v3_does_not_break_existing_inserts() {
+        // 生成列不能被写入方显式赋值；既有 INSERT（不列 drive_letter）必须照常成功
+        let conn = migrated();
+        insert(&conn, r"C:/x");
+        let n: i64 = conn
+            .query_row("SELECT count(*) FROM cleanup_item", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1);
+    }
 }
