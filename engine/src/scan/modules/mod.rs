@@ -20,7 +20,10 @@
 //!
 //! 每个模块迁移完都保留 ps1 作为回退（环境变量控制），确认稳定后再删脚本。
 
+pub mod prefetch;
 pub mod temp;
+
+use std::path::{Path, PathBuf};
 
 /// 一个待清理项（Rust 侧扫描模块的统一产出）。
 ///
@@ -84,4 +87,82 @@ pub fn is_reparse_point(md: &std::fs::Metadata) -> bool {
         }
     }
     md.file_type().is_symlink()
+}
+
+/// 递归扫描一个目录，产出该目录下全部普通文件（**所有 Rust 模块共用**）。
+///
+/// # 为什么放在 `mod.rs` 而不是各模块里
+///
+/// task-074 写 temp 时这份遍历是放在 `temp.rs` 的。task-075 要再加 prefetch 和
+/// browser_cache，三份几乎一样的递归代码就会开始漂移——改一处（比如补上 junction
+/// 判断）忘两处，是最难发现的那类 bug。
+///
+/// 抽到公共层之后，「怎么遍历」只有一份实现，「扫哪里 / 什么类别 / 什么风险」
+/// 由各模块决定。这也是 task-074 立的规矩：**同一件事只有一份实现**。
+///
+/// # 错误处理
+///
+/// - `read_dir` 失败（权限不足）：打日志跳过该目录，**不中断整次扫描**。
+///   `C:/Windows/Prefetch` 和 `C:/Windows/Temp` 下都有普通用户读不了的地方，
+///   这是常态；
+/// - `symlink_metadata` 失败（文件刚好被删）：跳过该条目；
+/// - 单个条目出错绝不影响其他条目。
+///
+/// # 为什么用显式栈而不是递归
+///
+/// 缓存目录可能出现很深的嵌套（Firefox 的 `cache2` 就有多级子目录），
+/// 递归会爆栈。栈元素只是一个 `PathBuf`，深度不受调用栈限制。
+///
+/// # 为什么每个目录内要排序
+///
+/// 文件系统返回顺序本身不保证，但排序让输出**确定**：单测能稳定断言、
+/// 「Rust vs ps1 抽样对比」也不会因为顺序不同而假失败。
+pub fn scan_dir(root: &Path, module_code: &str, category: &str, risk_level: i64) -> Vec<ScanItem> {
+    let mut out = Vec::new();
+    if !root.is_dir() {
+        // 目录不存在是正常情况（用户没装那个浏览器 / 改过环境变量），不是错误。
+        return out;
+    }
+
+    let mut stack: Vec<PathBuf> = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(e) => {
+                eprintln!("[{module_code}] 跳过不可读目录 {}: {e}", dir.display());
+                continue;
+            }
+        };
+
+        let mut children: Vec<PathBuf> = Vec::new();
+        for entry in entries.flatten() {
+            children.push(entry.path());
+        }
+        children.sort();
+
+        for child in children {
+            // symlink_metadata：**不跟随**链接。用 metadata() 会把链接解析成
+            // 目标，判断不出它本身是 reparse point。
+            let Ok(md) = std::fs::symlink_metadata(&child) else {
+                continue;
+            };
+            if is_reparse_point(&md) {
+                continue;
+            }
+            if md.is_dir() {
+                stack.push(child);
+            } else if md.is_file() {
+                out.push(ScanItem::new(
+                    module_code,
+                    category,
+                    child.to_string_lossy().to_string(),
+                    md.len() as i64,
+                    risk_level,
+                ));
+            }
+            // 其余类型（设备、管道等）忽略：它们没有「大小」可言，
+            // 删了也不是「清理磁盘」。
+        }
+    }
+    out
 }
