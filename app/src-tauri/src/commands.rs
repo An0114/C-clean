@@ -881,6 +881,27 @@ pub async fn drive_usage(
     }
 }
 
+/// `drive_list`：枚举所有**固定**磁盘（task-077 多盘 UI 的数据源）。
+///
+/// 与 `drive_usage` 的分工：`drive_list` 回答「有哪些盘、各剩多少」，
+/// `drive_usage` 回答「某个盘现在剩多少」（清理前后对比要用它再查一次）。
+///
+/// **不缓存**：插拔 U 盘、挂载 / 卸载网络盘都会改变结果，缓存只会让用户看到过期的
+/// 盘列表。`GetLogicalDrives` 本身是微秒级调用，前端每次进页面查一次足够。
+///
+/// 非 Windows 返回空数组（不是错误）：本项目只支持 Windows，但单测要在别的平台
+/// 能编译运行，给空数组比给错误码更好断言。
+#[tauri::command]
+pub async fn drive_list() -> Result<Envelope<Vec<engine::scan::drive_enum::DriveInfo>>, String> {
+    let drives = engine::scan::drive_enum::fixed_drives();
+    if drives.is_empty() {
+        // 空列表在 Windows 上说明枚举真的失败了（至少系统盘一定在），留日志便于排障；
+        // 但仍然返回成功信封——「没有盘」不是业务错误，前端按空态渲染。
+        eprintln!("[drive_list] 未枚举到任何固定盘");
+    }
+    Ok(Envelope::ok(drives))
+}
+
 // ===================== task-062：托盘 / 开机自启 =====================
 
 /// `quit_app`：真正退出进程。
