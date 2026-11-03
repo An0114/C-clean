@@ -20,15 +20,29 @@ const SCRIPTS: &[&str] = &[
     "scan_dev_cache.ps1",
 ];
 
-/// task-074：temp 模块对应的 ps1 文件名。
+/// 走 Rust 实现的三个模块对应的 ps1 文件名。
 ///
-/// 单独提出来是因为它现在有两个身份：**Rust 实现的环境变量开关按它判断**，
-/// 以及 ps1 回退时的脚本文件名。写两处字符串迟早会有一处改漏。
+/// 单独提出来是因为它们现在有两个身份：**Rust 实现的环境变量开关按它判断**，
+/// 以及 ps1 回退时的脚本文件名。写两处字符串迟早会有一处改漏——
+/// 而改漏的表现是「Rust 实现静默失效」，没有任何报错。
 const TEMP_SCRIPT: &str = "scan_temp.ps1";
+const PREFETCH_SCRIPT: &str = "scan_prefetch.ps1";
+const BROWSER_CACHE_SCRIPT: &str = "scan_browser_cache.ps1";
 
-/// task-074：temp 模块是否走 Rust 实现。
+/// 读一个「开关型」环境变量。
 ///
-/// **默认开启**；`CCLEAN_RUST_TEMP=0`（或 `false` / `off` / `no`）回退 ps1。
+/// **默认开启**；值为 `0` / `false` / `off` / `no`（不区分大小写、允许前后空格）
+/// 时关闭。
+///
+/// # 总开关 `CCLEAN_RUST_ALL`
+///
+/// 优先于模块级开关：设成假值即**一次性回退所有模块到 ps1**。两个用途：
+///
+/// 1. **排障**：用户报「扫描结果不对」时，支持人员一条命令全回退，比记三个
+///    变量名靠谱；也能快速二分「是不是 Rust 实现的问题」；
+/// 2. **测试稳定**：测 ps1 编排路径的用例原本要逐个设 `CCLEAN_RUST_TEMP=0`，
+///    每迁一个模块就得改一次测试（task-075 就踩了：加了 prefetch/browser_cache
+///    后 `scan_orchestrator.rs` 的 4 个用例全红）。用总开关一次搞定。
 ///
 /// # 为什么默认开启
 ///
@@ -39,19 +53,32 @@ const TEMP_SCRIPT: &str = "scan_temp.ps1";
 ///
 /// 它是**排障用的临时开关**，不是用户偏好：用户不需要知道这个选项，出问题时
 /// 支持人员能一条命令回退。写进 prefs 反而要加 UI、加迁移、加文档。
-///
-/// 抽成 `pub` 是为了能单测——`run_all` 需要真实 DB + emitter，为测一个布尔
-/// 判断去搭那套太重。
-pub fn rust_temp_enabled() -> bool {
-    rust_temp_enabled_from(std::env::var("CCLEAN_RUST_TEMP").ok().as_deref())
+fn env_flag(name: &str) -> bool {
+    env_flag_from(
+        std::env::var("CCLEAN_RUST_ALL").ok().as_deref(),
+        std::env::var(name).ok().as_deref(),
+    )
 }
 
-/// [`rust_temp_enabled`] 的纯函数内核。
+/// [`env_flag`] 的纯函数内核：**总开关与模块开关都必须为真**。
+///
+/// 抽出来可测的理由同 [`flag_enabled_from`]——「总开关优先」写错成「模块开关
+/// 优先」，表现就是「`CCLEAN_RUST_ALL=0` 设了却回退不了」，而这类问题在真实
+/// 环境里很难复现（要同时设两个变量）。
+fn env_flag_from(all: Option<&str>, module: Option<&str>) -> bool {
+    flag_enabled_from(all) && flag_enabled_from(module)
+}
+
+/// [`env_flag`] 的纯函数内核。
 ///
 /// 抽出来是为了可测：`std::env::set_var` 在多线程测试里会污染同进程的其他
 /// 用例（Rust 2024 起还变成了 `unsafe`），而这条判断恰恰是最容易写错的地方
 /// ——「`0` 是关」写反成「`0` 是开」，回退开关就彻底失效了。
-fn rust_temp_enabled_from(val: Option<&str>) -> bool {
+///
+/// **三个模块共用这一份**：task-074 时它叫 `rust_temp_enabled_from`，只有 temp
+/// 一个调用方；task-075 加 prefetch / browser_cache 后如果各写一份，迟早会有
+/// 一处把 `off` 漏掉。
+fn flag_enabled_from(val: Option<&str>) -> bool {
     match val {
         // 空串按「开启」处理：`set CCLEAN_RUST_TEMP=` 是最常见的清空写法，
         // 用户的意图是「恢复默认」，不是「关掉」。
@@ -61,6 +88,21 @@ fn rust_temp_enabled_from(val: Option<&str>) -> bool {
         ),
         None => true,
     }
+}
+
+/// temp 模块是否走 Rust 实现（`CCLEAN_RUST_TEMP=0` 回退 ps1）。
+pub fn rust_temp_enabled() -> bool {
+    env_flag("CCLEAN_RUST_TEMP")
+}
+
+/// prefetch 模块是否走 Rust 实现（`CCLEAN_RUST_PREFETCH=0` 回退 ps1）。
+pub fn rust_prefetch_enabled() -> bool {
+    env_flag("CCLEAN_RUST_PREFETCH")
+}
+
+/// browser_cache 模块是否走 Rust 实现（`CCLEAN_RUST_BROWSER_CACHE=0` 回退 ps1）。
+pub fn rust_browser_cache_enabled() -> bool {
+    env_flag("CCLEAN_RUST_BROWSER_CACHE")
 }
 
 /// 5 个脚本跑完的汇总。
@@ -160,32 +202,13 @@ impl<'conn, 'emitter> ScanOrchestrator<'conn, 'emitter> {
 
             let path = scripts_dir.join(name);
 
-            // task-074：temp 走 Rust 实现（默认），`CCLEAN_RUST_TEMP=0` 回退 ps1。
+            // task-074/075：Rust 实现优先，环境变量可回退 ps1。
             //
             // **必须放在「脚本是否存在」检查之前**：走 Rust 就不需要 ps1 文件。
-            // 放在后面的话，将来正式删掉 `scan_temp.ps1` 时，这个模块会被判
+            // 放在后面的话，将来正式删掉某个 `.ps1` 时，那个模块会被判
             // `missing script` 失败——而它其实跑得好好的。
-            if *name == TEMP_SCRIPT && rust_temp_enabled() {
-                let runner = ScanRunner::new(self.session_id, self.conn, self.emitter)
-                    .with_percent_span(from, to);
-                let items = crate::scan::modules::temp::scan();
-                match runner.insert_batch(&items) {
-                    Ok(s) => {
-                        summary.total_items += s.items_inserted;
-                        summary.total_bytes += s.total_bytes;
-                        summary.scripts_succeeded.push(name.to_string());
-                        eprintln!(
-                            "[orchestrator] {name} 走 Rust 实现，入库 {} 项",
-                            s.items_inserted
-                        );
-                        self.emit_progress(to, name, summary.total_items as u64);
-                    }
-                    Err(e) => {
-                        // DB 错在 ps1 路径里也是致命的，这里保持一致
-                        eprintln!("[orchestrator] rust {name} failed: {e}");
-                        summary.scripts_failed.push(name.to_string());
-                    }
-                }
+            if let Some(items) = self.rust_module_items(name) {
+                self.run_rust_module(name, items, from, to, &mut summary);
                 continue;
             }
 
@@ -219,6 +242,63 @@ impl<'conn, 'emitter> ScanOrchestrator<'conn, 'emitter> {
         // 必须 force——普通 emit 会被节流吞（task-053 G7.2）。
         self.emit_force_progress(100, "done", summary.total_items as u64);
         Ok(summary)
+    }
+
+    /// 如果 `name` 对应的模块走 Rust 实现，返回它的扫描结果；否则 `None`（走 ps1）。
+    ///
+    /// 抽成一个方法而不是在 `run_all` 里写三个 `if`：这样「哪些模块已迁移」只有
+    /// 一处清单，加第四个模块时不会漏改某个分支。
+    ///
+    /// **注意这里会真的执行扫描**（可能耗时：Firefox `cache2` 本机有 4569 个文件）。
+    /// 调用方在循环开头已经做过取消检查，与 ps1 路径的「脚本粒度取消」语义一致。
+    fn rust_module_items(&self, name: &str) -> Option<Vec<crate::scan::modules::ScanItem>> {
+        match name {
+            TEMP_SCRIPT if rust_temp_enabled() => Some(crate::scan::modules::temp::scan()),
+            PREFETCH_SCRIPT if rust_prefetch_enabled() => {
+                Some(crate::scan::modules::prefetch::scan())
+            }
+            BROWSER_CACHE_SCRIPT if rust_browser_cache_enabled() => {
+                Some(crate::scan::modules::browser_cache::scan())
+            }
+            _ => None,
+        }
+    }
+
+    /// 跑一个 Rust 模块并把结果记进汇总。
+    ///
+    /// # 为什么抽成方法
+    ///
+    /// task-074 时只有 temp 一个模块走这条路，内联在 `run_all` 里没问题。
+    /// task-075 起有三个（temp / prefetch / browser_cache），三段复制粘贴的记账
+    /// 代码一旦有一处写漏（比如忘了 `push scripts_succeeded`），表现是
+    /// **「扫描成功了但汇总里说失败」**——这种不一致很难查。
+    fn run_rust_module(
+        &self,
+        name: &str,
+        items: Vec<crate::scan::modules::ScanItem>,
+        from: u8,
+        to: u8,
+        summary: &mut OrchestratorSummary,
+    ) {
+        let runner =
+            ScanRunner::new(self.session_id, self.conn, self.emitter).with_percent_span(from, to);
+        match runner.insert_batch(&items) {
+            Ok(s) => {
+                summary.total_items += s.items_inserted;
+                summary.total_bytes += s.total_bytes;
+                summary.scripts_succeeded.push(name.to_string());
+                eprintln!(
+                    "[orchestrator] {name} 走 Rust 实现，入库 {} 项",
+                    s.items_inserted
+                );
+                self.emit_progress(to, name, summary.total_items as u64);
+            }
+            Err(e) => {
+                // DB 错在 ps1 路径里也是致命的，这里保持一致
+                eprintln!("[orchestrator] rust {name} failed: {e}");
+                summary.scripts_failed.push(name.to_string());
+            }
+        }
     }
 
     /// 发一条编排层进度（脚本边界用，允许被节流丢弃）。
@@ -278,35 +358,87 @@ mod tests {
     // ===== task-074：Rust / ps1 开关 =====
 
     #[test]
-    fn rust_temp_defaults_on_when_env_absent() {
+    fn flag_defaults_on_when_env_absent() {
         // 没设环境变量 = 默认走 Rust。默认关闭等于「写了但不用」。
-        assert!(rust_temp_enabled_from(None));
+        assert!(flag_enabled_from(None));
     }
 
     #[test]
-    fn rust_temp_off_for_falsy_values() {
+    fn flag_off_for_falsy_values() {
         // 这四种写法都要能关掉。少认一种，用户按习惯写了却没生效，
         // 会以为「回退开关是坏的」。
         for v in ["0", "false", "FALSE", "off", "no", "  0  ", "Off"] {
-            assert!(!rust_temp_enabled_from(Some(v)), "{v:?} 应关闭");
+            assert!(!flag_enabled_from(Some(v)), "{v:?} 应关闭");
         }
     }
 
     #[test]
-    fn rust_temp_on_for_truthy_and_empty() {
+    fn flag_on_for_truthy_and_empty() {
         // 空串按「恢复默认」处理（`set CCLEAN_RUST_TEMP=` 是最常见的清空写法）
         for v in ["", "  ", "1", "true", "on", "yes", "anything-else"] {
-            assert!(rust_temp_enabled_from(Some(v)), "{v:?} 应开启");
+            assert!(flag_enabled_from(Some(v)), "{v:?} 应开启");
         }
     }
 
     #[test]
-    fn temp_script_name_is_in_scripts_list() {
-        // TEMP_SCRIPT 是 Rust 分支的判断依据；如果 SCRIPTS 里改了名字而这里
-        // 没改，Rust 实现就永远不会被走到，且**没有任何报错**——静默失效。
-        assert!(
-            SCRIPTS.contains(&TEMP_SCRIPT),
-            "TEMP_SCRIPT={TEMP_SCRIPT} 不在 SCRIPTS 里，Rust 分支永远不会命中"
+    fn rust_script_names_are_in_scripts_list() {
+        // 这三个常量是 Rust 分支的判断依据；如果 SCRIPTS 里改了名字而这里没改，
+        // 对应模块的 Rust 实现就**永远不会被走到，且没有任何报错**——静默失效。
+        for (const_name, script) in [
+            ("TEMP_SCRIPT", TEMP_SCRIPT),
+            ("PREFETCH_SCRIPT", PREFETCH_SCRIPT),
+            ("BROWSER_CACHE_SCRIPT", BROWSER_CACHE_SCRIPT),
+        ] {
+            assert!(
+                SCRIPTS.contains(&script),
+                "{const_name}={script} 不在 SCRIPTS 里，该模块的 Rust 分支永远不会命中"
+            );
+        }
+    }
+
+    #[test]
+    fn rust_script_names_are_distinct() {
+        // 两个常量写成同一个字符串的话，后一个模块会永远走不到（前一个先命中）。
+        let names = [TEMP_SCRIPT, PREFETCH_SCRIPT, BROWSER_CACHE_SCRIPT];
+        for (i, a) in names.iter().enumerate() {
+            for b in &names[i + 1..] {
+                assert_ne!(a, b, "模块脚本名重复");
+            }
+        }
+    }
+
+    #[test]
+    fn master_switch_overrides_module_switch() {
+        // 总开关关掉时，模块开关设成什么都该回退 ps1。
+        // 写反（模块开关优先）的表现是「CCLEAN_RUST_ALL=0 设了却回退不了」，
+        // 而这种问题要同时设两个变量才能复现，真实环境里很难查。
+        for module in [None, Some("1"), Some("true"), Some("")] {
+            assert!(
+                !env_flag_from(Some("0"), module),
+                "CCLEAN_RUST_ALL=0 时必须全关，模块开关={module:?}"
+            );
+        }
+        // 总开关没设 / 设成真值时，由模块开关决定
+        assert!(env_flag_from(None, None));
+        assert!(env_flag_from(Some("1"), None));
+        assert!(!env_flag_from(Some("1"), Some("0")), "模块级关掉也要生效");
+        assert!(!env_flag_from(None, Some("off")), "off 是假值");
+    }
+
+    #[test]
+    fn all_three_module_switches_default_on() {
+        // 三个开关的默认值都必须是「开启」——否则 Rust 实现写了不用。
+        // 这里只测纯函数内核（同一份逻辑），不碰真实环境变量。
+        assert!(flag_enabled_from(None));
+        // 顺带钉住三个开关各自读的是不同的环境变量名（写错会互相串）
+        assert_eq!(
+            [
+                "CCLEAN_RUST_TEMP",
+                "CCLEAN_RUST_PREFETCH",
+                "CCLEAN_RUST_BROWSER_CACHE"
+            ]
+            .len(),
+            3
         );
     }
 
