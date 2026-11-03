@@ -23,7 +23,10 @@ fn setup() -> (tempfile::TempDir, rusqlite::Connection, i64) {
     //   - 其他用例的槽位边界断言也会因为多出一个成功的「脚本」而偏移。
     //
     // 每个集成测试文件是独立进程，`set_var` 不会污染其他文件。
-    std::env::set_var("CCLEAN_RUST_TEMP", "0");
+    // 用**总开关**而不是逐个模块设：task-075 加了 prefetch / browser_cache 后，
+    // 只设 CCLEAN_RUST_TEMP 已经不够（那两个模块仍走 Rust，造的假脚本不会
+    // 被用到，4 个用例全红）。总开关一次搞定，以后迁新模块也不用再改这里。
+    std::env::set_var("CCLEAN_RUST_ALL", "0");
     let dir = tempfile::tempdir().unwrap();
     let conn = open(dir.path()).unwrap();
     conn.execute(

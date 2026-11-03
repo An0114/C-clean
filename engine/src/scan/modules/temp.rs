@@ -39,7 +39,7 @@
 
 use std::path::{Path, PathBuf};
 
-use super::{is_reparse_point, ScanItem};
+use super::ScanItem;
 
 /// 模块代码。对应 `cleanup_item.module_code`，与 ps1 的 `$moduleCode` 一致。
 pub const MODULE_CODE: &str = "temp";
@@ -94,66 +94,15 @@ pub fn scan_roots() -> Vec<(PathBuf, &'static str, i64)> {
 
 /// 递归扫描一个目录，产出该目录下全部普通文件。
 ///
-/// # 为什么用显式栈而不是递归
+/// # task-075：实现已下沉到 [`super::scan_dir`]
 ///
-/// 临时目录里可能出现很深的嵌套（安装包解压残留），递归会爆栈。栈元素只是
-/// 一个 `PathBuf`，深度不受调用栈限制。
+/// 这份遍历原本写在这里（task-074）。task-075 加 prefetch / browser_cache 时
+/// 三份几乎一样的递归代码就要开始漂移——所以把「怎么遍历」提到
+/// [`super::scan_dir`]，本函数只固定 `module_code = "temp"`。
 ///
-/// # 错误处理
-///
-/// - `read_dir` 失败（权限不足）：打日志跳过该目录，**不中断整次扫描**。
-///   `C:\Windows\Temp` 下有些子目录属 SYSTEM，普通用户读不了，这是常态；
-/// - `symlink_metadata` 失败（文件刚好被删）：跳过该条目；
-/// - 单个条目出错绝不影响其他条目。
+/// 保留这个薄包装是为了让既有调用点（`scan()` 和 7 条单测）不用改签名。
 pub fn scan_dir(root: &Path, category: &str, risk_level: i64) -> Vec<ScanItem> {
-    let mut out = Vec::new();
-    if !root.is_dir() {
-        // 目录不存在是正常情况（比如用户改过 TEMP），不是错误。
-        return out;
-    }
-
-    let mut stack: Vec<PathBuf> = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        let entries = match std::fs::read_dir(&dir) {
-            Ok(e) => e,
-            Err(e) => {
-                eprintln!("[temp] 跳过不可读目录 {}: {e}", dir.display());
-                continue;
-            }
-        };
-
-        // 收集本层条目并排序：让输出确定（见模块注释「为什么输出要排序」）。
-        let mut children: Vec<PathBuf> = Vec::new();
-        for entry in entries.flatten() {
-            children.push(entry.path());
-        }
-        children.sort();
-
-        for child in children {
-            // symlink_metadata：**不跟随**链接。用 metadata() 会把链接解析成
-            // 目标，判断不出它本身是 reparse point。
-            let Ok(md) = std::fs::symlink_metadata(&child) else {
-                continue;
-            };
-            if is_reparse_point(&md) {
-                continue;
-            }
-            if md.is_dir() {
-                stack.push(child);
-            } else if md.is_file() {
-                out.push(ScanItem::new(
-                    MODULE_CODE,
-                    category,
-                    child.to_string_lossy().to_string(),
-                    md.len() as i64,
-                    risk_level,
-                ));
-            }
-            // 其余类型（设备、管道等）忽略：它们没有「大小」可言，
-            // 删了也不是「清理磁盘」。
-        }
-    }
-    out
+    super::scan_dir(root, MODULE_CODE, category, risk_level)
 }
 
 #[cfg(test)]
