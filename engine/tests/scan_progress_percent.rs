@@ -15,6 +15,15 @@ use engine::scan::ScanOrchestrator;
 
 /// 造临时库 + 一条 scan_session，返回 (tmpdir, conn, session_id)。
 fn setup() -> (tempfile::TempDir, rusqlite::Connection, i64) {
+    // task-074：本文件测的是 **ps1 脚本的进度百分比换算**（造假脚本 → 解析
+    // NDJSON → 按脚本序号切槽位）。temp 模块从 task-074 起默认走 Rust 实现
+    // （不读脚本、不产生 ps1 的 done 事件），不关掉的话：
+    //   - `all_failed_does_not_emit_100` 会因为 temp 走 Rust 成功而失效
+    //     （它期望 5 个全失败，实际 4 失败 1 成功 → 会 emit 100）；
+    //   - 其他用例的槽位边界断言也会因为多出一个成功的「脚本」而偏移。
+    //
+    // 每个集成测试文件是独立进程，`set_var` 不会污染其他文件。
+    std::env::set_var("CCLEAN_RUST_TEMP", "0");
     let dir = tempfile::tempdir().unwrap();
     let conn = open(dir.path()).unwrap();
     conn.execute(

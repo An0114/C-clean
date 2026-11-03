@@ -9,7 +9,23 @@ use engine::ipc::progress::NoopEmitter;
 use engine::scan::{OrchestratorError, ScanOrchestrator};
 
 /// 造临时库 + 一条 scan_session，返回 (tmpdir, conn, session_id)。
+///
+/// # task-074：本文件必须显式关掉 Rust 实现
+///
+/// 这个文件测的是 **ps1 编排路径**：造假的 `.ps1` → spawn powershell →
+/// 解析 NDJSON → 入库。temp 模块从 task-074 起默认走 Rust 实现（**根本不读
+/// 脚本**），不关掉的话这里造的 `scan_temp.ps1` 永远不会被用到，
+/// 四个用例的断言全部失效（实测：`total_items` 从 3 变成 63，因为 Rust 扫了
+/// 真实的 `%TEMP%`）。
+///
+/// 设 `CCLEAN_RUST_TEMP=0` 还有额外好处：**这四个用例顺带成了「回退开关真的
+/// 有效」的回归测试**——如果哪天开关写坏了，它们会立刻红。
+///
+/// 为什么 `set_var` 在这里是安全的：cargo 的集成测试**每个 `.rs` 文件编译成
+/// 独立进程**，所以这里的设置不会污染其他测试文件；本文件内四个用例设的是
+/// 同一个值，并行执行也无害。
 fn setup() -> (tempfile::TempDir, rusqlite::Connection, i64) {
+    std::env::set_var("CCLEAN_RUST_TEMP", "0");
     let dir = tempfile::tempdir().unwrap();
     let conn = open(dir.path()).unwrap();
     conn.execute(

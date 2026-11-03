@@ -3,9 +3,19 @@
 > **特别声明**：本文件是项目唯一真实数据源，也是「每次任务结束必更新、必单独提交」的文件。后续所有 Agent 必须遵守：任何任务完成后都要先更新本文件，再单独提交一次（commit message 形如 `docs(state): ... (#task-00X)`），不得与业务代码混在同一个 commit。
 
 ## 当前目标
-**P1 体验项全部收官（2026-11-02）**：趋势图折线增强（7/30/90 天切换 + 悬停提示）、系统级定时扫描（Windows 任务计划 + `--auto-scan` 静默模式）已完成，开机自启在 task-062 已完整实现、本次补齐状态说明。**下一阶段 = 架构债**（5 个 `.ps1` 扫描脚本 → Rust 重写，是整条链路里最脆的一环）或 P2 项（多盘扫描 / 自定义规则 / 便携版 CLI）。历史决策不变：代码签名不做、品牌图标不做、G6 不修；跨盘恢复 fallback / RmShutdown 连带兄弟进程 / RmShutdown 30s 无进度三项维持现状。
+**R5 架构债起步（2026-11-03）**：`scan_temp.ps1` 已重写为 Rust（`scan/modules/temp.rs`），orchestrator 走「Rust 优先 / `CCLEAN_RUST_TEMP=0` 回退 ps1」，两套实现有真实对比测试。**下一步 = 按同一模板迁移其余 4 个脚本**（task-075+：`scan_windows_update` / `scan_prefetch` / `scan_browser_cache` / `scan_dev_cache`），全部迁完后删掉 `scripts/` 依赖。历史决策不变：代码签名不做、品牌图标不做、G6 不修；跨盘恢复 fallback / RmShutdown 连带兄弟进程 / RmShutdown 30s 无进度三项维持现状。
 
 ## 最近一次变更
+2026-11-03：**task-074 开发完成（R5 架构债起步，scan_temp → Rust），状态 `testing`**（`feature/task-074-r5-temp-rust-rewrite`）：
+  - **① `scan/modules/`（新建）**：`mod.rs` 定义统一 `ScanItem` + `is_reparse_point()`，`temp.rs` 是 `scan_temp.ps1` 的等价实现（`%TEMP%`→`user_temp`/L1、`%SystemRoot%\Temp`→`windows_temp`/L2、递归只收文件、跳过 reparse point、权限不足跳过不中断、显式栈不用递归、每个目录内排序让输出确定）。
+  - **② Orchestrator 接线**：`run_all` 里 temp 走 Rust（默认），`CCLEAN_RUST_TEMP=0` 回退 ps1。**Rust 分支必须放在「脚本是否存在」检查之前**——放在后面的话将来删掉 `scan_temp.ps1` 时这个模块会被判 `missing script` 失败，而它其实跑得好好的。**入库逻辑复用 `ScanRunner::insert_item`**（新增 `insert_batch`），两条路径写进 `cleanup_item` 的行完全一致（risk 整数→`'L1'`/`'L2'` 映射、`description` 空串、`session_id`、同一套进度插值）——这是「不能重写时又造一个新的漂移点」的底线。开关用**环境变量不用 prefs**：它是排障用的临时开关，写进 prefs 要加 UI/迁移/文档，用户也不需要知道。
+  - **③ 测试 +15**：`temp_scan_test.rs` 8 条（入库等价 3 / **Rust vs ps1 真实对比 2** / 边界 2 / 真机冒烟 1）、`temp.rs` 内联 7 条、`orchestrator.rs` 内联 +4 条。对比测试**不 mock**——用 `Command::env` 把 `TEMP` 注入子进程，跑真实 `scripts/scan_temp.ps1` 解析 NDJSON，与 Rust 产出逐条比对路径/大小/风险（已确认真的执行，单条耗时 1.03s，无跳过日志）。
+  - **真机数据**：`--ignored --nocapture real_scan` 扫本机 → 2 个目标目录都在、**46 项 / 7.4 MB**（user_temp 35 项、windows_temp 11 项）、权限不足的 `C:\WINDOWS\Temp//vmware-SYSTEM` 被正确跳过且不中断、风险分级全对。**耗时 0.05s**（ps1 扫 4 个文件要 1.03s，差值基本是外部解释器启动开销）——重写的收益不只是去掉脚本依赖，日常扫描延迟从「一秒起」降到「立刻」。
+  - **刻意没做任务书要求的「按文件大小 / 修改时间筛选」**：现有 ps1 **没有任何筛选**。加筛选会让两种模式扫出的条目数不同（用户切换开关看到「清理项变少了」却不知道是阈值在起作用），而且阈值没有依据（多小算小、多旧算旧）。本任务是等价重写，不是改行为。
+  - **一处刻意修正**：ps1 把系统临时目录写死成 `C:\Windows\Temp`，系统装在 D 盘或改过 `SystemRoot` 的机器上会扫错地方。Rust 读环境变量。
+  - **门禁**：check/fmt/clippy 0、`cargo test --workspace` **509 passed**（+18）、`pnpm build` 243.01 kB（无前端改动，回归保护）、`tauri build` 见下。
+  - **未做**：真机/安装态冒烟（任务书标「必做、不可裁剪」，但按项目流程开发轮不做——本机 WebView2 起不来）；CI（开发轮不跑）。
+
 2026-11-02：**task-073 开发完成（P1 体验项收官），状态 `testing`**（`feature/task-073-p1-finish-linechart-autoscan`）：
   - **① 趋势图折线增强**（`Dashboard.tsx`）：柱状 → 平滑折线 + 近 7/30/90 天切换 + Y 轴自适应 + 悬停 tooltip。**顺手修掉了 task-061 注释里担心的那个问题**——原注释说「折线会把没数据的那天画成斜线，误导」，成因不是折线而是「只画有记录的日子」（`GROUP BY day` 不返回空日）；新增 `fillDays()` 按真实日历铺满、缺失补 0，再配合「>0 画实心圆点、=0 不画」，比柱状图信息量更高且不误导。曲线用**二次贝塞尔穿中点法**（Catmull-Rom 会过冲，画出比峰值还高的点）；`localDayKey` 手写本地日期（`toISOString` 是 UTC，东八区凌晨会差一天）；切范围用 `alive` 标志丢弃过期响应；全 0 时不画 path（贴基线的实线会被误读成有数据）。
   - **② 开机自启**：核实 task-062 已完整实现（`tauri-plugin-autostart` + 两条命令 + 设置页开关 + 3 条用例），**未重写**；本次只补两处真实缺口——界面上写明状态取自 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`（用户可去任务管理器核对）、补一条「回读状态优先于请求」用例（组策略禁用 Run 键写入时 UI 必须显示为关闭）。
@@ -31,7 +41,7 @@
   - **未做**：安装态版本号验证（非管理员 shell 下 msiexec 装不上，归测试轮）；CI（开发轮不跑）。
 
 2026-11-01：**task-070 开发完成（v0.2.0 真机验收 3 个 Bug 修复），状态 `testing`**（`feature/task-070-v0.2.1-bugfixes`）：
-  - **Bug-1（P0，WinSxS 退出码 3）根因：提权命令名从来没进 argv**。`run_elevated` 只把 `(key,value)` 参数对拼进命令行，**忘了把 `cmd` 带上**，提权 exe 收到的 `argv[1]` 是 `--result` → 白名单不认 → `EXIT_UNKNOWN_CMD(3)` 退出、连结果 JSON 都不写 → 前端只能显示「DISM 分析失败（退出码 3）：」（冒号后为空）。**证据**：`cclean-elevation.exe --result x.json` → exit 3；`... dism_analyze --result x.json` → exit 4 + `{"message":"DISM 退出码 740"}`；且 `C://Windows//Logs//DISM//dism.log` 里**没有**我们这次调用的任何痕迹（唯一会话是 cleanmgr）。**`create_restore_point` 同一条路也是坏的**，只是被 Bug-2（全是 L1、不需要还原点）掩盖了。修法：新增 `build_argv(cmd, args)`，两个调用点统一走它。
+  - **Bug-1（P0，WinSxS 退出码 3）根因：提权命令名从来没进 argv**。`run_elevated` 只把 `(key,value)` 参数对拼进命令行，**忘了把 `cmd` 带上**，提权 exe 收到的 `argv[1]` 是 `--result` → 白名单不认 → `EXIT_UNKNOWN_CMD(3)` 退出、连结果 JSON 都不写 → 前端只能显示「DISM 分析失败（退出码 3）：」（冒号后为空）。**证据**：`cclean-elevation.exe --result x.json` → exit 3；`... dism_analyze --result x.json` → exit 4 + `{"message":"DISM 退出码 740"}`；且 `C:\Windows\Logs\DISM\dism.log` 里**没有**我们这次调用的任何痕迹（唯一会话是 cleanmgr）。**`create_restore_point` 同一条路也是坏的**，只是被 Bug-2（全是 L1、不需要还原点）掩盖了。修法：新增 `build_argv(cmd, args)`，两个调用点统一走它。
   - **Bug-2（P1，扫描只出 L1）根因：5 个 `.ps1` 把风险等级写死成字面量 `1`**。顺带确认 `rules/cache_rules.json` 的 `modules` 段**在扫描链路上没有任何消费者**（只用于 `whitelist_deny` 与格式校验，`grade/` 模块从未实现），所以「补 L2 规则到规则库」对用户可见行为零影响，且改它要连带改 `rules_meta.json` 的 SHA-256（改错会让规则库整体加载失败）——**patch 版不引入这个风险，规则库未改**。修法：按分类给风险——缓存类全 L1；`windows_temp`（多属 SYSTEM、安装程序在用）与 `update_download`（更新安装中删会中断）标 L2。**实测** `scan_temp.ps1` → `risk=1: 61 条` + `risk=2: 29 条`。
   - **Bug-3（P1，永久删除失败 + 来源缺失）两个独立根因**：① `purge_item`/`purge_expired`/配额 evict 三处都用 `fs::remove_file`，而 task-067 起残留扫描把**整个目录** rename 进保险箱，对目录必然失败 → 只剩「内部错误」；② `SafeBoxDeleter::new(..., None)` 让 `source_task_id` 恒为 NULL → 来源列显示「历史（无来源）」。**用户真实数据取证**（只读查库）：`src=None` 的三条全是**目录**（HONOR ×2、Zero G Registry），`src=1` 的两条是**文件**（Prefetch Trace3/Trace5）——与用户描述完全吻合。修法：抽 `remove_entry()`（目录 `remove_dir_all`、文件 `remove_file`、`NotFound` 当成功，用 `symlink_metadata` 不跟随链接）；移入前建一条 `cleanup_task` 行当批次（`freed_bytes=0` 因为同盘 rename 不释放空间、`dry_run_snapshot` 标 `residual_scan`、`session_id=NULL`），id 传给 deleter 并在结束后回填计数。
   - **门禁**：check/fmt/clippy 0、`cargo test --workspace` **444 passed**（+13）、lint 0 error、vitest **148**（前端未改动）、build 230.32 kB、`tauri build` **NSIS 4.45 MiB + MSI 6.56 MiB**。
@@ -589,6 +599,7 @@
 - [x] 071：**v0.2.1 patch 发版准备**——**① 版本号 `0.2.0` → `0.2.1`**（四处 + `Cargo.lock`；`engine`/`elevation` 保持 0.1.0；**另同步 README / 用户手册的版本展示行**，任务书那句「不修改」指的是功能列表）；**② `CHANGELOG.md` v0.2.1 段落**（1183 字符 / 修复 3 条 + 已知问题 2 条；patch 不设新增变更；根因按实际写，并补明「还原点在 0.2.0 里也从未成功过」）（`feature/task-071-release-v0.2.1`；**开发轮完成，状态 `testing`**；门禁 check/clippy/fmt 0、`cargo test --workspace` **444 passed**、vitest 148、build 230.32 kB、`tauri build` **NSIS 4.46 MiB + MSI 6.56 MiB** 且二进制 `FileVersion=0.2.1`；按新流程开发轮不跑 CI、不做安装态冒烟，移交测试 Agent）
 - [x] 072：**P1-7 清理方案模板**——**① 后端**（`ipc/commands/plan.rs`：save/list/delete/apply/export/import + 6 handler；**存路径三元组不存 item id**，跨扫描可复用；回查取最新行、匹配不到的进 `unmatched`、`matchedCount` 与 `itemCount` 分开给）；**② IPC 接线**（6 条 Tauri command；导出到 `<data_root>/plans/exports/` 不弹另存为——没引 dialog 插件；文件名清洗）；**③ 方案页**（列表/保存/应用/导出/导入/删除；两个条目数都显示；全未匹配不切页；导出后显示完整路径）；**④ tab + 跨页**（App 当中间人，`useCallback` 固定回调；**白名单外改 `Items.tsx` 加 3 个可选 prop + 提示条**）（`feature/task-072-plan-templates`；**开发轮完成，状态 `testing`**；门禁 check/clippy/fmt 0、`cargo test --workspace` **468 passed**（+24）、vitest **166**（+18）、build 238.23 kB；**真机冒烟未做**，按流程归测试轮）
 - [x] 073：**P1 体验项收官——趋势图折线 + 开机自启 + 任务计划集成**——**① 趋势图折线**（柱状→平滑折线 + 7/30/90 天切换 + Y 轴自适应 + hover tooltip；**`fillDays` 按日历铺满补 0**，解决「折线把没数据那天画成斜线」的老问题；穿中点法防过冲；`localDayKey` 防 UTC 差一天）；**② 开机自启**（task-062 已完整实现，本次只补注册表位置说明 + 回读优先用例）；**③ 系统级定时**（`ipc/commands/auto_scan.rs`：schtasks 注册/删除/查询；**`--auto-scan` 静默模式**——不加的话每天 9 点弹一个 GUI 窗口；全靠退出码不解析本地化输出；时间只收 `HH:MM` 防注入；不需要管理员权限）；**④ 设置页**（子开关 + 主开关联动禁用 + 失败显示真实原因 + 任务名可见）（`feature/task-073-p1-finish-linechart-autoscan`；**开发轮完成，状态 `testing`**；门禁 check/clippy/fmt 0、`cargo test --workspace` **491 passed**（+23）、vitest **180**（+14）、build 243.01 kB；**真机冒烟未做**，按流程归测试轮；**schtasks 被本机沙箱拦截，真实链路未验证**）
+- [x] 074：**R5 架构债起步——scan_temp.ps1 → Rust 重写**——**① Rust 模块**（`scan/modules/{mod,temp}.rs`：统一 `ScanItem` + `is_reparse_point`（查 `FILE_ATTRIBUTE_REPARSE_POINT`，junction 的 `is_symlink()` 是 false）+ temp 等价实现；显式栈不用递归、每目录排序让输出确定）；**② Orchestrator 接线**（Rust 优先 / `CCLEAN_RUST_TEMP=0` 回退；**分支必须在「脚本是否存在」检查之前**；入库复用 `insert_batch` 保证两条路径的行完全一致；开关用环境变量不用 prefs）；**③ 测试 +15**（含 **Rust vs ps1 真实对比**：`Command::env` 注入 TEMP 跑真实脚本、逐条比对；+1 条 `#[ignore]` 真机冒烟）（`feature/task-074-r5-temp-rust-rewrite`；**开发轮完成，状态 `testing`**；门禁 check/clippy/fmt 0、`cargo test --workspace` **509 passed**、`pnpm build` 243.01 kB；真机数据：46 项/7.4 MB/0.05s；**真机 GUI 与安装态冒烟未做**，按流程归测试轮）
 > 注：040~047 的完成明细未回填本清单（历史遗漏），以「最近一次变更」段与 `tasks/040-*.md`~`tasks/047-*.md` 为准。
 > 编号顺延（2026-10-24）：原定 050 的「safe_box 增强」顺延为 **051**，050 让位给发版阻塞级的打包资源路径缺陷。
 
@@ -610,17 +621,19 @@
 - [B 中] **installer 未做代码签名（评估结论当前不做）**：未购 EV/OV 证书，SmartScreen 警告需手动「更多信息→仍要运行」。详见 `docs/research/code-signing-evaluation.md` 的三个触发条件。
 - [B 低] **品牌图标（决策不做）**：沿用 Tauri 默认占位，待后续有设计出 1024×1024 源 PNG 后再跑 `tauri icon`。
 ## 下一步计划
-1. **P1 体验项全部收官**。下一阶段两条路，建议按顺序：
-   - **（A）架构债：5 个 `.ps1` 扫描脚本 → Rust 重写**。这是整条链路里最脆的一环——外部进程跑脚本、靠 stdout 的 NDJSON 回传，编码（GBK/UTF-8）、执行策略、杀软拦截、脚本丢失都踩过。重写后能去掉「脚本目录」这整个依赖，也让「风险等级由脚本决定」这个历史包袱消失（顺带解决下面第 2 条的待决策项）。
-   - **（B）P2 项**：多盘扫描 / 自定义规则（用户自己加目录）/ 便携版 CLI。
-2. **两个待决策项**（都不阻塞）：
-   - **L0 要不要进清理列表**：现有 5 个可清理模块只出 L1/L2，L0 的语义（只读/仅提示）没有天然候选。要 L0 就得把某个模块降成「只能看不能清」，属产品决策。
-   - **风险等级单一真值源**：风险只由 5 个 `.ps1` 决定，`rules/cache_rules.json` 的 `modules` 段没有消费者，`grade/` 分级模块从未实现。**做 (A) 时一并收敛**最省事。
-3. **版本线**：task-072（方案模板）+ task-073（折线/计划任务）都是新功能，攒够一批发 `0.3.0` 更合适（不是 patch）。
-4. **遗留边界不变**：Top100 截断、残留「文件残留」误报无法归零、计划任务扫描非管理员下恒空、DISM 15 分钟上限、深色未覆盖 Items/SafeBox/History 三页、跨盘恢复不支持、未做代码签名。
+1. **R5 架构债持续：按 temp 的模板迁移其余 4 个脚本**（task-075+）。建议顺序（由简到繁）：
+   - `scan_windows_update.ps1`：目标 `C:\Windows\SoftwareDistribution\Download`，逻辑与 temp 几乎一样，直接照抄模板；
+   - `scan_prefetch.ps1`：`C:\Windows\Prefetch`，**普通用户可能读不了**，要确认「读不到」时是空结果还是报错；
+   - `scan_browser_cache.ps1`：路径随 Edge/Chrome 版本变，迁移时要把「多用户 profile」的枚举一并想清楚；
+   - `scan_dev_cache.ps1`：npm/pnpm/pip 各自的目录约定不同，最杂。
+2. **4 个全部迁完后**：删掉 `scripts/` 依赖（`paths::scripts_dir`、`bundle.resources` 里的 `scripts/` 映射、`ScanRunner::run_script` 都可能一起退场）。那才是 R5 真正的收尾。
+3. **顺带能收敛的老问题**：风险等级现在由脚本决定，`rules/cache_rules.json` 的 `modules` 段至今没有消费者、`grade/` 分级模块从未实现。全部迁到 Rust 后，分级可以直接放进 `ScanItem` 的构造处，规则库那份重复定义就能删掉。
+4. **两个待决策项**（都不阻塞）：L0 要不要进清理列表（现有模块只出 L1/L2，没有天然候选）；风险等级单一真值源（见第 3 条）。
+5. **版本线**：task-072/073/074 攒着，发 `0.3.0` 比 patch 合适。
+6. **遗留边界不变**：Top100 截断、残留「文件残留」误报无法归零、计划任务扫描非管理员恒空、DISM 15 分钟上限、深色未覆盖 Items/SafeBox/History 三页、跨盘恢复不支持、未做代码签名。
 
 ## 当前负责人 Agent
-**测试 Agent（提示词 9）**——`feature/task-073-p1-finish-linechart-autoscan` 开发轮已完成、状态 `testing`，待测试轮：独立重跑全部门禁 + 开 PR 触发 CI + **真机冒烟（任务书要求不可裁剪，开发轮做不了）**：① **仪表盘趋势图是折线不是柱状**，右上角有「近 7 天 / 近 30 天 / 近 90 天」三个按钮，点击后标题与数据都跟着变；② 悬停折线上任一点 → 出现「YYYY-MM-DD · X MB」提示；③ **窗口能正常显示**（这次把 `tauri.conf.json` 改成了 `visible: false` + setup 里显式 `show()`，必须确认启动后窗口正常出现、不闪、不是「程序起了但没窗口」）；④ 设置页「自动扫描」卡片下出现「系统级定时（应用未运行时也扫描）」，显示「未注册」；⑤ 开启它 → 状态变「已注册」→ 打开「任务计划程序」能看到 `C-Disk Cleaner Auto Scan`，触发器是每天 09:00，**操作里带 `--auto-scan`**；⑥ **手动 `schtasks /run /tn "C-Disk Cleaner Auto Scan"` → 不应出现任何窗口**，几秒后收到系统通知，任务计划程序里「上次运行结果」为 0；⑦ 关闭子开关 → 任务消失；⑧ 主开关（「定期在后台扫描」）关掉时子开关应变灰禁用；⑨ 深色主题下两处新 UI 跟随；⑩ CDP console 0 红错（G6 除外）。另：安装态（NSIS 干净目录）复跑 ①③⑤⑥。上一手：DevFullstackRustReact（task-073 开发）。再上一手：DocsKeeper（task-073 派发）。
+**测试 Agent（提示词 9）**——`feature/task-074-r5-temp-rust-rewrite` 开发轮已完成、状态 `testing`，待测试轮：独立重跑全部门禁 + 开 PR 触发 CI + **真机冒烟（任务书要求不可裁剪，开发轮做不了）**：① 点「开始扫描」→ 进度条正常走完，清理页能看到 `temp` 模块的条目（`user_temp` 是 **L1**、`windows_temp` 是 **L2**）；② **`CCLEAN_RUST_TEMP=0` 启动应用再扫一次 → 条目数量与 ① 基本一致**（这条是「回退开关真的有效」的验收，也是「Rust 实现与 ps1 等价」的真机证据；数量允许有个位数差异，因为两次扫描之间临时目录本身会变）；③ 扫描速度应该明显比之前快（ps1 每次要起一个外部解释器，实测 0.05s vs 1.03s）；④ `C:\Windows\Temp` 下如果有普通用户读不了的子目录，扫描应该照常完成而不是报错中断；⑤ 深色主题下清理页跟随（本任务无前端改动，回归即可）；⑥ CDP console 0 红错（G6 除外）。另：安装态（NSIS 干净目录）复跑 ①②④。**注意**：本任务**没有**改前端，所以「条目显示」出问题大概率在 `module_code`/`category`/`risk_level` 三个字段的取值上，先查这三项。上一手：DevFullstackRustReact（task-074 开发）。再上一手：DocsKeeper（task-074 派发）。
 
 ## Git 提交记录
 | Commit | 任务 | 说明 |
@@ -1090,6 +1103,11 @@
 | f292e32 | #task-073 | feat(auto_scan): 后台任务计划集成（schtasks 注册/删除/状态查询 + --auto-scan 静默模式） |
 | b6dee9a | #task-073 | feat(settings): 后台自动扫描开关接线（任务计划状态 + 深色适配） |
 | （本次） | #task-073 | docs(state): 任务073完成，P1 体验项收官（趋势图折线+开机自启+任务计划集成） |
+| f7d5bd9 | #task-074 | feat(scan): scan_temp.ps1 → Rust 重写（临时文件扫描模块） |
+| 7d1c267 | #task-074 | feat(orchestrator): temp 模块 Rust 优先 / ps1 回退接线 |
+| 1123de0 | #task-074 | test(scan): temp_scan 单测覆盖（Rust vs ps1 抽样对比） |
+| a55e027 | #task-074 | test(scan): 补 temp 模块真机冒烟用例（#[ignore]） |
+| （本次） | #task-074 | docs(state): 任务074完成，R5 架构债起步——scan_temp Rust 重写就绪 |
 
 ---
 变更轨迹：
@@ -1226,3 +1244,4 @@
 - 2026-11-02  task-071  v0.2.1 patch 发版准备：**版本号 `0.2.0` → `0.2.1`**（四处 + `Cargo.lock`；`engine`/`elevation` 保持 `0.1.0`；**另补两处版本展示行**——`README.md` 当前版本、`docs/USER_GUIDE.md` 适用版本，任务书「不修改 README/手册」指的是功能列表，版本行不改会让仓库自相矛盾）；**CHANGELOG v0.2.1 段落**（1183 字符 / 修复 3 条 + 已知问题 2 条；patch 语义不设新增变更；三条根因按实际写，并补明**「系统还原点自动创建」在 0.2.0 里也从未成功过**——同一条提权路径，只是没有 L2 项可清所以没暴露；已知问题明确「本版本未新增，v0.2.0 的 10 条仍有效」+ 两处本版本边界：L0 不出现、规则库与脚本各存一份判定）。门禁 check/fmt/clippy 0、cargo test **444 passed**、vitest **148**（13 files）、build 230.32 kB、**tauri build 出 `C-DiskCleaner_0.2.1_x64-setup.exe`（4.46 MiB）+ `.msi`（6.56 MiB）**，二进制 `FileVersion`/`ProductVersion` 实测 **0.2.1**。**安装态版本号验证未做**（非管理员 shell 装不上），归测试轮
 - 2026-11-02  task-072  P1-7 清理方案模板：**后端**（`ipc/commands/plan.rs` 新建，save/list/delete/apply/export/import + 6 handler；**存路径三元组不存 item id**——`cleanup_item.id` 每次扫描都是新的一批，用 id 存方案下次扫描整份失效；回查**取 id 最大那行**（同路径跨扫描会累积多行，全取会让 12 条方案勾出 30 个框）、匹配不到的进 `unmatched` 不静默丢弃、`matchedCount` 与 `itemCount` 分开返回；`save_plan` 收 `item_ids` 因为前端 `PendingItem` 没有 `category`）；**IPC**（6 条 command，导出到 `<data_root>/plans/exports/` 不弹另存为——没引 dialog 插件，文件名清洗）；**方案页**（列表/保存/应用/导出/导入/删除；「12 条（本次匹配 3 条）」两个数都显示；全未匹配不切页；导出后显示完整路径）；**tab + 跨页**（Tab 加 `plans` 放在「清理」与「大文件」之间；App 当中间人传 `itemsSelection`/`planApply`，三个回调 `useCallback` 固定引用；**白名单外改 `Items.tsx` 加 3 个可选 prop + 可关闭提示条**，不传时行为不变、既有 148 条前端测试零回归）。门禁 check/fmt/clippy 0、cargo test **468 passed**（+24）、vitest **166**（14 files，+18）、build 238.23 kB、**tauri build 出 NSIS 4.48 MiB + MSI 6.62 MiB**。**端到端写路径**：`end_to_end_save_then_apply_through_handlers` 走真实 SQLite + 真实信封层零 mock（勾选→保存→重扫换 id→应用→拿回当前 id 并逐条校验）。**真机/安装态冒烟未做**（本机 WebView2 起不来），归测试轮
 - 2026-11-02  task-073  P1 体验项收官：**趋势图折线**（柱状→平滑折线 + 7/30/90 天切换 + Y 轴自适应 + hover tooltip；**`fillDays` 按真实日历铺满、缺失补 0**——task-061 注释担心「折线把没数据那天画成斜线」，成因不是折线而是 `GROUP BY day` 不返回空日；>0 画实心圆点让「哪天真清过」一眼可见；曲线用**二次贝塞尔穿中点法**防过冲；`localDayKey` 手写本地日期防 UTC 差一天；`alive` 标志丢弃过期响应；全 0 不画 path）；**开机自启**（task-062 已完整实现，**未重写**，只补界面写明 `HKCU\...\Run` 位置 + 一条「回读优先于请求」用例）；**系统级定时**（`ipc/commands/auto_scan.rs` 新建：schtasks 注册/删除/查询；**任务书没考虑到 `schtasks /create /tr "<exe>"` 会每天 9 点弹一个完整 GUI 窗口**，所以同步做 `--auto-scan` 静默模式——窗口 `visible:false` + setup 显式 `show()`，静默模式不建托盘不起轮询，扫完发通知 `exit(0)`，退出前 sleep 2s 等通知投递；三条命令**全靠退出码、不解析本地化输出**；任务名固定、时间只收 `HH:MM` 防 `/ru SYSTEM` 注入、**不需要管理员权限**；`disable` 任务不存在视为成功；`handle_enable` 注册后回读；`handle_status` 失败走 Err 不谎报未注册）；**设置页**（子开关 + 主开关关闭时禁用 + 失败显示真实原因 + 任务名可见 + 时间固定 09:00）。门禁 check/fmt/clippy 0、cargo test **491 passed**（+23）、vitest **180**（14 files，+14）、build 243.01 kB、**tauri build 出 NSIS 4.49 MiB + MSI 6.64 MiB**。**真机/安装态冒烟未做**（本机 WebView2 起不来）；**`schtasks.exe` 被本机开发沙箱 Program Blacklist 拦截**，真实往返用例走「跳过」分支，12 条测试全绿但未真正验证 schtasks 执行
+- 2026-11-03  task-074  R5 架构债起步（scan_temp Rust 重写）：**新建 `scan/modules/`**（`mod.rs`：统一 `ScanItem` + `is_reparse_point`——**必须查 `FILE_ATTRIBUTE_REPARSE_POINT`，Windows junction 的 `is_symlink()` 返回 false**，不查会绕圈；`temp.rs`：`%TEMP%`→`user_temp`/L1、`%SystemRoot%\Temp`→`windows_temp`/L2、递归只收文件、权限不足跳过不中断、**显式栈不用递归**、每目录排序让输出确定）；**orchestrator 接线**（Rust 优先 / `CCLEAN_RUST_TEMP=0` 回退；**分支必须在「脚本是否存在」检查之前**，否则将来删脚本时该模块会被判 missing；**入库复用 `insert_batch`** 保证两条路径的行完全一致——risk 映射/description 空串/session 绑定/进度插值全共用，这是「重写时不能又造一个漂移点」的底线；开关用**环境变量不用 prefs**，它是排障开关不是用户偏好）；**测试 +15**（`temp_scan_test.rs` 8 条含 **Rust vs ps1 真实对比**——`Command::env` 注入 TEMP 跑真实脚本、逐条比对路径/大小/风险，不 mock；`temp.rs` 内联 7；`orchestrator.rs` 内联 +4）；**两处刻意不做**：① 不做任务书要求的「按大小/时间筛选」（ps1 本来就没筛，加了会让两种模式条目数不同且阈值无依据）；② 不硬编码 `C:\Windows\Temp`（改读 `SystemRoot`，系统装在 D 盘的机器才扫得对）。**真机数据**：46 项 / 7.4 MB / **0.05s**（ps1 扫 4 个文件要 1.03s，差值基本是外部解释器启动开销）；权限不足目录正确跳过。门禁 check/fmt/clippy 0、cargo test **509 passed**（+18）、`pnpm build` 243.01 kB、**tauri build 出 NSIS 4.50 MiB + MSI 6.65 MiB**。**真机 GUI/安装态冒烟未做**（本机 WebView2 起不来），归测试轮
