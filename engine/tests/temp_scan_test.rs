@@ -65,6 +65,22 @@ fn make_temp_tree() -> (tempfile::TempDir, Vec<&'static str>) {
     (dir, vec!["a.tmp", "b.tmp", "sub/c.log", "sub/deep/d.dat"])
 }
 
+/// 把路径规范化成长名小写形式再比对。
+///
+/// CI runner 用户名较长（如 `runneradmin`）会触发 8.3 短路径别名：
+/// `tempfile::tempdir()` 拿到的是 `C:\Users\RUNNER~1\...`，而 PowerShell
+/// `Get-ChildItem` 的 `FullName` 输出的是长名 `runneradmin`。两边指的是同一个文件，
+/// 仅字符串表示不同——用 `canonicalize` 解析到最终路径后再比，消除短/长名差异。
+fn norm_path(p: &str) -> String {
+    std::fs::canonicalize(p)
+        .map(|c| {
+            c.to_string_lossy()
+                .trim_start_matches(r"\\?\")
+                .to_lowercase()
+        })
+        .unwrap_or_else(|_| p.to_lowercase())
+}
+
 // ===================== ① 入库等价 =====================
 
 #[test]
@@ -218,10 +234,7 @@ fn run_ps1_scan(temp_dir: &Path) -> Option<Vec<(String, String, i64, i64)>> {
         }
         rows.push((
             category.to_string(),
-            v.get("path")
-                .and_then(|p| p.as_str())
-                .unwrap_or("")
-                .to_lowercase(),
+            norm_path(v.get("path").and_then(|p| p.as_str()).unwrap_or("")),
             v.get("size_bytes").and_then(|s| s.as_i64()).unwrap_or(-1),
             v.get("risk_level").and_then(|r| r.as_i64()).unwrap_or(-1),
         ));
@@ -245,7 +258,7 @@ fn rust_scan_matches_ps1_output_on_same_directory() {
             .map(|i| {
                 (
                     i.category.clone(),
-                    i.path.to_lowercase(),
+                    norm_path(&i.path),
                     i.size_bytes,
                     i.risk_level,
                 )
