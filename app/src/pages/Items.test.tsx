@@ -630,3 +630,72 @@ describe("风险徽标与全选 L1（task-064）", () => {
     expect(btn.disabled).toBe(true);
   });
 });
+
+// ===================== task-077：盘筛选 =====================
+
+describe("盘筛选（task-077）", () => {
+  const DRIVES = [
+    { letter: "C", totalBytes: 100, freeBytes: 40 },
+    { letter: "D", totalBytes: 200, freeBytes: 20 },
+  ];
+
+  it("枚举到固定盘时显示下拉框，选项含「全部」与各盘符", async () => {
+    mockInvoke({ drive_list: () => Promise.resolve(ok(DRIVES)) });
+    render(<Items />);
+
+    const sel = await screen.findByLabelText("按磁盘筛选");
+    expect(sel).toBeTruthy();
+    // 「全部」+ C: + D: 三个选项
+    expect(screen.getByText("全部")).toBeTruthy();
+    expect(screen.getByText("C:")).toBeTruthy();
+    expect(screen.getByText("D:")).toBeTruthy();
+  });
+
+  it("切换盘后以 drive 入参重拉第 1 页", async () => {
+    mockInvoke({ drive_list: () => Promise.resolve(ok(DRIVES)) });
+    render(<Items />);
+
+    const sel = await screen.findByLabelText("按磁盘筛选");
+    fireEvent.change(sel, { target: { value: "D" } });
+
+    await waitFor(() => {
+      const calls = mockedInvoke.mock.calls.filter(([cmd]) => cmd === "cleanup_list_pending");
+      // 首次挂载不带 drive（不筛选），切换后带 drive: "D"
+      expect(calls[0][1]).toEqual({ page: 1, pageSize: 100 });
+      expect(calls[calls.length - 1][1]).toEqual({ page: 1, pageSize: 100, drive: "D" });
+    });
+  });
+
+  it("切换盘时清空已勾选（否则「清理已选」会删掉看不见的项）", async () => {
+    mockInvoke({ drive_list: () => Promise.resolve(ok(DRIVES)) });
+    render(<Items />);
+
+    // 勾一条
+    const boxes = await screen.findAllByRole("checkbox");
+    fireEvent.click(boxes[0]);
+    await waitFor(() => expect(screen.getByText(/已选 1 项/)).toBeInTheDocument());
+
+    // 切盘 → 勾选清零
+    fireEvent.change(screen.getByLabelText("按磁盘筛选"), { target: { value: "D" } });
+    await waitFor(() => expect(screen.getByText(/已选 0 项/)).toBeInTheDocument());
+  });
+
+  it("枚举不到盘时不显示下拉框（不给空下拉框）", async () => {
+    mockInvoke({ drive_list: () => Promise.resolve(ok(null)) });
+    render(<Items />);
+
+    // 等列表渲染完
+    await waitFor(() => expect(screen.getByText(/第 1 \//)).toBeInTheDocument());
+    expect(screen.queryByLabelText("按磁盘筛选")).toBeNull();
+  });
+
+  it("枚举失败也不影响列表（降级为无筛选器）", async () => {
+    mockInvoke({ drive_list: () => Promise.reject("enum failed") });
+    render(<Items />);
+
+    await waitFor(() => expect(screen.getByText(/第 1 \//)).toBeInTheDocument());
+    expect(screen.queryByLabelText("按磁盘筛选")).toBeNull();
+    // 列表本身照常显示
+    expect(screen.getAllByRole("checkbox").length).toBeGreaterThan(0);
+  });
+});

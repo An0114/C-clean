@@ -359,8 +359,8 @@ export default function Dashboard({ scanSignal = 0 }: { scanSignal?: number }) {
         </div>
       )}
 
-      {/* task-063：C 盘空间环形图 */}
-      <DriveRing />
+      {/* task-063：C 盘空间环形图 → task-077：多盘并列 */}
+      <DriveRings />
 
       {/* task-065：WinSxS 组件存储（C 模块） */}
       <WinsxsCard />
@@ -371,29 +371,41 @@ export default function Dashboard({ scanSignal = 0 }: { scanSignal?: number }) {
   );
 }
 
-// ===================== task-063：C 盘空间环形图 =====================
+// ===================== task-063 环形图 / task-077 多盘并列 =====================
 //
 // 手写 SVG，不引图表库：只需要「一个圆环 + 中心百分比」，
 // 引 recharts / chart.js 会让产物从 198 kB 涨到 300 kB+。
 //
 // 圆环的画法：两个同心圆，底层是完整灰环，上层用 `strokeDasharray` 只画
 // `pct` 那一段，再 `rotate(-90)` 让起点在 12 点方向。
+//
+// # task-077：为什么改成「一次 drive_list 拿全部盘」
+//
+// 原来只画 C 盘，数据来自 `drive_usage`（查单个盘）。多盘时有两个选择：
+//   ① 先 `drive_list` 拿盘符，再对每个盘调一次 `drive_usage` —— N+1 次 IPC；
+//   ② 直接 `drive_list`，它本来就带 total/free —— 1 次 IPC。
+// 选 ②。`drive_usage` 保留不动（清理前后对比要用它再查一次单盘）。
+//
+// # 为什么 0 容量显示「容量未知」而不是画一个 0% 的空环
+//
+// `GetDiskFreeSpaceExW` 可能失败（卷在修、权限异常），此时后端仍返回这个盘但
+// 容量为 0。画成 0% 会被读成「这个盘是空的」，而真相是「查不到」。
 
-interface DriveUsage {
+interface DriveInfo {
+  letter: string;
   totalBytes: number;
-  usedBytes: number;
   freeBytes: number;
 }
 
-function DriveRing() {
-  const [usage, setUsage] = useState<DriveUsage | null>(null);
+function DriveRings() {
+  const [drives, setDrives] = useState<DriveInfo[]>([]);
   const [failed, setFailed] = useState(false);
 
   useEffect(() => {
     (async () => {
       try {
-        const u = await api<DriveUsage>("drive_usage", {});
-        setUsage(u);
+        const list = await api<DriveInfo[] | null>("drive_list", {});
+        setDrives(Array.isArray(list) ? list : []);
       } catch {
         // 查不到就整块不显示——比显示一个 0% 的假环好
         setFailed(true);
@@ -401,13 +413,29 @@ function DriveRing() {
     })();
   }, []);
 
-  if (failed || !usage) return null;
+  if (failed || drives.length === 0) return null;
 
-  const total = usage.totalBytes || 0;
-  const used = usage.usedBytes || 0;
-  // 用整数百分比显示；计算时保留一位小数避免 49.6% 被显示成 50% 后和环对不上
-  const pct = total > 0 ? Math.min(100, (used / total) * 100) : 0;
-  const R = 46;
+  return (
+    <div style={{ ...cardStyle, marginTop: 12 }}>
+      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>磁盘空间</div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 20 }}>
+        {drives.map((d) => (
+          <DriveRingItem key={d.letter} drive={d} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function DriveRingItem({ drive }: { drive: DriveInfo }) {
+  const total = drive.totalBytes || 0;
+  const free = drive.freeBytes || 0;
+  const used = Math.max(0, total - free);
+  const unknown = total <= 0;
+  // 用整数百分比显示；计算时保留小数避免 49.6% 被显示成 50% 后和环对不上
+  const pct = unknown ? 0 : Math.min(100, (used / total) * 100);
+
+  const R = 34;
   const CIRC = 2 * Math.PI * R;
   const dash = (pct / 100) * CIRC;
 
@@ -415,42 +443,56 @@ function DriveRing() {
   const color = pct >= 85 ? "#dc2626" : pct >= 70 ? "#d97706" : "#2563eb";
 
   return (
-    <div style={{ ...cardStyle, display: "flex", alignItems: "center", gap: 20, marginTop: 12 }}>
-      <svg width={120} height={120} viewBox="0 0 120 120" role="img" aria-label="C 盘空间使用率">
-        <circle cx={60} cy={60} r={R} fill="none" stroke="var(--border)" strokeWidth={12} />
-        <circle
-          cx={60}
-          cy={60}
-          r={R}
-          fill="none"
-          stroke={color}
-          strokeWidth={12}
-          strokeDasharray={`${dash} ${CIRC - dash}`}
-          strokeLinecap="round"
-          transform="rotate(-90 60 60)"
-        />
+    <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+      <svg
+        width={88}
+        height={88}
+        viewBox="0 0 88 88"
+        role="img"
+        aria-label={`${drive.letter} 盘空间使用率`}
+      >
+        <circle cx={44} cy={44} r={R} fill="none" stroke="var(--border)" strokeWidth={9} />
+        {!unknown && (
+          <circle
+            cx={44}
+            cy={44}
+            r={R}
+            fill="none"
+            stroke={color}
+            strokeWidth={9}
+            strokeDasharray={`${dash} ${CIRC - dash}`}
+            strokeLinecap="round"
+            transform="rotate(-90 44 44)"
+          />
+        )}
         <text
-          x={60}
-          y={58}
+          x={44}
+          y={42}
           textAnchor="middle"
-          fontSize={20}
+          fontSize={16}
           fontWeight={600}
           fill="var(--text)"
         >
-          {Math.round(pct)}%
+          {unknown ? "—" : `${Math.round(pct)}%`}
         </text>
-        <text x={60} y={76} textAnchor="middle" fontSize={11} fill="var(--text-muted)">
+        <text x={44} y={58} textAnchor="middle" fontSize={10} fill="var(--text-muted)">
           已用
         </text>
       </svg>
-      <div style={{ fontSize: 12, lineHeight: 1.9, color: "var(--text)" }}>
-        <div style={{ fontWeight: 600, marginBottom: 2 }}>C 盘空间</div>
-        <div style={{ color: "var(--text-muted)" }}>
-          已用 {formatBytes(used)} / 共 {formatBytes(total)}
-        </div>
-        <div style={{ color: "var(--text-muted)" }}>可用 {formatBytes(usage.freeBytes)}</div>
-        {pct >= 85 && (
-          <div style={{ color: "#b91c1c", marginTop: 2 }}>空间紧张，建议尽快清理</div>
+      <div style={{ fontSize: 12, lineHeight: 1.8, color: "var(--text)" }}>
+        <div style={{ fontWeight: 600, marginBottom: 2 }}>{drive.letter} 盘</div>
+        {unknown ? (
+          <div style={{ color: "var(--text-muted)" }}>容量未知（查询失败）</div>
+        ) : (
+          <>
+            <div style={{ color: "var(--text-muted)" }}>
+              已用 {formatBytes(used)} / 共 {formatBytes(total)}
+            </div>
+            <div style={{ color: "var(--text-muted)" }}>可用 {formatBytes(free)}</div>
+            {pct >= 85 && (
+              <div style={{ color: "#b91c1c", marginTop: 2 }}>空间紧张，建议尽快清理</div>
+            )}
+          </>
         )}
       </div>
     </div>
