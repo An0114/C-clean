@@ -24,6 +24,7 @@ pub mod browser_cache;
 pub mod dev_cache;
 pub mod prefetch;
 pub mod temp;
+pub mod windows_update;
 
 use std::path::{Path, PathBuf};
 
