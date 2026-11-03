@@ -6,6 +6,7 @@
 **R5 架构债收官完成（2026-11-03）**：5 个扫描模块**全部**迁到 Rust——`temp`（task-074）、`prefetch` + `browser_cache`（task-075）、`dev_cache` + `windows_update`（task-076）。默认路径不再 spawn 任何 PowerShell 进程，`.ps1` 仅在环境变量显式回退时使用（`CCLEAN_RUST_ALL=0` 全回退，或 `CCLEAN_RUST_<MODULE>=0` 单模块回退）。**下一阶段 = P2 项**（多盘扫描 / 自定义规则 / 便携版 CLI）或发版 `v0.4.0`；R5 真正收尾还剩「删掉 `scripts/` 依赖」一件（`paths::scripts_dir`、`bundle.resources` 的 scripts 映射、`ScanRunner::run_script`、两个 ps1 编排测试）——需先确认回退开关不再需要。历史决策不变：代码签名不做、品牌图标不做、G6 不修；跨盘恢复 fallback / RmShutdown 连带兄弟进程 / RmShutdown 30s 无进度三项维持现状。
 
 ## 最近一次变更
+2026-11-03：**用户拍板三项待决策**：① L0 进清理列表（后续需给 L0 找真实候选目录，前端灰标已就绪）；② Firefox 缓存保留（条目数 7→4576、653 倍可接受，不回退 task-075）；③ dev_cache 扩 Gradle/Maven（后续任务加 `~/.gradle/caches`、`~/.m2/repository`，需定删哪几个子目录 + 独立开关）。已在「下一步计划」第 5 条登记。
 2026-11-03：**task-076 开发完成（R5 架构债收官：dev_cache + windows_update → Rust），状态 `testing`**（`feature/task-076-r5-devcache-windowsupdate-rust`）：
   - **① `modules/dev_cache.rs`（新建）**：四个根——`%LOCALAPPDATA%\npm-cache`、`%APPDATA%\npm-cache`（npm 6 及更早的位置，老机器升级后两个并存）、`%LOCALAPPDATA%\pip\cache`、`%LOCALAPPDATA%\pnpm-store`；类别 `npm_cache` / `pip_cache` / `pnpm_store`，**全部 L1**（删了下次安装重新下载，不丢数据）。**任务书写的 Gradle / Maven / node_modules 一律不加**：ps1 的 `$roots` 只有这 4 条，加了会让本任务自己的验收标准第 14 条（Rust 与 ps1 输出抽样对比一致）直接不成立；且 `~/.gradle/caches`、`~/.m2/repository` 删错要重下几百 MB 依赖，`node_modules` 是项目依赖（删了项目当场跑不起来），属独立产品决策 + L3 红线。
   - **② `modules/windows_update.rs`（新建）**：`%SystemRoot%\SoftwareDistribution\Download`（ps1 硬编码 `C:\Windows\...`，系统装在 D 盘会扫错）、类别 `update_download`、**L2**（文件多属 SYSTEM；更新安装中删会中断安装，不是「删了自动重建」那么轻）。
@@ -645,10 +646,10 @@
 2. **下一阶段 P2 项**（按优先级）：多盘扫描（现在只扫系统盘 + 用户目录）/ 自定义清理规则（规则库 `rules/cache_rules.json` 至今没有消费者）/ 便携版 CLI（复用 engine 的扫描 + 执行，不引 Tauri）。
 3. **版本线**：task-072/073/074/075/076 攒着，发 **`v0.4.0`**（R5 是架构级变更，patch 承载不了）。发版前需在 CHANGELOG 写清「5 个模块改由 Rust 扫描，ps1 仅作回退」，以及 Firefox 缓存导致条目数暴涨这条用户可见变化。
 4. **顺带能收敛的老问题**：风险等级现在分散在各 `modules/*.rs` 的常量里，`rules/cache_rules.json` 的 `modules` 段至今没有消费者、`grade/` 分级模块从未实现。5 个模块迁完后可以把分级收进 `ScanItem` 的构造处，规则库那份重复定义就能删掉。
-5. **三个待决策项**（都不阻塞）：
-   - **L0 要不要进清理列表**：现有模块只出 L1/L2，L0 的语义（只读/仅提示）没有天然候选；
-   - **Firefox 缓存要不要保留**：task-075 新增后本机条目数从 7 涨到 4576（653 倍）。功能上是合理的（纯缓存 L1、能清 287 MB），但如果用户反馈「列表太长」，回退只需删掉 `firefox_cache_dirs` 的调用；
-   - **dev_cache 要不要扩 Gradle / Maven**：task-076 按「等价重写」原则没加。要加需先定「删哪几个子目录」+ 独立开关，否则删错要重下几百 MB 依赖。
+5. **三个待决策项已拍板（2026-11-03）**：
+   - **L0 进清理列表**：后续要给 L0 找真实候选（现有模块只出 L1/L2），前端灰标 L0 已就绪（`RISK_META` 四色 L0 灰）；
+   - **Firefox 缓存保留**：条目数从 7 涨到 4576（653 倍）可接受，不回退 task-075 的 `firefox_cache_dirs`；
+   - **dev_cache 扩 Gradle / Maven**：后续任务新增 `~/.gradle/caches`、`~/.m2/repository` 的扫描，需先定「删哪几个子目录」+ 独立开关（避免删错重下几百 MB 依赖）。
 6. **浏览器缓存的三处未覆盖**（task-075 刻意保持与 ps1 一致，可作后续增强）：Edge/Chrome 多 profile（`Profile 1/2/...`）、`Code Cache` / `GPUCache`、其他浏览器（360 / QQ 浏览器等）。
 7. **遗留边界不变**：Top100 截断、残留「文件残留」误报无法归零、计划任务扫描非管理员恒空、DISM 15 分钟上限、深色未覆盖 Items/SafeBox/History 三页、跨盘恢复不支持、未做代码签名。
 
