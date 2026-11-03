@@ -22,6 +22,22 @@ use engine::scan::modules::{browser_cache, prefetch};
 
 // ===================== 辅助 =====================
 
+/// 把路径规范化成长名小写再比对。
+///
+/// CI runner 用户名较长（如 `runneradmin`）会触发 8.3 短路径别名：
+/// `tempfile::tempdir()` 拿到 `C:\Users\RUNNER~1\...`，而 PowerShell `Get-ChildItem`
+/// 的 `FullName` 输出长名。两侧指同一文件仅字符串不同，用 `canonicalize` 解析到
+/// 最终路径后再比，消除短/长名差异。
+fn norm_path(p: &str) -> String {
+    std::fs::canonicalize(p)
+        .map(|c| {
+            c.to_string_lossy()
+                .trim_start_matches(r"\\?\")
+                .to_lowercase()
+        })
+        .unwrap_or_else(|_| p.to_lowercase())
+}
+
 /// 跑一个 ps1 脚本，返回它产出的 `(category, 小写路径, size, risk)` 集合。
 ///
 /// `envs` 通过**子进程环境变量**注入（`Command::env`），不影响本进程。
@@ -77,10 +93,7 @@ fn run_ps1(script_name: &str, envs: &[(&str, &Path)]) -> Option<Vec<(String, Str
                 .and_then(|c| c.as_str())
                 .unwrap_or("")
                 .to_string(),
-            v.get("path")
-                .and_then(|p| p.as_str())
-                .unwrap_or("")
-                .to_lowercase(),
+            norm_path(v.get("path").and_then(|p| p.as_str()).unwrap_or("")),
             v.get("size_bytes").and_then(|s| s.as_i64()).unwrap_or(-1),
             v.get("risk_level").and_then(|r| r.as_i64()).unwrap_or(-1),
         ));
@@ -95,7 +108,7 @@ fn as_rows(items: &[engine::scan::modules::ScanItem]) -> Vec<(String, String, i6
         .map(|i| {
             (
                 i.category.clone(),
-                i.path.to_lowercase(),
+                norm_path(&i.path),
                 i.size_bytes,
                 i.risk_level,
             )
