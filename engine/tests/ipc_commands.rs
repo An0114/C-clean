@@ -24,6 +24,7 @@ fn scan_start_full_returns_incrementing_session_id() {
         ScanStartReq {
             scope: "full".into(),
             target_drive: None,
+            drives: None,
         },
         &mut counter,
     );
@@ -33,6 +34,7 @@ fn scan_start_full_returns_incrementing_session_id() {
         ScanStartReq {
             scope: "custom".into(),
             target_drive: Some("C:".into()),
+            drives: None,
         },
         &mut counter,
     );
@@ -46,6 +48,7 @@ fn scan_start_rejects_bad_scope() {
         ScanStartReq {
             scope: "fullx".into(),
             target_drive: None,
+            drives: None,
         },
         &mut counter,
     );
@@ -60,28 +63,54 @@ fn scan_start_rejects_bad_drive() {
         ScanStartReq {
             scope: "full".into(),
             target_drive: Some("C:".into()),
+            drives: None,
         },
         &mut counter,
     );
     assert_eq!(ok.code, 0);
-    // "C" 非法
-    let bad1 = handle_scan_start(
+    // task-077：**"C" 现在合法**（此前 task-004 的校验要求必须带冒号）。
+    // 放宽的原因：`drives` 入参按 API 文档就是 `["C"]` 形态（无冒号），而前端下拉框
+    // 给的是 `"C:"`——两种都会真的传进来，只认一种就是等着踩。归一化在
+    // `scan_start::parse_drive` 里做，四种写法（C / c / C: / c:）都认。
+    let bare = handle_scan_start(
         ScanStartReq {
             scope: "full".into(),
             target_drive: Some("C".into()),
+            drives: None,
         },
         &mut counter,
     );
-    assert_eq!(bad1.code, 5001);
+    assert_eq!(bare.code, 0, "task-077 起 \"C\" 是合法盘符写法");
     // "C:\"" 非法（多了反斜杠）
     let bad2 = handle_scan_start(
         ScanStartReq {
             scope: "full".into(),
             target_drive: Some("C:\\".into()),
+            drives: None,
         },
         &mut counter,
     );
     assert_eq!(bad2.code, 5001);
+    // 多盘入参里任何一项非法 → 整体失败（不跳过坏项）
+    let bad3 = handle_scan_start(
+        ScanStartReq {
+            scope: "full".into(),
+            target_drive: None,
+            drives: Some(vec!["C".into(), "1".into()]),
+        },
+        &mut counter,
+    );
+    assert_eq!(bad3.code, 5001);
+    // 空数组非法（「一个盘都不扫」与「不指定」必须区分开）
+    let bad4 = handle_scan_start(
+        ScanStartReq {
+            scope: "full".into(),
+            target_drive: None,
+            drives: Some(vec![]),
+        },
+        &mut counter,
+    );
+    assert_eq!(bad4.code, 5001);
 }
 
 #[test]

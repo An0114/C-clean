@@ -148,6 +148,22 @@ pub fn rust_windows_update_enabled() -> bool {
     env_flag(ENV_WINDOWS_UPDATE)
 }
 
+/// 一个盘的扫描统计（task-077）。
+///
+/// **数据来源是 DB 而不是内存累加**：`run_all` 结束时按 `session_id` 查一次
+/// `cleanup_item`，这样 Rust 路径和 ps1 回退路径都能覆盖到——内存累加只能覆盖
+/// Rust 路径（ps1 的条目由 `ScanRunner` 直接入库，编排层看不到）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DriveStat {
+    /// 盘符字母，大写。
+    pub drive: char,
+    /// 该盘条目数。
+    pub items: i64,
+    /// 该盘合计字节。
+    pub bytes: i64,
+}
+
 /// 5 个脚本跑完的汇总。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct OrchestratorSummary {
@@ -159,8 +175,15 @@ pub struct OrchestratorSummary {
     pub scripts_succeeded: Vec<String>,
     /// 失败的脚本文件名（含文件不存在 / run_script 报错）。
     pub scripts_failed: Vec<String>,
+    /// task-077：因「根目录不在本次选中的盘上」而跳过的模块。
+    ///
+    /// **跳过不是失败**：用户只选了 D 盘，而 5 个模块的根目录都在 C 盘时，
+    /// 一个模块都不该跑——这时的正确结果就是「0 项」，不是 `AllScriptsFailed`。
+    pub scripts_skipped: Vec<String>,
     /// task-063：是否被用户取消（true 时 `scripts_*` 只反映取消前跑完的部分）。
     pub cancelled: bool,
+    /// task-077：按盘汇总（含被选中但 0 项的盘，前端要显示「D: 0 项」）。
+    pub per_drive: Vec<DriveStat>,
 }
 
 /// orchestrator 级错误：5 个脚本全部失败。
@@ -184,6 +207,12 @@ pub struct ScanOrchestrator<'conn, 'emitter> {
     /// 部分结果还得回滚。脚本粒度取消已经能让用户「立刻看到停止」，
     /// 代价是当前脚本会跑完（通常几秒）。
     cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// task-077：本次要扫的盘符（大写）。`None` = 全部固定盘。
+    ///
+    /// **它是「用户意图」不是「实际扫到的盘」**：选中的盘如果没有任何扫描目标
+    /// （本机上 5 个模块的根目录全在 C:，选 D: 就是这种情况），结果是 0 项，
+    /// 前端会如实显示「D: 0 项」。不为了「看起来有东西」去扫不存在的路径。
+    drives: Option<Vec<char>>,
 }
 
 impl<'conn, 'emitter> ScanOrchestrator<'conn, 'emitter> {
@@ -198,7 +227,17 @@ impl<'conn, 'emitter> ScanOrchestrator<'conn, 'emitter> {
             conn,
             emitter,
             cancel: None,
+            drives: None,
         }
+    }
+
+    /// task-077：限定本次扫描的盘（不调用 = 全部固定盘）。
+    ///
+    /// 盘符统一转大写：`'c'` 和 `'C'` 是同一个盘，前端从不同地方传进来可能大小写
+    /// 不一致，在入口处归一化比在每个比较点都写 `eq_ignore_ascii_case` 可靠。
+    pub fn with_drives(mut self, drives: Vec<char>) -> Self {
+        self.drives = Some(drives.into_iter().map(|c| c.to_ascii_uppercase()).collect());
+        self
     }
 
     /// task-063：挂上取消标志。不调用则行为与之前完全一致（不可取消）。
@@ -215,8 +254,8 @@ impl<'conn, 'emitter> ScanOrchestrator<'conn, 'emitter> {
     /// 按 [`SCRIPTS`] 的顺序跑 5 个模块（默认走 Rust，环境变量可回退 ps1）。
     ///
     /// - 单个模块失败不中断；
-    /// - 5 个全失败才返回 `Err(AllScriptsFailed)`；
-    /// - 至少 1 个成功即返回 `Ok(summary)`。
+    /// - 计划内的模块全失败才返回 `Err(AllScriptsFailed)`；
+    /// - 至少 1 个成功、或**全部因盘选择被跳过**，都返回 `Ok(summary)`。
     ///
     /// task-052 G1：按「模块序号 / 模块总数」把 0~100 切成 N 个槽位，每个模块只在
     /// 自己那一槽内推进（槽内插值见 [`crate::scan::runner::interpolate_percent`]），
@@ -227,11 +266,50 @@ impl<'conn, 'emitter> ScanOrchestrator<'conn, 'emitter> {
     /// 强制发送。原因：它紧跟最后一条 item 事件（同毫秒级），走普通 `emit` 会被
     /// `ThrottledEmitter` 的 100ms 丢弃式节流吞掉 → 进度条永远差一截（G7 现象）。
     /// 槽位边界事件间隔以秒计，不会被吞，仍走普通 `emit` 以保住节流上限。
+    ///
+    /// # task-077：多盘是「按盘过滤」而不是「按盘换路径」
+    ///
+    /// 5 个模块的根目录都是**用户 / 系统锚定**的：`%TEMP%`、`%SystemRoot%`、
+    /// `%LOCALAPPDATA%`、`%APPDATA%`。它们没有「每盘一份」的对应物——`D:\Windows\Temp`
+    /// 在绝大多数机器上根本不存在，`D:\Users\...\npm-cache` 同理。
+    ///
+    /// 所以「多盘扫描」在这里的正确语义是：
+    ///
+    /// 1. **模块级**：如果某个模块的根目录**全部**不在选中的盘上，整个模块跳过
+    ///    （连扫描都不做，省掉几千个文件的遍历）。这一条自动满足「Prefetch /
+    ///    Windows Update 只在系统盘跑」——它们的根目录是 `%SystemRoot%`，
+    ///    用户不选系统盘就自然跳过，**不需要硬编码 `C:`**（Windows 装在 D 盘的
+    ///    机器上照样正确）；
+    /// 2. **条目级**：模块照跑，但只保留路径落在选中盘上的条目（`%TEMP%` 在 D:、
+    ///    系统在 C: 的机器上，一个模块会跨两个盘）；
+    /// 3. **进度**：标签带盘符（`"C: scan_browser_cache.ps1"`），因为每个模块在
+    ///    实践中只锚定一个盘，「盘 × 模块」二维矩阵会退化成一条线——如实呈现，
+    ///    不编造 5×N 个格子；
+    /// 4. **汇总**：按盘给出条目数 / 字节数，被选中但 0 项的盘也列出来，
+    ///    让用户看到「D: 0 项」而不是以为漏扫了。
+    ///
+    /// 槽位按**实际要跑的模块数**切分（不是固定 5），这样跳过模块时进度条不会
+    /// 留出空洞。
     pub fn run_all(&self, scripts_dir: &Path) -> Result<OrchestratorSummary, OrchestratorError> {
         let mut summary = OrchestratorSummary::default();
-        let total = SCRIPTS.len();
 
-        for (idx, name) in SCRIPTS.iter().enumerate() {
+        // 先决定跑哪些模块（task-077 盘选择），再按计划切进度槽位。
+        let mut plan: Vec<&str> = Vec::new();
+        for name in SCRIPTS {
+            if self.module_runs(name) {
+                plan.push(name);
+            } else {
+                let label = self.anchor_label(name).unwrap_or('-');
+                eprintln!(
+                    "[orchestrator] 跳过 {name}：根目录在 {label}: 上，不在本次选中的盘 {:?}",
+                    self.drives
+                );
+                summary.scripts_skipped.push(name.to_string());
+            }
+        }
+        let total = plan.len();
+
+        for (idx, name) in plan.iter().enumerate() {
             // task-063：每个脚本开始前检查取消。已扫描到的结果保留在 DB 里
             // （cleanup_item 的行不删），前端刷新就能看到。
             if self.is_cancelled() {
@@ -239,7 +317,8 @@ impl<'conn, 'emitter> ScanOrchestrator<'conn, 'emitter> {
                 summary.cancelled = true;
                 break;
             }
-            // 第 idx 个脚本分到的百分比区间 [from, to]（5 个脚本时依次是 0-20/20-40/.../80-100）。
+            // 第 idx 个脚本分到的百分比区间 [from, to]（N 个脚本时依次是 0-100/N、...）。
+            // total 已在上面保证 > 0（空计划直接走下面的 Ok 分支）。
             let from = (idx * 100 / total) as u8;
             let to = ((idx + 1) * 100 / total) as u8;
 
@@ -252,6 +331,8 @@ impl<'conn, 'emitter> ScanOrchestrator<'conn, 'emitter> {
             // 放在后面的话，将来正式删掉某个 `.ps1` 时，那个模块会被判
             // `missing script` 失败——而它其实跑得好好的。
             if let Some(items) = self.rust_module_items(name) {
+                // task-077：条目级过滤——只保留落在选中盘上的条目。
+                let items = self.filter_by_selected_drives(name, items);
                 self.run_rust_module(name, items, from, to, &mut summary);
                 continue;
             }
@@ -261,6 +342,9 @@ impl<'conn, 'emitter> ScanOrchestrator<'conn, 'emitter> {
                 summary.scripts_failed.push(name.to_string());
                 continue;
             }
+            // ps1 路径没法在编排层过滤条目（`ScanRunner` 直接入库），所以盘过滤
+            // 只能靠「模块级跳过」兜住。这正是 ps1 回退路径的一个已知退化，
+            // 记在 `run_all` 的文档里，不在代码里假装它存在。
             let runner = ScanRunner::new(self.session_id, self.conn, self.emitter)
                 .with_percent_span(from, to);
             match runner.run_script(&path) {
@@ -270,7 +354,7 @@ impl<'conn, 'emitter> ScanOrchestrator<'conn, 'emitter> {
                     summary.scripts_succeeded.push(name.to_string());
                     // 槽位上界：让进度条在本脚本结束时精确落在 to 上，
                     // 而不是停在插值的渐近值（永远差一点）。
-                    self.emit_progress(to, name, summary.total_items as u64);
+                    self.emit_progress(to, &self.progress_label(name), summary.total_items as u64);
                 }
                 Err(e) => {
                     eprintln!("[orchestrator] script {name} failed: {e}");
@@ -279,13 +363,150 @@ impl<'conn, 'emitter> ScanOrchestrator<'conn, 'emitter> {
             }
         }
 
-        if summary.scripts_succeeded.is_empty() {
+        // task-077：全部被跳过 = 用户选了没有扫描目标的盘，这是**合法结果**（0 项），
+        // 不是失败。只有「计划内有模块、且一个都没成功」才算全失败。
+        if !plan.is_empty() && summary.scripts_succeeded.is_empty() {
             return Err(OrchestratorError::AllScriptsFailed(total));
         }
+
+        // task-077：按盘汇总（从 DB 取，两条入库路径都能覆盖）。
+        summary.per_drive = self.drive_stats();
+
         // 收尾：无论最后一个脚本是否成功，只要整体算成功就补一条 100%。
         // 必须 force——普通 emit 会被节流吞（task-053 G7.2）。
         self.emit_force_progress(100, "done", summary.total_items as u64);
         Ok(summary)
+    }
+
+    /// task-077：这个模块的根目录是否落在选中的盘上。
+    ///
+    /// **读不到环境变量时返回 true（照跑）**：拿不到 `%TEMP%` 之类就没法判断，
+    /// 这时「少扫一类」比「误跳过」更糟——跳过会让用户以为那个模块坏了。
+    fn module_runs(&self, name: &str) -> bool {
+        if self.drives.is_none() {
+            return true;
+        }
+        let roots = root_env_names(name);
+        if roots.is_empty() {
+            return true;
+        }
+        let mut known = false;
+        for env_name in roots {
+            let Ok(val) = std::env::var(env_name) else {
+                continue;
+            };
+            let Some(d) = crate::scan::drive_enum::drive_letter_of(&val) else {
+                continue;
+            };
+            known = true;
+            if self.drive_selected(d) {
+                return true;
+            }
+        }
+        // 一个根目录都没解析出来 → 判断不了 → 照跑
+        !known
+    }
+
+    /// task-077：盘是否在本次选择范围内（未限定 = 全部）。
+    fn drive_selected(&self, d: char) -> bool {
+        drive_selected_from(self.drives.as_deref(), d)
+    }
+
+    /// task-077：模块锚点盘符（进度标签用）。读不到环境变量返回 `None`。
+    fn anchor_label(&self, name: &str) -> Option<char> {
+        root_env_names(name).iter().find_map(|env_name| {
+            std::env::var(env_name)
+                .ok()
+                .and_then(|v| crate::scan::drive_enum::drive_letter_of(&v))
+        })
+    }
+
+    /// task-077：进度标签，形如 `"C: scan_browser_cache.ps1"`。
+    fn progress_label(&self, name: &str) -> String {
+        match self.anchor_label(name) {
+            Some(d) => format!("{d}: {name}"),
+            None => name.to_string(),
+        }
+    }
+
+    /// task-077：条目级盘过滤。盘符识别不出来的条目**保留**（见 `drive_letter_of`）。
+    fn filter_by_selected_drives(
+        &self,
+        name: &str,
+        items: Vec<crate::scan::modules::ScanItem>,
+    ) -> Vec<crate::scan::modules::ScanItem> {
+        if self.drives.is_none() {
+            return items;
+        }
+        let before = items.len();
+        let kept: Vec<_> = items
+            .into_iter()
+            .filter(
+                |it| match crate::scan::drive_enum::drive_letter_of(&it.path) {
+                    Some(d) => self.drive_selected(d),
+                    None => true,
+                },
+            )
+            .collect();
+        if kept.len() != before {
+            eprintln!(
+                "[orchestrator] {name}：{} 项因不在选中盘上被过滤（{} → {}）",
+                before - kept.len(),
+                before,
+                kept.len()
+            );
+        }
+        kept
+    }
+
+    /// task-077：按盘汇总本 session 已入库的条目。
+    ///
+    /// 用 `path` 前缀算盘符而不是读 `drive_letter` 列——本方法在 v3 迁移之前就存在
+    /// （提交顺序：多盘接线先于 DB 迁移），而且 `cleanup_item.path` 是唯一真值源，
+    /// 生成列只是它的索引。`substr(path,2,1)=':'` 把 UNC / 相对路径排除掉。
+    fn drive_stats(&self) -> Vec<DriveStat> {
+        let mut stmt = match self.conn.prepare(
+            "SELECT upper(substr(path,1,1)) AS d,
+                    count(*) AS n,
+                    coalesce(sum(size_bytes),0) AS b
+             FROM cleanup_item
+             WHERE session_id = ?1 AND substr(path,2,1) = ':'
+             GROUP BY d
+             ORDER BY d",
+        ) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("[orchestrator] per_drive 查询失败: {e}");
+                return Vec::new();
+            }
+        };
+
+        let mut out: Vec<DriveStat> = stmt
+            .query_map([self.session_id], |r| {
+                let d: String = r.get(0)?;
+                Ok(DriveStat {
+                    drive: d.chars().next().unwrap_or('-'),
+                    items: r.get(1)?,
+                    bytes: r.get(2)?,
+                })
+            })
+            .map(|rows| rows.filter_map(|r| r.ok()).collect())
+            .unwrap_or_default();
+
+        // 被选中但一条都没有的盘也要出现：前端要显示「D: 0 项」。
+        if let Some(selected) = &self.drives {
+            for d in selected {
+                if !out.iter().any(|s| s.drive == *d) {
+                    out.push(DriveStat {
+                        drive: *d,
+                        items: 0,
+                        bytes: 0,
+                    });
+                }
+            }
+            out.sort_by_key(|s| s.drive);
+        }
+        out
     }
 
     /// 如果 `name` 对应的模块走 Rust 实现，返回它的扫描结果；否则 `None`（走 ps1）。
@@ -341,7 +562,7 @@ impl<'conn, 'emitter> ScanOrchestrator<'conn, 'emitter> {
                     "[orchestrator] {name} 走 Rust 实现，入库 {} 项",
                     s.items_inserted
                 );
-                self.emit_progress(to, name, summary.total_items as u64);
+                self.emit_progress(to, &self.progress_label(name), summary.total_items as u64);
             }
             Err(e) => {
                 // DB 错在 ps1 路径里也是致命的，这里保持一致
@@ -369,6 +590,46 @@ impl<'conn, 'emitter> ScanOrchestrator<'conn, 'emitter> {
             current_path: label.to_string(),
             scanned_items,
         });
+    }
+}
+
+/// task-077：盘是否在本次选择范围内（`None` = 全部）。
+///
+/// 抽成自由函数是为了能直接单测：`ScanOrchestrator` 的构造需要真实 `Connection`
+/// + `ProgressEmitter`，为测一个布尔判断去搭那套太重。
+///
+/// 大小写不敏感——`'c'` 与 `'C'` 是同一个盘，比较时不能因为调用方少写个大写就把盘漏掉。
+fn drive_selected_from(selected: Option<&[char]>, d: char) -> bool {
+    match selected {
+        None => true,
+        Some(list) => list.iter().any(|x| x.eq_ignore_ascii_case(&d)),
+    }
+}
+
+/// task-077：每个模块的根目录来自哪些环境变量。
+///
+/// 这张表是「多盘」判断的唯一依据，所以必须与各模块 `scan()` 里真正读的变量一致：
+///
+/// | 模块 | 根目录 | 环境变量 |
+/// |---|---|---|
+/// | temp | `%TEMP%` + `%SystemRoot%\Temp` | `TEMP` + `SystemRoot` |
+/// | prefetch | `%SystemRoot%\Prefetch` | `SystemRoot` |
+/// | windows_update | `%SystemRoot%\SoftwareDistribution\Download` | `SystemRoot` |
+/// | browser_cache | `%LOCALAPPDATA%\...` | `LOCALAPPDATA` |
+/// | dev_cache | `%LOCALAPPDATA%\...` + `%APPDATA%\npm-cache` | `LOCALAPPDATA` + `APPDATA` |
+///
+/// temp 和 dev_cache 是**两个**变量：它们确实可能落在不同的盘上（用户把 TEMP
+/// 搬到 D: 而系统在 C:），只取第一个会让另一个盘的条目被误跳过。
+///
+/// 返回空切片 = 该模块与盘无关（照跑）。这是给将来新增模块的默认行为：
+/// 不做判断比做错判断安全。
+fn root_env_names(script: &str) -> &'static [&'static str] {
+    match script {
+        TEMP_SCRIPT => &["TEMP", "SystemRoot"],
+        WINDOWS_UPDATE_SCRIPT | PREFETCH_SCRIPT => &["SystemRoot"],
+        BROWSER_CACHE_SCRIPT => &["LOCALAPPDATA"],
+        DEV_CACHE_SCRIPT => &["LOCALAPPDATA", "APPDATA"],
+        _ => &[],
     }
 }
 
@@ -582,5 +843,73 @@ mod tests {
         assert!(cancel_requested(&opt));
         flag.store(false, Ordering::Relaxed);
         assert!(!cancel_requested(&opt), "复位后新扫描应正常跑");
+    }
+
+    // ===== task-077：多盘选择 =====
+
+    #[test]
+    fn drive_selected_all_when_unset() {
+        // 不传 drives = 全部固定盘。写反的话「不选」会变成「一个都不扫」，
+        // 用户点开始扫描什么都不会发生，且没有任何报错。
+        for d in ['C', 'D', 'Z'] {
+            assert!(drive_selected_from(None, d), "{d}: 未限定时应全选");
+        }
+    }
+
+    #[test]
+    fn drive_selected_matches_case_insensitively() {
+        // 前端可能传 "c" 也可能传 "C"；比较不忽略大小写就会「选了 C 却没扫 C」。
+        let sel = ['C', 'D'];
+        assert!(drive_selected_from(Some(&sel), 'C'));
+        assert!(drive_selected_from(Some(&sel), 'c'));
+        assert!(drive_selected_from(Some(&sel), 'D'));
+        assert!(!drive_selected_from(Some(&sel), 'E'), "没选的盘不能扫");
+        // 空选择（不该出现，但要有确定行为）：一个都不选
+        assert!(!drive_selected_from(Some(&[]), 'C'));
+    }
+
+    #[test]
+    fn root_env_names_cover_every_script() {
+        // 每个模块都必须能在表里查到根目录变量——漏一个的后果是那个模块
+        // 「永远不被盘选择影响」，用户只选 D 盘时它照样去扫 C 盘。
+        for script in SCRIPTS {
+            let names = root_env_names(script);
+            assert!(!names.is_empty(), "{script} 没有登记根目录环境变量");
+            for n in names {
+                // 必须是真实存在的环境变量名（大小写按 Windows 惯例）
+                assert!(
+                    ["TEMP", "SystemRoot", "LOCALAPPDATA", "APPDATA"].contains(n),
+                    "{script} 登记了未知环境变量 {n}"
+                );
+            }
+        }
+        // 未知脚本返回空表 = 与盘无关、照跑（将来加模块时的安全默认值）
+        assert!(root_env_names("scan_future.ps1").is_empty());
+    }
+
+    #[test]
+    fn root_env_names_marks_prefetch_and_update_as_system_anchored() {
+        // 「Prefetch / Windows Update 只在系统盘跑」这条需求**不靠硬编码 C:**
+        // 实现——它们的根目录是 %SystemRoot%，用户不选系统盘就自然跳过。
+        // 这条钉住「它们只登记 SystemRoot」这个前提。
+        assert_eq!(root_env_names(PREFETCH_SCRIPT), &["SystemRoot"]);
+        assert_eq!(root_env_names(WINDOWS_UPDATE_SCRIPT), &["SystemRoot"]);
+        // temp / dev_cache 可能跨两个盘，只取一个会让另一个盘的条目被误跳过
+        assert_eq!(root_env_names(TEMP_SCRIPT), &["TEMP", "SystemRoot"]);
+        assert_eq!(
+            root_env_names(DEV_CACHE_SCRIPT),
+            &["LOCALAPPDATA", "APPDATA"]
+        );
+    }
+
+    #[test]
+    fn with_drives_normalizes_case() {
+        // 入口归一化后，后续所有比较都可以直接用大写
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let emitter = crate::ipc::progress::NoopEmitter;
+        let orch = ScanOrchestrator::new(1, &conn, &emitter).with_drives(vec!['c', 'd']);
+        assert!(orch.drive_selected('C'), "小写传入也应命中大写查询");
+        assert!(orch.drive_selected('D'));
+        assert!(!orch.drive_selected('E'));
     }
 }

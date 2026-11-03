@@ -39,19 +39,12 @@ fn load_external_deny(rules_dir: &Path) -> Result<Vec<String>, String> {
     Ok(external_deny_list(&loaded))
 }
 
-/// 入参校验：scope ∈ {full, custom}；target_drive 形如 "C:"。
-fn validate_scan_input(scope: &str, target_drive: &Option<String>) -> Result<(), ()> {
-    if scope != "full" && scope != "custom" {
-        return Err(());
-    }
-    if let Some(drive) = target_drive {
-        let b = drive.as_bytes();
-        if !(b.len() == 2 && b[0].is_ascii_alphabetic() && b[1] == b':') {
-            return Err(());
-        }
-    }
-    Ok(())
-}
+// task-077：`validate_scan_input` 已删除。
+//
+// 它原来只管「scope 合法 + target_drive 形如 C:」，且校验完**不使用**这个值。
+// 多盘入参（`drives: ["C","D"]`）它有四种写法认不全（"C" / "c" / "C:" / "c:"），
+// 校验逻辑已收敛到 `engine::ipc::commands::scan_start::resolve_drives`
+// ——纯函数、有 6 条单测、且返回值直接喂给编排层。两份校验留着必然分叉。
 
 /// task-063：扫描取消标志（全局单例，setup 里注入）。
 ///
@@ -73,18 +66,37 @@ pub fn scan_cancel(cancel: tauri::State<'_, ScanCancelState>) -> Result<Envelope
     Ok(Envelope::ok(true))
 }
 
-/// `scan.start`：task-013 起真接通扫描。
+/// `scan.start`：task-013 起真接通扫描；task-077 起支持多盘选择。
+///
+/// # 为什么不再用 `validate_scan_input`
+///
+/// 那个函数只认 `"C:"` 这种带冒号的单盘写法，而 task-077 的 `drives` 允许 `"C"` /
+/// `"c"` / `"C:"` 三种（前端下拉框给的是 `"C:"`，文档写的是 `"C"`）。校验逻辑
+/// 统一收敛到 `engine::ipc::commands::scan_start::resolve_drives`——纯函数、有单测，
+/// 比在命令层再写一份字符串判断可靠（两份校验迟早会分叉）。
 #[tauri::command]
 pub async fn scan_start(
     scope: String,
     target_drive: Option<String>,
+    drives: Option<Vec<String>>,
     progress: tauri::State<'_, ProgressState>,
     cancel: tauri::State<'_, ScanCancelState>,
     paths: tauri::State<'_, AppPaths>,
 ) -> Result<Envelope<engine::ipc::commands::scan_start::ScanStartResp>, String> {
-    if validate_scan_input(&scope, &target_drive).is_err() {
-        return Ok(Envelope::err(INTERNAL));
-    }
+    let req = engine::ipc::commands::scan_start::ScanStartReq {
+        scope: scope.clone(),
+        target_drive,
+        drives,
+    };
+    let selected = match engine::ipc::commands::scan_start::resolve_drives(&req) {
+        Ok(v) => v,
+        Err(e) => {
+            // 带上原因：前端只看到 5001，排障时这行日志是唯一线索。
+            eprintln!("[scan_start] 盘符入参非法: {e}");
+            return Ok(Envelope::err(INTERNAL));
+        }
+    };
+
     // task-063：每次开始前复位取消标志，否则上一次的「取消」会让这次一启动就停。
     cancel.0.store(false, std::sync::atomic::Ordering::Relaxed);
 
@@ -97,8 +109,13 @@ pub async fn scan_start(
     let session_id = conn.last_insert_rowid();
 
     let emitter_guard = progress.0.lock().map_err(|e| e.to_string())?;
-    let orch =
+    let mut orch =
         ScanOrchestrator::new(session_id, &conn, &*emitter_guard).with_cancel(cancel.0.clone());
+    // task-077：只有显式指定时才限定盘；`None` 保持「全部固定盘」的老行为。
+    if let Some(list) = selected {
+        eprintln!("[scan_start] 限定扫描盘: {list:?}");
+        orch = orch.with_drives(list);
+    }
     let outcome = orch.run_all(&paths.scripts_dir);
     drop(emitter_guard);
 
@@ -114,11 +131,17 @@ pub async fn scan_start(
 
     let msg = match outcome {
         Ok(s) => format!(
-            "items={} bytes={} ok=[{}] failed=[{}]",
+            "items={} bytes={} ok=[{}] failed=[{}] skipped=[{}] per_drive=[{}]",
             s.total_items,
             s.total_bytes,
             s.scripts_succeeded.join(","),
-            s.scripts_failed.join(",")
+            s.scripts_failed.join(","),
+            s.scripts_skipped.join(","),
+            s.per_drive
+                .iter()
+                .map(|d| format!("{}:{}项/{}B", d.drive, d.items, d.bytes))
+                .collect::<Vec<_>>()
+                .join(" ")
         ),
         Err(e) => format!("orchestrator failed: {e}"),
     };
