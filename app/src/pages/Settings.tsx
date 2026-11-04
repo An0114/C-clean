@@ -667,6 +667,10 @@ export default function Settings({ onUpdateFound, onThemeChange }: SettingsProps
         </div>
       </div>
 
+      {/* task-078：用户自定义规则（紧跟在「规则库」后面——两者是同一件事的两层：
+          厂商下发的那层在上，用户自己加的那层在下） */}
+      <UserRulesSection />
+
       {/* task-035：应用自更新卡片（tauri updater） */}
       <h2 style={{ margin: "24px 0 12px", fontSize: 16 }}>应用更新</h2>
       <div style={cardStyle}>
@@ -1046,5 +1050,355 @@ export default function Settings({ onUpdateFound, onThemeChange }: SettingsProps
         </div>
       </div>
     </div>
+  );
+}
+
+// ===================== task-078：用户自定义规则 =====================
+//
+// # 为什么单独一个组件
+//
+// Settings 已经 1000 行了（规则库 / 应用更新 / 外观 / 行为偏好 / 自动扫描 / 启动）。
+// 把「列表 + 表单 + 增删改 + 开关」再塞进主组件，改动任何一块都要在千行里找位置。
+//
+// # 与内置规则库的分工（界面上要说清楚）
+//
+// 上面那块「规则库」是**厂商下发的**（受 SHA-256 保护、随版本更新整份替换）；
+// 这块是**用户自己的**（存本地 DB、永不被规则库更新覆盖）。用户最容易误解的就是
+// 「我加的规则会不会被更新冲掉」——所以标题下面直接写清。
+
+interface UserRule {
+  id: number;
+  name: string;
+  pattern: string;
+  /** "L1" / "L2"（L3 是红线等级，后端会拒）。 */
+  riskLevel: string;
+  enabled: boolean;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** 表单草稿：`id === null` 表示「新增」。 */
+interface RuleDraft {
+  id: number | null;
+  name: string;
+  pattern: string;
+  riskLevel: string;
+}
+
+const inputStyle: React.CSSProperties = {
+  width: "100%",
+  padding: "6px 8px",
+  borderRadius: 6,
+  border: "1px solid var(--border)",
+  background: "var(--surface)",
+  color: "var(--text)",
+  fontSize: 13,
+  boxSizing: "border-box",
+};
+
+function UserRulesSection() {
+  const [rules, setRules] = useState<UserRule[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState("");
+  const [notice, setNotice] = useState("");
+  const [draft, setDraft] = useState<RuleDraft | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [busyId, setBusyId] = useState<number | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const list = await api<UserRule[]>("user_rules_list", {});
+      setRules(Array.isArray(list) ? list : []);
+      setErr("");
+    } catch (e) {
+      // 读不出来时保留空列表 + 显示真实原因，**不显示「暂无规则」**——
+      // 那会让用户以为自己的规则被删了。
+      setErr(String(e));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const save = useCallback(async () => {
+    if (!draft) return;
+    if (!draft.name.trim() || !draft.pattern.trim()) {
+      setErr("规则名与路径模式都不能为空");
+      return;
+    }
+    setSaving(true);
+    setErr("");
+    try {
+      if (draft.id === null) {
+        await api("user_rules_add", {
+          name: draft.name.trim(),
+          pattern: draft.pattern.trim(),
+          riskLevel: draft.riskLevel,
+        });
+        setNotice("已新增规则，下次扫描生效");
+      } else {
+        // 更新时把 enabled 原样带回，避免「改名字顺手把开关重置成开」
+        const old = rules.find((r) => r.id === draft.id);
+        await api("user_rules_update", {
+          id: draft.id,
+          name: draft.name.trim(),
+          pattern: draft.pattern.trim(),
+          riskLevel: draft.riskLevel,
+          enabled: old?.enabled ?? true,
+        });
+        setNotice("已保存修改，下次扫描生效");
+      }
+      setDraft(null);
+      await load();
+    } catch (e) {
+      // 后端的校验原因（模式太宽泛 / 指向受保护位置 / 模式重复）直接显示
+      setErr(String(e));
+    } finally {
+      setSaving(false);
+    }
+  }, [draft, rules, load]);
+
+  const toggle = useCallback(
+    async (rule: UserRule) => {
+      setBusyId(rule.id);
+      setErr("");
+      try {
+        await api("user_rules_set_enabled", { id: rule.id, enabled: !rule.enabled });
+        setNotice(rule.enabled ? "已停用，下次扫描不再包含" : "已启用，下次扫描生效");
+        await load();
+      } catch (e) {
+        setErr(String(e));
+      } finally {
+        setBusyId(null);
+      }
+    },
+    [load],
+  );
+
+  const remove = useCallback(
+    async (rule: UserRule) => {
+      if (!confirm(`删除规则「${rule.name}」？\n\n已扫描出的条目不受影响，但下次扫描不会再包含这些路径。`)) {
+        return;
+      }
+      setBusyId(rule.id);
+      setErr("");
+      try {
+        await api("user_rules_delete", { id: rule.id });
+        setNotice("已删除");
+        await load();
+      } catch (e) {
+        setErr(String(e));
+      } finally {
+        setBusyId(null);
+      }
+    },
+    [load],
+  );
+
+  return (
+    <>
+      <h2 style={{ margin: "24px 0 12px", fontSize: 16 }}>自定义规则</h2>
+      <div style={{ ...cardStyle, maxWidth: 720 }}>
+        <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 10, lineHeight: 1.7 }}>
+          这些规则只存在本机，<strong>不会被规则库更新覆盖</strong>。扫描时会额外扫描匹配的路径；
+          与内置规则重叠的部分以<strong>内置规则为准</strong>（不会重复列出）。
+          <br />
+          路径模式支持 <code>*</code>（本层任意文件名）、<code>**</code>（跨多层目录）、
+          <code>?</code>（单个字符），可写 <code>%LOCALAPPDATA%</code> 这类环境变量。
+          例：<code>D:\MyCache\*</code>、<code>%LOCALAPPDATA%\Foo\**\*.tmp</code>。
+        </div>
+
+        {notice && (
+          <div style={{ fontSize: 12, color: "#166534", marginBottom: 8 }}>{notice}</div>
+        )}
+        {err && (
+          <div style={{ fontSize: 12, color: "#b91c1c", marginBottom: 8, whiteSpace: "pre-wrap" }}>
+            {err}
+          </div>
+        )}
+
+        {loading ? (
+          <div style={{ color: "var(--text-muted)", fontSize: 13 }}>加载中...</div>
+        ) : rules.length === 0 ? (
+          <div style={{ color: "var(--text-muted)", fontSize: 13, marginBottom: 12 }}>
+            还没有自定义规则。内置规则覆盖不到的缓存目录可以在这里加。
+          </div>
+        ) : (
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, marginBottom: 12 }}>
+            <thead>
+              <tr style={{ color: "var(--text-muted)", textAlign: "left" }}>
+                <th style={{ padding: "6px 8px", fontWeight: 500 }}>名称</th>
+                <th style={{ padding: "6px 8px", fontWeight: 500 }}>路径模式</th>
+                <th style={{ padding: "6px 8px", fontWeight: 500 }}>风险</th>
+                <th style={{ padding: "6px 8px", fontWeight: 500 }}>启用</th>
+                <th style={{ padding: "6px 8px", fontWeight: 500 }}>操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rules.map((r) => (
+                <tr key={r.id} style={{ borderTop: "1px solid var(--border)" }}>
+                  <td style={{ padding: "6px 8px", color: "var(--text)" }}>{r.name}</td>
+                  <td style={{ padding: "6px 8px", ...monoStyle }}>{r.pattern}</td>
+                  <td style={{ padding: "6px 8px" }}>
+                    <span
+                      title={
+                        r.riskLevel === "L2"
+                          ? "L2：需逐项确认（不会被「全选 L1」选中）"
+                          : "L1：安全缓存，可一键全选"
+                      }
+                      style={{
+                        padding: "1px 6px",
+                        borderRadius: 4,
+                        fontSize: 11,
+                        background: r.riskLevel === "L2" ? "#fef3c7" : "#dcfce7",
+                        color: r.riskLevel === "L2" ? "#92400e" : "#166534",
+                      }}
+                    >
+                      {r.riskLevel}
+                    </span>
+                  </td>
+                  <td style={{ padding: "6px 8px" }}>
+                    <input
+                      type="checkbox"
+                      aria-label={`启用规则 ${r.name}`}
+                      checked={r.enabled}
+                      disabled={busyId === r.id}
+                      onChange={() => void toggle(r)}
+                    />
+                  </td>
+                  <td style={{ padding: "6px 8px" }}>
+                    <button
+                      onClick={() =>
+                        setDraft({
+                          id: r.id,
+                          name: r.name,
+                          pattern: r.pattern,
+                          riskLevel: r.riskLevel,
+                        })
+                      }
+                      disabled={busyId === r.id}
+                      style={{ marginRight: 8, cursor: "pointer" }}
+                    >
+                      编辑
+                    </button>
+                    <button
+                      onClick={() => void remove(r)}
+                      disabled={busyId === r.id}
+                      style={{ color: "#b91c1c", cursor: "pointer" }}
+                    >
+                      删除
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+
+        <button
+          onClick={() => {
+            setErr("");
+            setDraft({ id: null, name: "", pattern: "", riskLevel: "L1" });
+          }}
+          style={{ padding: "6px 14px", borderRadius: 6, cursor: "pointer" }}
+        >
+          新增规则
+        </button>
+      </div>
+
+      {draft && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label={draft.id === null ? "新增自定义规则" : "编辑自定义规则"}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.35)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 100,
+          }}
+        >
+          <div
+            style={{
+              background: "var(--surface)",
+              border: "1px solid var(--border)",
+              borderRadius: 10,
+              padding: "20px 24px",
+              width: 460,
+              maxWidth: "92vw",
+            }}
+          >
+            <h3 style={{ margin: "0 0 14px", fontSize: 15, color: "var(--text)" }}>
+              {draft.id === null ? "新增自定义规则" : "编辑自定义规则"}
+            </h3>
+
+            <label style={{ display: "block", fontSize: 12, color: "var(--text-muted)", marginBottom: 4 }}>
+              名称
+            </label>
+            <input
+              aria-label="规则名称"
+              value={draft.name}
+              onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+              placeholder="例如：我的游戏缓存"
+              style={{ ...inputStyle, marginBottom: 12 }}
+            />
+
+            <label style={{ display: "block", fontSize: 12, color: "var(--text-muted)", marginBottom: 4 }}>
+              路径模式
+            </label>
+            <input
+              aria-label="路径模式"
+              value={draft.pattern}
+              onChange={(e) => setDraft({ ...draft, pattern: e.target.value })}
+              placeholder="D:\MyCache\*"
+              style={{ ...inputStyle, marginBottom: 4, fontFamily: "monospace" }}
+            />
+            <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 12 }}>
+              必须写到具体目录（<code>D:\**</code> 这种会扫整盘，会被拒绝）
+            </div>
+
+            <label style={{ display: "block", fontSize: 12, color: "var(--text-muted)", marginBottom: 4 }}>
+              风险等级
+            </label>
+            <select
+              aria-label="风险等级"
+              value={draft.riskLevel}
+              onChange={(e) => setDraft({ ...draft, riskLevel: e.target.value })}
+              style={{ ...inputStyle, marginBottom: 16 }}
+            >
+              <option value="L1">L1 — 安全缓存，可一键全选</option>
+              <option value="L2">L2 — 需逐项确认</option>
+            </select>
+
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+              <button onClick={() => setDraft(null)} disabled={saving} style={{ cursor: "pointer" }}>
+                取消
+              </button>
+              <button
+                onClick={() => void save()}
+                disabled={saving}
+                style={{
+                  padding: "6px 14px",
+                  borderRadius: 6,
+                  border: "1px solid #2563eb",
+                  background: saving ? "#bfdbfe" : "#2563eb",
+                  color: "#fff",
+                  cursor: saving ? "not-allowed" : "pointer",
+                }}
+              >
+                {saving ? "保存中…" : "保存"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 }
