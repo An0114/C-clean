@@ -13,7 +13,7 @@ use std::path::Path;
 use engine::audit_log::{
     cleanup_stats, list_audit_log, AuditLogEntry, AuditLogFilter, CleanupStats,
 };
-use engine::execute::list_pending::{list_pending_page, PendingPage, DEFAULT_PAGE_SIZE};
+use engine::execute::list_pending::{list_pending_page_by_drive, PendingPage, DEFAULT_PAGE_SIZE};
 use engine::ipc::commands::dry_run::{handle_dry_run, DryRunReq, DryRunResp};
 use engine::ipc::envelope::Envelope;
 use engine::ipc::error_codes::{INTERNAL, RULE_CHECKSUM_MISMATCH, RULE_NETWORK_ERROR};
@@ -39,19 +39,12 @@ fn load_external_deny(rules_dir: &Path) -> Result<Vec<String>, String> {
     Ok(external_deny_list(&loaded))
 }
 
-/// 入参校验：scope ∈ {full, custom}；target_drive 形如 "C:"。
-fn validate_scan_input(scope: &str, target_drive: &Option<String>) -> Result<(), ()> {
-    if scope != "full" && scope != "custom" {
-        return Err(());
-    }
-    if let Some(drive) = target_drive {
-        let b = drive.as_bytes();
-        if !(b.len() == 2 && b[0].is_ascii_alphabetic() && b[1] == b':') {
-            return Err(());
-        }
-    }
-    Ok(())
-}
+// task-077：`validate_scan_input` 已删除。
+//
+// 它原来只管「scope 合法 + target_drive 形如 C:」，且校验完**不使用**这个值。
+// 多盘入参（`drives: ["C","D"]`）它有四种写法认不全（"C" / "c" / "C:" / "c:"），
+// 校验逻辑已收敛到 `engine::ipc::commands::scan_start::resolve_drives`
+// ——纯函数、有 6 条单测、且返回值直接喂给编排层。两份校验留着必然分叉。
 
 /// task-063：扫描取消标志（全局单例，setup 里注入）。
 ///
@@ -73,18 +66,37 @@ pub fn scan_cancel(cancel: tauri::State<'_, ScanCancelState>) -> Result<Envelope
     Ok(Envelope::ok(true))
 }
 
-/// `scan.start`：task-013 起真接通扫描。
+/// `scan.start`：task-013 起真接通扫描；task-077 起支持多盘选择。
+///
+/// # 为什么不再用 `validate_scan_input`
+///
+/// 那个函数只认 `"C:"` 这种带冒号的单盘写法，而 task-077 的 `drives` 允许 `"C"` /
+/// `"c"` / `"C:"` 三种（前端下拉框给的是 `"C:"`，文档写的是 `"C"`）。校验逻辑
+/// 统一收敛到 `engine::ipc::commands::scan_start::resolve_drives`——纯函数、有单测，
+/// 比在命令层再写一份字符串判断可靠（两份校验迟早会分叉）。
 #[tauri::command]
 pub async fn scan_start(
     scope: String,
     target_drive: Option<String>,
+    drives: Option<Vec<String>>,
     progress: tauri::State<'_, ProgressState>,
     cancel: tauri::State<'_, ScanCancelState>,
     paths: tauri::State<'_, AppPaths>,
 ) -> Result<Envelope<engine::ipc::commands::scan_start::ScanStartResp>, String> {
-    if validate_scan_input(&scope, &target_drive).is_err() {
-        return Ok(Envelope::err(INTERNAL));
-    }
+    let req = engine::ipc::commands::scan_start::ScanStartReq {
+        scope: scope.clone(),
+        target_drive,
+        drives,
+    };
+    let selected = match engine::ipc::commands::scan_start::resolve_drives(&req) {
+        Ok(v) => v,
+        Err(e) => {
+            // 带上原因：前端只看到 5001，排障时这行日志是唯一线索。
+            eprintln!("[scan_start] 盘符入参非法: {e}");
+            return Ok(Envelope::err(INTERNAL));
+        }
+    };
+
     // task-063：每次开始前复位取消标志，否则上一次的「取消」会让这次一启动就停。
     cancel.0.store(false, std::sync::atomic::Ordering::Relaxed);
 
@@ -97,8 +109,13 @@ pub async fn scan_start(
     let session_id = conn.last_insert_rowid();
 
     let emitter_guard = progress.0.lock().map_err(|e| e.to_string())?;
-    let orch =
+    let mut orch =
         ScanOrchestrator::new(session_id, &conn, &*emitter_guard).with_cancel(cancel.0.clone());
+    // task-077：只有显式指定时才限定盘；`None` 保持「全部固定盘」的老行为。
+    if let Some(list) = selected {
+        eprintln!("[scan_start] 限定扫描盘: {list:?}");
+        orch = orch.with_drives(list);
+    }
     let outcome = orch.run_all(&paths.scripts_dir);
     drop(emitter_guard);
 
@@ -114,11 +131,17 @@ pub async fn scan_start(
 
     let msg = match outcome {
         Ok(s) => format!(
-            "items={} bytes={} ok=[{}] failed=[{}]",
+            "items={} bytes={} ok=[{}] failed=[{}] skipped=[{}] per_drive=[{}]",
             s.total_items,
             s.total_bytes,
             s.scripts_succeeded.join(","),
-            s.scripts_failed.join(",")
+            s.scripts_failed.join(","),
+            s.scripts_skipped.join(","),
+            s.per_drive
+                .iter()
+                .map(|d| format!("{}:{}项/{}B", d.drive, d.items, d.bytes))
+                .collect::<Vec<_>>()
+                .join(" ")
         ),
         Err(e) => format!("orchestrator failed: {e}"),
     };
@@ -729,11 +752,16 @@ pub async fn cleanup_stats_trend(
 /// task-052 G2：入参由 `limit/offset` 改为 `page/page_size`，返回
 /// `PendingPage { items, total, page, pageSize }`。原前端硬编码 `limit: 100`
 /// 导致第 101 条之后的条目在 UI 上不可见（走查 G2 缺陷）。
+///
+/// task-077：加可选 `drive`（`"C"` / `"C:"` / `"c"` 都认）。**必须服务端过滤**——
+/// 前端只在当前页过滤的话，`total` 和分页条还是全量数字，用户会看到「共 4576 条」
+/// 但每页只有 3 条匹配，翻十页也翻不完。
 #[tauri::command]
 pub async fn cleanup_list_pending(
     session_id: Option<i64>,
     page: Option<u32>,
     page_size: Option<u32>,
+    drive: Option<String>,
     paths: tauri::State<'_, AppPaths>,
 ) -> Result<Envelope<PendingPage>, String> {
     let conn = match engine::db::conn::open(&paths.data_root) {
@@ -743,9 +771,10 @@ pub async fn cleanup_list_pending(
             return Ok(Envelope::err(INTERNAL));
         }
     };
-    match list_pending_page(
+    match list_pending_page_by_drive(
         &conn,
         session_id,
+        drive.as_deref(),
         page.unwrap_or(1),
         page_size.unwrap_or(DEFAULT_PAGE_SIZE),
     ) {
@@ -879,6 +908,27 @@ pub async fn drive_usage(
             Ok(Envelope::err(INTERNAL))
         }
     }
+}
+
+/// `drive_list`：枚举所有**固定**磁盘（task-077 多盘 UI 的数据源）。
+///
+/// 与 `drive_usage` 的分工：`drive_list` 回答「有哪些盘、各剩多少」，
+/// `drive_usage` 回答「某个盘现在剩多少」（清理前后对比要用它再查一次）。
+///
+/// **不缓存**：插拔 U 盘、挂载 / 卸载网络盘都会改变结果，缓存只会让用户看到过期的
+/// 盘列表。`GetLogicalDrives` 本身是微秒级调用，前端每次进页面查一次足够。
+///
+/// 非 Windows 返回空数组（不是错误）：本项目只支持 Windows，但单测要在别的平台
+/// 能编译运行，给空数组比给错误码更好断言。
+#[tauri::command]
+pub async fn drive_list() -> Result<Envelope<Vec<engine::scan::drive_enum::DriveInfo>>, String> {
+    let drives = engine::scan::drive_enum::fixed_drives();
+    if drives.is_empty() {
+        // 空列表在 Windows 上说明枚举真的失败了（至少系统盘一定在），留日志便于排障；
+        // 但仍然返回成功信封——「没有盘」不是业务错误，前端按空态渲染。
+        eprintln!("[drive_list] 未枚举到任何固定盘");
+    }
+    Ok(Envelope::ok(drives))
 }
 
 // ===================== task-062：托盘 / 开机自启 =====================

@@ -285,6 +285,27 @@ export default function Items({
   const [previewing, setPreviewing] = useState(false);
   const [preview, setPreview] = useState<Preview | null>(null);
 
+  // task-077：盘筛选。空串 = 全部盘。
+  //
+  // **筛选在服务端做**（`cleanup_list_pending` 的 `drive` 入参）：前端只过滤当前页
+  // 的话，`total` 和分页条还是全量数字，用户会看到「共 4576 条」但每页只有几条
+  // 匹配，翻十页也翻不完——那比没有筛选更让人困惑。
+  const [driveFilter, setDriveFilter] = useState<string>("");
+  const [drives, setDrives] = useState<string[]>([]);
+
+  // 盘列表来自后端枚举（只含固定盘）。查不到就不显示下拉框——
+  // 给一个空下拉框会让用户以为「没有盘」，而不显示只是少一个筛选器。
+  useEffect(() => {
+    (async () => {
+      try {
+        const list = await api<Array<{ letter: string }> | null>("drive_list", {});
+        setDrives(Array.isArray(list) ? list.map((d) => d.letter) : []);
+      } catch {
+        setDrives([]);
+      }
+    })();
+  }, []);
+
   // task-057：启动时拉一次偏好，confirm 文案据此追加「将自动重启被关闭的进程」。
   // 读失败保持 false（fail-closed，不打扰用户）。
   const [autoRestartOnClose, setAutoRestartOnClose] = useState(false);
@@ -306,7 +327,7 @@ export default function Items({
    * state 还没更新，直接读会拿到旧页码（翻页不动的经典坑）。
    */
   const load = useCallback(
-    async (p: number = page, ps: number = pageSize) => {
+    async (p: number = page, ps: number = pageSize, drive: string = driveFilter) => {
       setStatus("loading");
       setMsg("");
       // C8：列表重拉后旧预览可能已过期，先清掉。
@@ -315,6 +336,12 @@ export default function Items({
         const resp = await api<PendingPage>("cleanup_list_pending", {
           page: p,
           pageSize: ps,
+          // task-077：**只在有筛选时才带 `drive`**。
+          //
+          // 不传 = 全部盘（后端 `Option<String>` 收 None）。显式传 `drive: null`
+          // 也能工作，但会让「不筛选」这个最常见路径的实参多一个恒为 null 的字段，
+          // 既有测试里 `{page, pageSize}` 的精确断言全要跟着改——契约越窄越好。
+          ...(drive === "" ? {} : { drive }),
         });
         setRows(resp.items);
         setTotal(resp.total);
@@ -327,8 +354,24 @@ export default function Items({
         setStatus("error");
       }
     },
-    [page, pageSize],
+    [page, pageSize, driveFilter],
   );
+
+  /**
+   * task-077：切换盘筛选。
+   *
+   * 三件事一起做，缺一个都会让用户困惑：
+   * 1. **清空勾选**——与翻页同一判断。用户勾了几条 C 盘项、再筛到 D 盘，
+   *    「清理已选」仍然会删那几条 C 盘项，而列表里根本看不到它们；
+   * 2. 回到第 1 页——筛完只剩 2 页却停在第 5 页会直接空白；
+   * 3. 用新盘符重新拉（`load` 的第三个参数显式传，不等 state 更新）。
+   */
+  const changeDriveFilter = (drive: string) => {
+    setDriveFilter(drive);
+    setSelected(new Set());
+    setPage(1);
+    void load(1, pageSize, drive);
+  };
 
   useEffect(() => {
     void load(1, pageSize);
@@ -642,6 +685,26 @@ export default function Items({
         <button onClick={() => void load(page, pageSize)} disabled={busy}>
           刷新
         </button>
+        {/* task-077：盘筛选。只在枚举到盘时出现（查不到就不显示，别给空下拉框）。 */}
+        {drives.length > 0 && (
+          <label style={{ fontSize: 13, color: "#374151", display: "flex", alignItems: "center", gap: 6 }}>
+            磁盘
+            <select
+              aria-label="按磁盘筛选"
+              value={driveFilter}
+              onChange={(e) => changeDriveFilter(e.target.value)}
+              disabled={busy}
+              style={{ padding: "4px 8px", borderRadius: 6, border: "1px solid #d1d5db" }}
+            >
+              <option value="">全部</option>
+              {drives.map((d) => (
+                <option key={d} value={d}>
+                  {d}:
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
         <span style={{ fontSize: 13, color: "#374151" }}>
           已选 {selected.size} 项，共 {formatBytes(totalSelectedBytes)}
         </span>

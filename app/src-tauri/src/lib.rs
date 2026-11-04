@@ -138,6 +138,8 @@ pub fn run() {
             commands::cleanup_list_pending,
             commands::report_export,
             commands::drive_usage,
+            // task-077：多盘扫描——固定磁盘枚举（Dashboard 多环形图数据源）
+            commands::drive_list,
             commands::get_prefs,
             commands::set_prefs,
             // task-062：托盘 / 自启

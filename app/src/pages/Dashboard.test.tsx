@@ -69,6 +69,15 @@ function mockInvoke(overrides: Record<string, () => Promise<unknown>> = {}) {
     if (cmd === "drive_usage") {
       return Promise.resolve(ok({ totalBytes: 0, usedBytes: 0, freeBytes: 0 }));
     }
+    // task-077：多盘环形图的数据源。默认给两个盘，老用例顺带覆盖「多盘渲染」。
+    if (cmd === "drive_list") {
+      return Promise.resolve(
+        ok([
+          { letter: "C", totalBytes: 100 * GB, freeBytes: 40 * GB },
+          { letter: "D", totalBytes: 200 * GB, freeBytes: 20 * GB },
+        ])
+      );
+    }
     if (cmd === "cleanup_stats_trend") return Promise.resolve(ok([]));
     return Promise.resolve(ok(null));
   }) as unknown as typeof invoke);
@@ -362,5 +371,59 @@ describe("趋势图（task-073 折线）", () => {
     render(<Dashboard />);
 
     expect(await screen.findByText(/趋势数据加载失败/)).toBeTruthy();
+  });
+});
+
+// ===================== task-077：多盘环形图 =====================
+
+describe("多盘环形图（task-077）", () => {
+  it("每个固定盘一个环，各自显示已用/总量", async () => {
+    mockInvoke();
+    render(<Dashboard />);
+
+    // 两个盘的标题都在
+    expect(await screen.findByText("C 盘")).toBeTruthy();
+    expect(screen.getByText("D 盘")).toBeTruthy();
+
+    // C: 100GB 中 40GB 可用 → 已用 60% ; D: 200GB 中 20GB 可用 → 已用 90%
+    // 用 aria-label 定位每个环（百分比文本会重复，不能靠它区分）
+    expect(screen.getByLabelText("C 盘空间使用率")).toBeTruthy();
+    expect(screen.getByLabelText("D 盘空间使用率")).toBeTruthy();
+    expect(screen.getByText("60%")).toBeTruthy();
+    expect(screen.getByText("90%")).toBeTruthy();
+
+    // D 盘 90% ≥ 85% 要提示空间紧张
+    expect(screen.getByText("空间紧张，建议尽快清理")).toBeTruthy();
+  });
+
+  it("只调一次 drive_list，不为每个盘再调 drive_usage", async () => {
+    // 这是 task-077 的实现选择：drive_list 自带 total/free，N 个盘不该发 N+1 次 IPC
+    mockInvoke();
+    render(<Dashboard />);
+
+    await screen.findByText("C 盘");
+    expect(callsOf("drive_list")).toHaveLength(1);
+    expect(callsOf("drive_usage")).toHaveLength(0);
+  });
+
+  it("容量查不到（totalBytes=0）时显示「容量未知」而不是 0% 的空环", async () => {
+    // GetDiskFreeSpaceExW 失败时后端仍返回这个盘、容量记 0。
+    // 画成 0% 会被读成「这个盘是空的」，真相是「查不到」。
+    mockInvoke({
+      drive_list: () => Promise.resolve(ok([{ letter: "E", totalBytes: 0, freeBytes: 0 }])),
+    });
+    render(<Dashboard />);
+
+    expect(await screen.findByText("E 盘")).toBeTruthy();
+    expect(screen.getByText("容量未知（查询失败）")).toBeTruthy();
+  });
+
+  it("drive_list 失败时整块不渲染（不显示假环）", async () => {
+    mockInvoke({ drive_list: () => Promise.reject("enum failed") });
+    render(<Dashboard />);
+
+    // 等趋势图那块渲染完，确认磁盘卡片确实没出现
+    await screen.findByText(/最近 30 天/);
+    expect(screen.queryByText("磁盘空间")).toBeNull();
   });
 });

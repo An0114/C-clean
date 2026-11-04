@@ -99,11 +99,12 @@ fn user_version_bumped_to_latest() {
     let dir = tempfile::tempdir().expect("tempdir");
     let conn = open(dir.path()).expect("open db");
 
-    // task-056：v2 加了 safe_box.restored_at，最新版本号从 1 升到 2。
+    // task-056：v2 加了 safe_box.restored_at（版本号 1 → 2）。
+    // task-077：v3 加了 cleanup_item.drive_letter 派生列（版本号 2 → 3）。
     assert_eq!(
         user_version(&conn),
-        2,
-        "首次迁移后 user_version 应为最新版 2"
+        3,
+        "首次迁移后 user_version 应为最新版 3"
     );
 }
 
@@ -115,7 +116,7 @@ fn migration_is_idempotent() {
 
     // 第二次打开同一数据目录：不再执行任何迁移，仍 Ok 且版本不变
     let second = open(dir.path()).expect("second open should succeed (idempotent)");
-    assert_eq!(user_version(&second), 2, "重复打开后 user_version 不应变化");
+    assert_eq!(user_version(&second), 3, "重复打开后 user_version 不应变化");
 }
 
 /// task-056：v1 库（无 `restored_at` 列）升级到 v2 —— 不报错、旧数据保留、新列为 NULL。
@@ -147,7 +148,9 @@ fn migrate_v1_to_v2_preserves_existing_rows() {
 
     // 正常 open 触发 v1 → v2 迁移。
     let conn = open(dir.path()).expect("v1 db should migrate to v2 without error");
-    assert_eq!(user_version(&conn), 2, "迁移后 user_version 应为 2");
+    // task-077：v1 库会一路升到 v3（v2 补 restored_at、v3 补 drive_letter），
+    // 中间不要求停在 v2——迁移器按「版本号 > current」连续执行。
+    assert_eq!(user_version(&conn), 3, "迁移后 user_version 应为最新 3");
 
     let n: i64 = conn
         .query_row(
