@@ -116,6 +116,25 @@ pub async fn scan_start(
         eprintln!("[scan_start] 限定扫描盘: {list:?}");
         orch = orch.with_drives(list);
     }
+
+    // task-078：内置规则的目录前缀，用于「内置优先于用户规则」的重复抑制。
+    //
+    // 读失败**不影响扫描**：传空表等于不抑制（用户规则照常生效，可能产生重复条目），
+    // 比「规则库坏了就整块不扫」合理——规则库校验失败时 task-005 的既定策略是
+    // 沿用旧版，但这里连旧版都拿不到，只能降级。
+    let builtin_prefixes = match load_rules(&paths.rules_dir) {
+        Ok(loaded) => engine::rules::loader::builtin_dir_prefixes(&loaded),
+        Err(e) => {
+            eprintln!("[scan_start] 内置规则加载失败，用户规则不做内置优先抑制: {e}");
+            Vec::new()
+        }
+    };
+    eprintln!(
+        "[scan_start] 内置规则目录前缀 {} 个",
+        builtin_prefixes.len()
+    );
+    orch = orch.with_builtin_prefixes(builtin_prefixes);
+
     let outcome = orch.run_all(&paths.scripts_dir);
     drop(emitter_guard);
 

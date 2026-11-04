@@ -124,3 +124,170 @@ pub fn external_deny_list(loaded: &LoadedRules) -> Vec<String> {
         .filter_map(|raw| env_expand::expand(raw).ok())
         .collect()
 }
+
+/// 内置规则覆盖的**目录前缀**（task-078，供「内置优先于用户规则」判定）。
+///
+/// 输出统一成：展开后的小写、`\` 分隔、**无尾分隔符**（`c:\users\an\appdata\local\temp`）。
+/// 归一化放在这里而不是每个调用点，是因为这个字符串要参与前缀比较——
+/// 大小写或分隔符不一致会让比较静默失效（用户规则与内置规则重复扫同一批文件，
+/// 条目翻倍、大小重复计）。
+///
+/// 展开失败的条目**跳过**（加载流程已经校验过能展开，这里失败只可能是环境变量
+/// 在加载后被改掉；跳过比 panic 好）。
+pub fn builtin_dir_prefixes(loaded: &LoadedRules) -> Vec<String> {
+    let mut out = Vec::new();
+    for entries in loaded.rules.modules.values() {
+        for entry in entries {
+            for raw in &entry.paths {
+                if let Ok(p) = env_expand::expand(raw) {
+                    out.push(normalize_prefix(&p));
+                }
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// 归一化一个目录前缀：`/` → `\`、小写、去掉尾部 `\`（保留盘符后的那个）。
+fn normalize_prefix(p: &str) -> String {
+    let s = p.replace('/', "\\").to_lowercase();
+    // `c:\` 保留（根目录），`c:\foo\` → `c:\foo`
+    let trimmed = s.trim_end_matches('\\');
+    if trimmed.len() == 2 && trimmed.ends_with(':') {
+        // 只剥到 `c:` 时把分隔符还回去，否则 `c:` 会前缀匹配上 `c:\anything`
+        format!("{trimmed}\\")
+    } else if trimmed.is_empty() {
+        s
+    } else {
+        trimmed.to_string()
+    }
+}
+
+/// `path` 是否已被某个内置规则覆盖（前缀比较，大小写 / 分隔符不敏感）。
+///
+/// # 为什么用「目录前缀」而不是「精确相等」
+///
+/// 内置规则登记的是目录（`%TEMP%`、`%LOCALAPPDATA%\npm-cache`），而用户规则
+/// 匹配到的是**文件**（`...\Temp\a.tmp`）。要判「这个文件归内置管」只能看前缀。
+///
+/// # 边界必须落在分隔符上
+///
+/// 纯字符串前缀会把 `c:\temp2\x` 判成在 `c:\temp` 之下——那是错的。所以比较时
+/// 要求 `path` 在 `prefix` 之后紧跟 `\`（或完全相等）。
+pub fn covered_by_builtin(path: &str, prefixes: &[String]) -> bool {
+    let p = path.replace('/', "\\").to_lowercase();
+    prefixes.iter().any(|prefix| {
+        if p == *prefix {
+            return true;
+        }
+        match p.strip_prefix(prefix.as_str()) {
+            // `c:\temp` + `\a.tmp` → 命中；`c:\temp2` + `2\x` → 不命中
+            Some(rest) => rest.starts_with('\\'),
+            None => false,
+        }
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rules::models::{CacheRules, RuleEntry};
+    use std::collections::HashMap;
+
+    fn entry(id: &str, paths: &[&str]) -> RuleEntry {
+        RuleEntry {
+            id: id.to_string(),
+            category: id.to_string(),
+            display_name: id.to_string(),
+            paths: paths.iter().map(|s| s.to_string()).collect(),
+            risk_level: "L1".to_string(),
+            description: String::new(),
+            impact_note: String::new(),
+            rebuild_note: String::new(),
+            elevated: false,
+        }
+    }
+
+    fn loaded(modules: &[(&str, Vec<RuleEntry>)]) -> LoadedRules {
+        let mut map = HashMap::new();
+        for (k, v) in modules {
+            map.insert(k.to_string(), v.clone());
+        }
+        LoadedRules {
+            rules: CacheRules {
+                version: "test".to_string(),
+                modules: map,
+                whitelist_deny: vec![],
+            },
+            meta: crate::rules::models::RulesMeta {
+                version: "test".to_string(),
+                checksum_sha256: String::new(),
+                source_url: String::new(),
+                downloaded_at: 0,
+                custom_rules: serde_json::Value::Null,
+            },
+        }
+    }
+
+    // ===== task-078：内置优先判定 =====
+
+    #[test]
+    fn builtin_prefixes_are_normalized_and_deduped() {
+        // 同一目录写两遍（大小写 / 分隔符不同）只留一份，且统一成小写反斜杠、无尾分隔符
+        let l = loaded(&[
+            ("A", vec![entry("a", &[r"C:\Temp\"])]),
+            ("B", vec![entry("b", &["c:/temp"])]),
+        ]);
+        let p = builtin_dir_prefixes(&l);
+        assert_eq!(p, vec![r"c:\temp".to_string()], "应去重并归一: {p:?}");
+    }
+
+    #[test]
+    fn builtin_prefix_keeps_drive_root_separator() {
+        // `c:` 不能当前缀——它会把 `c:\anything` 全判成内置覆盖
+        let l = loaded(&[("A", vec![entry("a", &[r"C:\"])])]);
+        let p = builtin_dir_prefixes(&l);
+        assert_eq!(p, vec![r"c:\".to_string()]);
+    }
+
+    #[test]
+    fn covered_by_builtin_matches_children_only() {
+        let prefixes = vec![r"c:\temp".to_string()];
+
+        assert!(covered_by_builtin(r"C:\Temp\a.tmp", &prefixes));
+        assert!(
+            covered_by_builtin(r"c:/temp/sub/b.tmp", &prefixes),
+            "分隔符不敏感"
+        );
+        assert!(
+            covered_by_builtin(r"C:\Temp", &prefixes),
+            "目录本身也算覆盖"
+        );
+
+        // 关键边界：`c:\temp2` 不是 `c:\temp` 的子路径
+        assert!(
+            !covered_by_builtin(r"C:\Temp2\a.tmp", &prefixes),
+            "纯字符串前缀会把 temp2 误判成 temp 之下"
+        );
+        assert!(
+            !covered_by_builtin(r"D:\Temp\a.tmp", &prefixes),
+            "不同盘不覆盖"
+        );
+    }
+
+    #[test]
+    fn empty_prefixes_cover_nothing() {
+        // 内置规则加载失败时传空表 → 不做任何抑制（宁可重复也不误吞用户条目）
+        assert!(!covered_by_builtin(r"C:\Temp\a.tmp", &[]));
+    }
+
+    #[test]
+    fn external_deny_list_still_works() {
+        // 既有行为不能被 task-078 的改动带坏
+        let mut l = loaded(&[]);
+        l.rules.whitelist_deny = vec![r"C:\Keep".to_string()];
+        assert_eq!(external_deny_list(&l), vec![r"C:\Keep".to_string()]);
+    }
+}
