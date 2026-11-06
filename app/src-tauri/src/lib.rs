@@ -140,6 +140,12 @@ pub fn run() {
             commands::drive_usage,
             // task-077：多盘扫描——固定磁盘枚举（Dashboard 多环形图数据源）
             commands::drive_list,
+            // task-078：用户自定义规则 CRUD
+            commands::user_rules_list,
+            commands::user_rules_add,
+            commands::user_rules_update,
+            commands::user_rules_set_enabled,
+            commands::user_rules_delete,
             commands::get_prefs,
             commands::set_prefs,
             // task-062：托盘 / 自启

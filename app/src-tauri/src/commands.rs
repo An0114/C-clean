@@ -116,6 +116,25 @@ pub async fn scan_start(
         eprintln!("[scan_start] 限定扫描盘: {list:?}");
         orch = orch.with_drives(list);
     }
+
+    // task-078：内置规则的目录前缀，用于「内置优先于用户规则」的重复抑制。
+    //
+    // 读失败**不影响扫描**：传空表等于不抑制（用户规则照常生效，可能产生重复条目），
+    // 比「规则库坏了就整块不扫」合理——规则库校验失败时 task-005 的既定策略是
+    // 沿用旧版，但这里连旧版都拿不到，只能降级。
+    let builtin_prefixes = match load_rules(&paths.rules_dir) {
+        Ok(loaded) => engine::rules::loader::builtin_dir_prefixes(&loaded),
+        Err(e) => {
+            eprintln!("[scan_start] 内置规则加载失败，用户规则不做内置优先抑制: {e}");
+            Vec::new()
+        }
+    };
+    eprintln!(
+        "[scan_start] 内置规则目录前缀 {} 个",
+        builtin_prefixes.len()
+    );
+    orch = orch.with_builtin_prefixes(builtin_prefixes);
+
     let outcome = orch.run_all(&paths.scripts_dir);
     drop(emitter_guard);
 
@@ -929,6 +948,91 @@ pub async fn drive_list() -> Result<Envelope<Vec<engine::scan::drive_enum::Drive
         eprintln!("[drive_list] 未枚举到任何固定盘");
     }
     Ok(Envelope::ok(drives))
+}
+
+// ===================== task-078：用户自定义规则 =====================
+//
+// # 错误为什么走 `Err(String)` 而不是 `Envelope::err(...)`
+//
+// `Envelope.message` 是 `&'static str`（TRD §5.1 的固定文案表），装不下
+// 「路径模式太宽泛：必须指定到具体目录」这种**逐条不同**的校验原因。
+// 用 `Envelope::err(INTERNAL)` 的话用户只会看到「内部错误」，完全不知道
+// 自己哪写错了——而这个功能的主要失败模式就是用户写错模式。
+//
+// 所以校验/存储失败一律 `Err(e.to_string())`：Tauri 把它变成前端 promise 的
+// 拒绝值，`api()` 抛出的就是这句话，页面直接显示。这与
+// `cleanup_list_pending` 里 `open(...).map_err(|e| e.to_string())?` 是同一套。
+
+/// `user_rules_list`：列出全部用户规则（启用 + 停用，按 id 升序）。
+#[tauri::command]
+pub async fn user_rules_list(
+    paths: tauri::State<'_, AppPaths>,
+) -> Result<Envelope<Vec<engine::ipc::commands::user_rules::UserRule>>, String> {
+    let conn = engine::db::conn::open(&paths.data_root).map_err(|e| e.to_string())?;
+    let rules = engine::ipc::commands::user_rules::list(&conn).map_err(|e| e.to_string())?;
+    Ok(Envelope::ok(rules))
+}
+
+/// `user_rules_add`：新增一条规则。参数名走 Tauri 2 的 camelCase→snake_case。
+#[tauri::command]
+pub async fn user_rules_add(
+    name: String,
+    pattern: String,
+    risk_level: String,
+    paths: tauri::State<'_, AppPaths>,
+) -> Result<Envelope<engine::ipc::commands::user_rules::UserRule>, String> {
+    let conn = engine::db::conn::open(&paths.data_root).map_err(|e| e.to_string())?;
+    let rule = engine::ipc::commands::user_rules::add(&conn, &name, &pattern, &risk_level)
+        .map_err(|e| e.to_string())?;
+    eprintln!("[user_rules_add] id={} pattern={}", rule.id, rule.pattern);
+    Ok(Envelope::ok(rule))
+}
+
+/// `user_rules_update`：整条更新（名称 / 模式 / 风险等级 / 启用）。
+#[tauri::command]
+pub async fn user_rules_update(
+    id: i64,
+    name: String,
+    pattern: String,
+    risk_level: String,
+    enabled: bool,
+    paths: tauri::State<'_, AppPaths>,
+) -> Result<Envelope<engine::ipc::commands::user_rules::UserRule>, String> {
+    let conn = engine::db::conn::open(&paths.data_root).map_err(|e| e.to_string())?;
+    let rule =
+        engine::ipc::commands::user_rules::update(&conn, id, &name, &pattern, &risk_level, enabled)
+            .map_err(|e| e.to_string())?;
+    Ok(Envelope::ok(rule))
+}
+
+/// `user_rules_set_enabled`：只切启用开关。
+///
+/// 单独一条命令而不是让前端调 `user_rules_update`：开关是单字段高频操作，
+/// 复用 update 要求前端把 name/pattern/risk 一起回传，多传一个字段就多一个
+/// 「用户改了名字没保存就切开关，名字被旧值覆盖」的机会。
+#[tauri::command]
+pub async fn user_rules_set_enabled(
+    id: i64,
+    enabled: bool,
+    paths: tauri::State<'_, AppPaths>,
+) -> Result<Envelope<engine::ipc::commands::user_rules::UserRule>, String> {
+    let conn = engine::db::conn::open(&paths.data_root).map_err(|e| e.to_string())?;
+    let rule = engine::ipc::commands::user_rules::set_enabled(&conn, id, enabled)
+        .map_err(|e| e.to_string())?;
+    Ok(Envelope::ok(rule))
+}
+
+/// `user_rules_delete`：删除一条规则。返回 `true` = 真的删了。
+#[tauri::command]
+pub async fn user_rules_delete(
+    id: i64,
+    paths: tauri::State<'_, AppPaths>,
+) -> Result<Envelope<bool>, String> {
+    let conn = engine::db::conn::open(&paths.data_root).map_err(|e| e.to_string())?;
+    let removed =
+        engine::ipc::commands::user_rules::delete(&conn, id).map_err(|e| e.to_string())?;
+    eprintln!("[user_rules_delete] id={id} removed={removed}");
+    Ok(Envelope::ok(removed))
 }
 
 // ===================== task-062：托盘 / 开机自启 =====================

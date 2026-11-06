@@ -24,6 +24,8 @@ pub mod browser_cache;
 pub mod dev_cache;
 pub mod prefetch;
 pub mod temp;
+/// 用户自定义规则扫描（task-078）。
+pub mod user_rules;
 pub mod windows_update;
 
 use std::path::{Path, PathBuf};

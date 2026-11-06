@@ -812,3 +812,222 @@ describe("Settings 系统级定时扫描（task-073）", () => {
     expect(screen.getByText(/先开启上面的「定期在后台扫描」/)).toBeInTheDocument();
   });
 });
+
+// ===================== task-078：用户自定义规则 =====================
+
+/** 两条样例规则：一条启用 L1、一条停用 L2。 */
+const RULES = [
+  {
+    id: 1,
+    name: "我的缓存",
+    pattern: "D:\\MyCache\\*",
+    riskLevel: "L1",
+    enabled: true,
+    createdAt: 1700000000,
+    updatedAt: 1700000000,
+  },
+  {
+    id: 2,
+    name: "旧日志",
+    pattern: "D:\\Logs\\**\\*.log",
+    riskLevel: "L2",
+    enabled: false,
+    createdAt: 1700000001,
+    updatedAt: 1700000001,
+  },
+];
+
+/** 取出某命令的全部调用实参。 */
+function ruleCalls(cmd: string): Array<Record<string, unknown> | undefined> {
+  return mockedInvoke.mock.calls
+    .filter(([c]) => c === cmd)
+    .map(([, args]) => args as Record<string, unknown> | undefined);
+}
+
+/** 在默认 mock 之上叠加 user_rules_* 的响应。 */
+function withRules(rules: unknown[], extra: Record<string, () => Promise<unknown>> = {}) {
+  mockedInvoke.mockImplementation(((cmd: string) => {
+    if (extra[cmd]) return extra[cmd]();
+    if (cmd === "user_rules_list") return Promise.resolve(ok(rules));
+    if (cmd === "rules_has_backup") return Promise.resolve(ok(false));
+    if (cmd === "rules_check_update") {
+      return Promise.resolve(
+        ok({
+          status: "upToDate",
+          localVersion: "1.0.0",
+          localSha256: "a".repeat(64),
+          remoteVersion: "1.0.0",
+          remoteSha256: "a".repeat(64),
+          message: "已是最新",
+        })
+      );
+    }
+    return Promise.resolve(ok(null));
+  }) as never);
+}
+
+describe("自定义规则（task-078）", () => {
+  it("列表渲染：名称 / 模式 / 风险徽标 / 启用开关", async () => {
+    withRules(RULES);
+    render(<Settings />);
+
+    expect(await screen.findByText("我的缓存")).toBeInTheDocument();
+    // 模式串在表格里出现一次，说明文案里也举了同一个例子 → 用 getAllByText，
+    // 并确认其中至少有一个是表格单元格（不是只匹配到提示文字）
+    const patternNodes = screen.getAllByText("D:\\MyCache\\*");
+    expect(patternNodes.some((el) => el.tagName === "TD")).toBe(true);
+    expect(screen.getByText("L1")).toBeInTheDocument();
+    expect(screen.getByText("L2")).toBeInTheDocument();
+
+    const on = screen.getByLabelText("启用规则 我的缓存") as HTMLInputElement;
+    const off = screen.getByLabelText("启用规则 旧日志") as HTMLInputElement;
+    expect(on.checked).toBe(true);
+    expect(off.checked).toBe(false);
+  });
+
+  it("没有规则时给引导文案，而不是让人以为规则丢了", async () => {
+    withRules([]);
+    render(<Settings />);
+    expect(await screen.findByText(/还没有自定义规则/)).toBeInTheDocument();
+  });
+
+  it("新增：弹窗填写后调用 user_rules_add，实参是 camelCase", async () => {
+    let listCalls = 0;
+    mockedInvoke.mockImplementation(((cmd: string) => {
+      if (cmd === "user_rules_list") {
+        listCalls += 1;
+        // 第一次空，保存后返回一条（模拟刷新）
+        return Promise.resolve(ok(listCalls === 1 ? [] : RULES.slice(0, 1)));
+      }
+      if (cmd === "user_rules_add") return Promise.resolve(ok(RULES[0]));
+      if (cmd === "rules_has_backup") return Promise.resolve(ok(false));
+      if (cmd === "rules_check_update") {
+        return Promise.resolve(
+          ok({
+            status: "upToDate",
+            localVersion: "1.0.0",
+            localSha256: "a".repeat(64),
+            remoteVersion: null,
+            remoteSha256: null,
+            message: "ok",
+          })
+        );
+      }
+      return Promise.resolve(ok(null));
+    }) as never);
+
+    render(<Settings />);
+    fireEvent.click(await screen.findByText("新增规则"));
+
+    // 弹窗出现
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("规则名称"), { target: { value: "新规则" } });
+    fireEvent.change(screen.getByLabelText("路径模式"), { target: { value: "D:\\New\\*" } });
+    fireEvent.change(screen.getByLabelText("风险等级"), { target: { value: "L2" } });
+    fireEvent.click(screen.getByText("保存"));
+
+    await waitFor(() => {
+      expect(ruleCalls("user_rules_add")[0]).toEqual({
+        name: "新规则",
+        pattern: "D:\\New\\*",
+        riskLevel: "L2",
+      });
+    });
+    // 保存后弹窗关闭 + 列表刷新
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(await screen.findByText("我的缓存")).toBeInTheDocument();
+  });
+
+  it("编辑：表单预填，保存时带上 id 与原启用状态", async () => {
+    withRules(RULES, {
+      user_rules_update: () => Promise.resolve(ok(RULES[1])),
+    });
+    render(<Settings />);
+
+    // 第二行（停用那条）的「编辑」
+    const editBtns = await screen.findAllByText("编辑");
+    fireEvent.click(editBtns[1]);
+
+    const nameInput = screen.getByLabelText("规则名称") as HTMLInputElement;
+    expect(nameInput.value).toBe("旧日志");
+    expect((screen.getByLabelText("路径模式") as HTMLInputElement).value).toBe(
+      "D:\\Logs\\**\\*.log"
+    );
+
+    fireEvent.change(nameInput, { target: { value: "旧日志2" } });
+    fireEvent.click(screen.getByText("保存"));
+
+    await waitFor(() => {
+      expect(ruleCalls("user_rules_update")[0]).toEqual({
+        id: 2,
+        name: "旧日志2",
+        pattern: "D:\\Logs\\**\\*.log",
+        riskLevel: "L2",
+        // 关键：改名字不能把开关重置成「开」
+        enabled: false,
+      });
+    });
+  });
+
+  it("开关：点一下就调 set_enabled，传相反值", async () => {
+    withRules(RULES, {
+      user_rules_set_enabled: () => Promise.resolve(ok(RULES[0])),
+    });
+    render(<Settings />);
+
+    const on = (await screen.findByLabelText("启用规则 我的缓存")) as HTMLInputElement;
+    fireEvent.click(on);
+
+    await waitFor(() => {
+      expect(ruleCalls("user_rules_set_enabled")[0]).toEqual({ id: 1, enabled: false });
+    });
+  });
+
+  it("删除：confirm 取消则不调后端；确认才删", async () => {
+    withRules(RULES, {
+      user_rules_delete: () => Promise.resolve(ok(true)),
+    });
+    const spy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    render(<Settings />);
+
+    const delBtns = await screen.findAllByText("删除");
+    fireEvent.click(delBtns[0]);
+    expect(spy).toHaveBeenCalled();
+    expect(ruleCalls("user_rules_delete")).toHaveLength(0);
+
+    spy.mockReturnValue(true);
+    fireEvent.click(delBtns[0]);
+    await waitFor(() => {
+      expect(ruleCalls("user_rules_delete")[0]).toEqual({ id: 1 });
+    });
+    spy.mockRestore();
+  });
+
+  it("后端校验失败时把真实原因显示出来（不是「内部错误」）", async () => {
+    withRules([], {
+      user_rules_add: () =>
+        Promise.reject("路径模式太宽泛：必须指定到具体目录，如 D:\\MyCache\\*"),
+    });
+    render(<Settings />);
+
+    fireEvent.click(await screen.findByText("新增规则"));
+    fireEvent.change(screen.getByLabelText("规则名称"), { target: { value: "x" } });
+    fireEvent.change(screen.getByLabelText("路径模式"), { target: { value: "D:\\**" } });
+    fireEvent.click(screen.getByText("保存"));
+
+    expect(await screen.findByText(/路径模式太宽泛/)).toBeInTheDocument();
+    // 失败时弹窗不关，用户可以直接改
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+  });
+
+  it("规则名或模式为空时前端先拦一道，不发请求", async () => {
+    withRules([]);
+    render(<Settings />);
+
+    fireEvent.click(await screen.findByText("新增规则"));
+    fireEvent.click(screen.getByText("保存"));
+
+    expect(await screen.findByText(/规则名与路径模式都不能为空/)).toBeInTheDocument();
+    expect(ruleCalls("user_rules_add")).toHaveLength(0);
+  });
+});

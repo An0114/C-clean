@@ -213,6 +213,12 @@ pub struct ScanOrchestrator<'conn, 'emitter> {
     /// （本机上 5 个模块的根目录全在 C:，选 D: 就是这种情况），结果是 0 项，
     /// 前端会如实显示「D: 0 项」。不为了「看起来有东西」去扫不存在的路径。
     drives: Option<Vec<char>>,
+    /// task-078：内置规则覆盖的目录前缀（归一化后），用于「内置优先于用户规则」。
+    ///
+    /// 由调用方（`scan_start` 命令）从 `rules/cache_rules.json` 加载后传入——
+    /// 编排层不碰文件系统路径，也就不会在单测里被迫准备一份规则库。
+    /// 空表 = 不做抑制（内置规则加载失败时的降级：宁可重复也不误吞用户条目）。
+    builtin_prefixes: Vec<String>,
 }
 
 impl<'conn, 'emitter> ScanOrchestrator<'conn, 'emitter> {
@@ -228,7 +234,17 @@ impl<'conn, 'emitter> ScanOrchestrator<'conn, 'emitter> {
             emitter,
             cancel: None,
             drives: None,
+            builtin_prefixes: Vec::new(),
         }
+    }
+
+    /// task-078：挂上内置规则的目录前缀（「内置优先」判定用）。
+    ///
+    /// 不调用 = 空表 = 不抑制。这是**有意的降级方向**：内置规则库读不出来时，
+    /// 用户规则照常生效（可能产生重复条目），而不是整块失效。
+    pub fn with_builtin_prefixes(mut self, prefixes: Vec<String>) -> Self {
+        self.builtin_prefixes = prefixes;
+        self
     }
 
     /// task-077：限定本次扫描的盘（不调用 = 全部固定盘）。
@@ -363,6 +379,12 @@ impl<'conn, 'emitter> ScanOrchestrator<'conn, 'emitter> {
             }
         }
 
+        // task-078：用户自定义规则（DB 驱动，不是 ps1 模块，也不是 Rust 内置模块）。
+        // 必须在「全失败」判定**之前**跑：只有用户规则有产出时，整体也算成功。
+        if !self.is_cancelled() {
+            self.run_user_rules(&mut summary);
+        }
+
         // task-077：全部被跳过 = 用户选了没有扫描目标的盘，这是**合法结果**（0 项），
         // 不是失败。只有「计划内有模块、且一个都没成功」才算全失败。
         if !plan.is_empty() && summary.scripts_succeeded.is_empty() {
@@ -376,6 +398,80 @@ impl<'conn, 'emitter> ScanOrchestrator<'conn, 'emitter> {
         // 必须 force——普通 emit 会被节流吞（task-053 G7.2）。
         self.emit_force_progress(100, "done", summary.total_items as u64);
         Ok(summary)
+    }
+
+    /// task-078：跑用户自定义规则（从 DB 读启用规则 → 扫描 → 入库）。
+    ///
+    /// # 为什么单独一个方法而不是塞进 [`SCRIPTS`] 循环
+    ///
+    /// 5 个内置模块是「脚本 / Rust 二选一」的同构结构，而用户规则是**数据驱动**的：
+    /// 规则来自 DB、条数随用户变化、盘归属由规则自己的静态根决定。硬塞进那个循环
+    /// 会让 `module_runs` / `rust_module_items` 都要多一个特例分支。
+    ///
+    /// # 失败与成功语义
+    ///
+    /// - **读不到规则**：打日志后跳过，**不算失败**——用户规则是附加能力，
+    ///   读不出来不该让整次扫描失败（DB 出错的话内置模块那条路也会失败）；
+    /// - **没有启用规则**：直接返回，连 `scripts_succeeded` 都不加（否则汇总里
+    ///   会凭空多一个从未运行的模块名）；
+    /// - **有规则但 0 条命中**：算成功（与内置模块「扫到 0 项也算成功」一致）。
+    fn run_user_rules(&self, summary: &mut OrchestratorSummary) {
+        let rules = match crate::ipc::commands::user_rules::list_enabled(self.conn) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("[orchestrator] 读取用户规则失败，跳过: {e}");
+                return;
+            }
+        };
+        if rules.is_empty() {
+            return;
+        }
+
+        // 转成扫描模块认识的轻量结构（scan 是内层模块，不该依赖 ipc 的行类型）
+        let specs: Vec<crate::scan::modules::user_rules::UserRuleSpec> = rules
+            .iter()
+            .map(|r| crate::scan::modules::user_rules::UserRuleSpec {
+                id: r.id,
+                name: r.name.clone(),
+                pattern: r.pattern.clone(),
+                // L3 在建规则时就被拒了，这里只可能是 L1/L2
+                risk_level: if r.risk_level.eq_ignore_ascii_case("L2") {
+                    2
+                } else {
+                    1
+                },
+            })
+            .collect();
+
+        let items = crate::scan::modules::user_rules::scan_rules(
+            &specs,
+            &self.builtin_prefixes,
+            self.drives.as_deref(),
+        );
+        eprintln!(
+            "[orchestrator] user_rules: {} 条启用规则 → {} 项",
+            specs.len(),
+            items.len()
+        );
+
+        // 进度：5 个内置模块已经铺满 0~100，用户规则是追加的一步，
+        // 用 95~100 这一段做条目内插值，收尾仍由 emit_force(100) 兜住。
+        let runner =
+            ScanRunner::new(self.session_id, self.conn, self.emitter).with_percent_span(95, 100);
+        match runner.insert_batch(&items) {
+            Ok(s) => {
+                summary.total_items += s.items_inserted;
+                summary.total_bytes += s.total_bytes;
+                // 复用 scripts_succeeded 承载「跑成功的模块名」——它不是脚本，
+                // 但语义一致（这个汇总字段的名字是 task-013 的历史遗留）。
+                summary.scripts_succeeded.push("user_rules".to_string());
+                self.emit_progress(100, "user_rules", summary.total_items as u64);
+            }
+            Err(e) => {
+                eprintln!("[orchestrator] user_rules 入库失败: {e}");
+                summary.scripts_failed.push("user_rules".to_string());
+            }
+        }
     }
 
     /// task-077：这个模块的根目录是否落在选中的盘上。

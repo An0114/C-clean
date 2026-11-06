@@ -22,7 +22,8 @@ use crate::db::DbError;
 /// 版本历史：
 /// - v1（task-002）：九张表初始 schema；
 /// - v2（task-056）：`safe_box` 加 `restored_at` 审计列（restore 改为 UPDATE 不再 DELETE）；
-/// - v3（task-077）：`cleanup_item` 加 `drive_letter` 派生列（盘符）+ 组合索引。
+/// - v3（task-077）：`cleanup_item` 加 `drive_letter` 派生列（盘符）+ 组合索引；
+/// - v4（task-078）：新增 `user_rules` 表（用户自定义清理规则）。
 ///
 /// # 为什么 v3 不是任务书说的 v2
 ///
@@ -33,6 +34,7 @@ static MIGRATIONS: &[(u32, &str)] = &[
     (1, include_str!("migrations/v1__init.sql")),
     (2, include_str!("migrations/v2__safe_box_restored_at.sql")),
     (3, include_str!("migrations/v3__drive_letter.sql")),
+    (4, include_str!("migrations/v4__user_rules.sql")),
 ];
 
 /// 对连接执行所有「版本号 > 当前 user_version」的迁移，返回迁移后的最新版本号。
@@ -84,13 +86,17 @@ mod tests {
     }
 
     #[test]
-    fn migrate_reaches_v3() {
-        // 版本号是「迁移真的跑到最后一个」的唯一硬证据
+    fn migrate_reaches_latest() {
+        // 版本号是「迁移真的跑到最后一个」的唯一硬证据。
+        // 加新迁移时**必须**同步这里——它是最容易忘、也最容易暴露「迁移没生效」的一条。
         let conn = migrated();
         let v: i64 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 3, "最新版本应为 v3（v2 已被 safe_box 占用）");
+        assert_eq!(
+            v, 4,
+            "最新版本应为 v4（v2 是 safe_box、v3 是 drive_letter、v4 是 user_rules）"
+        );
     }
 
     #[test]
@@ -184,8 +190,8 @@ mod tests {
     fn migrate_is_idempotent() {
         // 重复打开同一库不该重复执行迁移（ALTER TABLE 第二次会报「列已存在」）
         let conn = migrated();
-        assert_eq!(migrate(&conn).unwrap(), 3);
-        assert_eq!(migrate(&conn).unwrap(), 3);
+        assert_eq!(migrate(&conn).unwrap(), 4);
+        assert_eq!(migrate(&conn).unwrap(), 4);
     }
 
     #[test]
@@ -197,5 +203,66 @@ mod tests {
             .query_row("SELECT count(*) FROM cleanup_item", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n, 1);
+    }
+
+    // ===== task-078：v4 user_rules =====
+
+    #[test]
+    fn v4_creates_user_rules_table() {
+        let conn = migrated();
+        let mut stmt = conn.prepare("PRAGMA table_xinfo(user_rules)").unwrap();
+        let cols: Vec<String> = stmt
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        for want in [
+            "id",
+            "name",
+            "pattern",
+            "risk_level",
+            "enabled",
+            "created_at",
+            "updated_at",
+        ] {
+            assert!(
+                cols.iter().any(|c| c == want),
+                "user_rules 缺列 {want}: {cols:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn v4_rejects_l3_and_bad_enabled_at_db_level() {
+        // L3 = 红线，库层面直接挡死：即使绕过 IPC 直连 DB 也写不进去
+        let conn = migrated();
+        let bad_l3 = conn.execute(
+            "INSERT INTO user_rules (name, pattern, risk_level, created_at, updated_at)
+             VALUES ('x', 'D:\\a\\*', 'L3', 1, 1)",
+            [],
+        );
+        assert!(bad_l3.is_err(), "L3 规则必须被 CHECK 拒绝");
+
+        let bad_enabled = conn.execute(
+            "INSERT INTO user_rules (name, pattern, risk_level, enabled, created_at, updated_at)
+             VALUES ('x', 'D:\\b\\*', 'L1', 2, 1, 1)",
+            [],
+        );
+        assert!(bad_enabled.is_err(), "enabled 只能是 0/1");
+    }
+
+    #[test]
+    fn v4_pattern_is_unique() {
+        // 同一模式两条规则会让同一批文件被扫两遍（条目翻倍、大小重复计）
+        let conn = migrated();
+        let ins = |n: &str| {
+            conn.execute(
+                "INSERT INTO user_rules (name, pattern, risk_level, created_at, updated_at)
+                 VALUES (?1, 'D:\\Same\\*', 'L1', 1, 1)",
+                [n],
+            )
+        };
+        assert!(ins("a").is_ok());
+        assert!(ins("b").is_err(), "重复 pattern 必须被唯一索引拒绝");
     }
 }

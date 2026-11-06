@@ -68,19 +68,49 @@ fn opens_and_creates_db_file() {
     dir.close().expect("close tempdir");
 }
 
+/// task-078：v4 加了 `user_rules`，业务表从 9 张变 10 张。
+///
+/// 断言从「数量 == 9」改成「名字集合完全相等」：数量对得上但**换了一张表**
+/// （比如误删一张、多加一张）时，只比数量会假绿。集合比较能同时钉住「不多不少」。
 #[test]
-fn creates_all_9_business_tables() {
+fn creates_all_10_business_tables() {
     let dir = tempfile::tempdir().expect("tempdir");
     let conn = open(dir.path()).expect("open db");
 
-    let n: i64 = conn
-        .query_row(
-            "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
-            [],
-            |row| row.get(0),
+    let mut stmt = conn
+        .prepare(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
         )
-        .expect("count tables");
-    assert_eq!(n, 9, "应恰好创建 9 张业务表（sqlite_sequence 不计入）");
+        .expect("prepare");
+    let actual: Vec<String> = stmt
+        .query_map([], |row| row.get::<_, String>(0))
+        .expect("query")
+        .filter_map(|r| r.ok())
+        .collect();
+
+    let mut expected: Vec<String> = [
+        // v1（task-002）
+        "audit_log",
+        "cleanup_item",
+        "cleanup_plan",
+        "cleanup_task",
+        "registry_backup",
+        "rules_meta",
+        "safe_box",
+        "scan_session",
+        "settings",
+        // v4（task-078）
+        "user_rules",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    expected.sort();
+
+    assert_eq!(
+        actual, expected,
+        "业务表集合应完全一致（sqlite_sequence 不计入）"
+    );
 }
 
 #[test]
@@ -101,10 +131,11 @@ fn user_version_bumped_to_latest() {
 
     // task-056：v2 加了 safe_box.restored_at（版本号 1 → 2）。
     // task-077：v3 加了 cleanup_item.drive_letter 派生列（版本号 2 → 3）。
+    // task-078：v4 加了 user_rules 表（版本号 3 → 4）。
     assert_eq!(
         user_version(&conn),
-        3,
-        "首次迁移后 user_version 应为最新版 3"
+        4,
+        "首次迁移后 user_version 应为最新版 4"
     );
 }
 
@@ -116,7 +147,7 @@ fn migration_is_idempotent() {
 
     // 第二次打开同一数据目录：不再执行任何迁移，仍 Ok 且版本不变
     let second = open(dir.path()).expect("second open should succeed (idempotent)");
-    assert_eq!(user_version(&second), 3, "重复打开后 user_version 不应变化");
+    assert_eq!(user_version(&second), 4, "重复打开后 user_version 不应变化");
 }
 
 /// task-056：v1 库（无 `restored_at` 列）升级到 v2 —— 不报错、旧数据保留、新列为 NULL。
@@ -148,9 +179,9 @@ fn migrate_v1_to_v2_preserves_existing_rows() {
 
     // 正常 open 触发 v1 → v2 迁移。
     let conn = open(dir.path()).expect("v1 db should migrate to v2 without error");
-    // task-077：v1 库会一路升到 v3（v2 补 restored_at、v3 补 drive_letter），
-    // 中间不要求停在 v2——迁移器按「版本号 > current」连续执行。
-    assert_eq!(user_version(&conn), 3, "迁移后 user_version 应为最新 3");
+    // task-077/078：v1 库会一路升到最新（v2 补 restored_at、v3 补 drive_letter、
+    // v4 建 user_rules），中间不要求停在某个版本——迁移器按「版本号 > current」连续执行。
+    assert_eq!(user_version(&conn), 4, "迁移后 user_version 应为最新 4");
 
     let n: i64 = conn
         .query_row(
