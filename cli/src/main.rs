@@ -348,8 +348,12 @@ fn pad(s: &str, width: usize) -> String {
 }
 
 /// 表格里的一行（从 `PendingItem` 转来，避免渲染逻辑依赖 DB 类型）。
+///
+/// `id` 不打印，但 `clean` 需要它：清理走 `execute_items(&[id])`，而按路径反查
+/// 会多一次查询、还可能撞上同路径多行（同一文件跨 session 累积）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Row {
+    pub id: i64,
     pub path: String,
     pub size_bytes: i64,
     pub module_code: String,
@@ -632,23 +636,12 @@ fn do_scan(
     )
     .map_err(|e| format!("更新 session 状态失败: {e}"))?;
 
-    // 拉本轮全部条目（上限 500 = list_pending 的 MAX_PAGE_SIZE）
-    let page = engine::execute::list_pending::list_pending_page(
-        &conn,
-        Some(session_id),
-        1,
-        engine::execute::list_pending::MAX_PAGE_SIZE,
-    )?;
-    let rows: Vec<Row> = page
-        .items
-        .iter()
-        .map(|i| Row {
-            path: i.path.clone(),
-            size_bytes: i.size_bytes,
-            module_code: i.module_code.clone(),
-            risk_level: i.risk_level.clone(),
-        })
-        .collect();
+    // 拉本轮全部条目。
+    //
+    // **必须翻页**：`list_pending_page` 的 page_size 上限是 500（`MAX_PAGE_SIZE`），
+    // 只读第一页的话本机 5868 条会被截成 500——CLI 报「共 500 项」，而 `clean`
+    // 只清这 500 条，剩下 5000+ 条静默漏掉。这不是显示问题，是数据正确性问题。
+    let rows = fetch_all_rows(&conn, session_id)?;
 
     eprintln!(
         "[scan] session={session_id} 条目={} 合计={} 成功模块={:?} 跳过={:?}",
@@ -658,6 +651,39 @@ fn do_scan(
         summary.scripts_skipped
     );
     Ok((session_id, rows))
+}
+
+/// 翻页取全本 session 的条目。
+fn fetch_all_rows(conn: &rusqlite::Connection, session_id: i64) -> Result<Vec<Row>, String> {
+    let mut out: Vec<Row> = Vec::new();
+    let mut page = 1u32;
+    loop {
+        let p = engine::execute::list_pending::list_pending_page(
+            conn,
+            Some(session_id),
+            page,
+            engine::execute::list_pending::MAX_PAGE_SIZE,
+        )?;
+        let got = p.items.len();
+        out.extend(p.items.iter().map(|i| Row {
+            id: i.id,
+            path: i.path.clone(),
+            size_bytes: i.size_bytes,
+            module_code: i.module_code.clone(),
+            risk_level: i.risk_level.clone(),
+        }));
+        // 取够 total 或这一页空了就停。空页判断是防「total 与实际行数不一致」时死循环。
+        if got == 0 || out.len() as i64 >= p.total {
+            break;
+        }
+        page += 1;
+        // 兜底：500 条/页 × 1000 页 = 50 万条，远超任何真实扫描结果
+        if page > 1000 {
+            eprintln!("[警告] 条目超过 50 万，已截断（只处理前 50 万条）");
+            break;
+        }
+    }
+    Ok(out)
 }
 
 /// `scan` / `dry-run`。
@@ -754,8 +780,18 @@ fn cmd_clean(
                     picked.len(),
                     fmt_bytes(picked.iter().map(|r| r.size_bytes.max(0)).sum::<i64>() as u64)
                 );
-                let owned: Vec<Row> = picked.iter().map(|r| (*r).clone()).collect();
+                // 与 scan 同一个 `--limit`：本机 L1 有五千多项，一次刷满屏没法看。
+                // 用户真正要确认的是「量级对不对」，明细可以用 dry-run 看。
+                let take = picked.len().min(opt.limit);
+                let owned: Vec<Row> = picked.iter().take(take).map(|r| (*r).clone()).collect();
                 print!("{}", render_rows(&owned));
+                if take < picked.len() {
+                    println!(
+                        "\n（只显示前 {take} 条，共 {} 条；加 --limit {} 或改用 dry-run 看全部）",
+                        picked.len(),
+                        picked.len()
+                    );
+                }
                 let l2 = rows.iter().filter(|r| r.risk_level == "L2").count();
                 if l2 > 0 && !include_l2 {
                     println!(
@@ -787,27 +823,14 @@ fn cmd_clean(
         );
     }
 
-    // 只清本轮扫出来的条目：按 path 反查 id（list_pending 已经给了 id，这里为了
-    // 与 Row 解耦重新查一次；条目数上限 500，成本可忽略）
-    let conn = engine::db::conn::open(data_root).map_err(|e| format!("打开数据库失败: {e}"))?;
-    let page = engine::execute::list_pending::list_pending_page(
-        &conn,
-        Some(sid),
-        1,
-        engine::execute::list_pending::MAX_PAGE_SIZE,
-    )?;
-    let wanted: std::collections::HashSet<&str> = picked.iter().map(|r| r.path.as_str()).collect();
-    let ids: Vec<i64> = page
-        .items
-        .iter()
-        .filter(|i| wanted.contains(i.path.as_str()))
-        .map(|i| i.id)
-        .collect();
-
+    // 直接用扫描阶段拿到的 id（`do_scan` 已翻页取全）。**不要按路径反查**：
+    // 同一路径跨 session 会累积多行，`WHERE path = ?` 可能拿到别的会话的 id。
+    let ids: Vec<i64> = picked.iter().map(|r| r.id).collect();
     if ids.is_empty() {
-        return Err(RunError::Fail("选中的条目在数据库中已不存在".to_string()));
+        return Err(RunError::Fail("选中的条目为空".to_string()));
     }
 
+    let conn = engine::db::conn::open(data_root).map_err(|e| format!("打开数据库失败: {e}"))?;
     let external_deny = load_rules_or_empty(&resolve_rules_dir(data_root, exe_dir))
         .map(|l| engine::rules::loader::external_deny_list(&l))
         .unwrap_or_default();
@@ -1012,12 +1035,14 @@ mod tests {
     fn renders_table_with_aligned_columns() {
         let rows = vec![
             Row {
+                id: 1,
                 path: "C:\\a.tmp".into(),
                 size_bytes: 1024,
                 module_code: "temp".into(),
                 risk_level: "L1".into(),
             },
             Row {
+                id: 2,
                 path: "C:\\某个很长的中文路径\\b.log".into(),
                 size_bytes: 3 * 1024 * 1024,
                 module_code: "user_rules".into(),
