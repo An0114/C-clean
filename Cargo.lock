@@ -373,6 +373,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "c-clean-cli"
+version = "0.1.0"
+dependencies = [
+ "engine",
+ "rusqlite",
+ "serde_json",
+]
+
+[[package]]
 name = "cairo-rs"
 version = "0.18.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"

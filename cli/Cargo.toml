@@ -1,0 +1,31 @@
+[package]
+name = "c-clean-cli"
+version = "0.1.0"
+description = "C-Disk Cleaner 命令行入口（便携版核心）：scan / clean / dry-run / list-rules"
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "c-clean-cli"
+path = "src/main.rs"
+
+# ============================ 为什么没有 clap ============================
+# 任务书要求 clap 4，这里**刻意不用**，手写解析器（见 src/main.rs 的模块文档）：
+#
+# 1. **本项目一贯零依赖**：提权 exe 是手写 FFI（`elevation/`）、清理报告是手写字符串
+#    拼接（`report/mod.rs`）、glob 匹配器是手写 DP（`ipc/commands/user_rules.rs`）。
+#    一个 4 子命令的 CLI 引 clap 会带进 clap_builder / anstream / anstyle / strsim /
+#    colorchoice 等 6+ 个传递依赖，编译时间和产物体积都要涨；
+# 2. **CLI 是便携版的核心**：便携版的价值是「解压即用、依赖最少」，能少一个就少一个；
+# 3. 参数形态很窄（4 个子命令 + 3 个开关），手写 100 行足够，且**能单测**
+#    （clap 的解析行为要靠集成测试间接验，手写的解析器是纯函数，直接断言）。
+#
+# 反过来说，如果将来子命令涨到十几个、需要 shell 补全 / 复杂校验，再引 clap 也不迟
+# ——那时换掉的只是 `parse_args` 一个函数。
+[dependencies]
+engine = { path = "../engine" }
+# 只为 `Connection` 类型与 `execute` 方法。连接本身一律来自 `engine::db::conn::open`
+# （迁移由 engine 保证），CLI 不自己构造连接、不写 SQL 建表。
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+# 只用于 `--format json` 的输出构造。engine 已经依赖它，这里不会引入新的编译单元。
+serde_json = "1.0.152"
