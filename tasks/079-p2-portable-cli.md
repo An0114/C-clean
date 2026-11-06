@@ -221,3 +221,297 @@ DevAgent 交付物（后续执行结果）：
 4. 本任务文档本身**由 DocsKeeper 在派发时**单独提交一次：
    `docs(task): 新增任务079-P2收官 便携版+CLI入口 (#task-079)`，
    该提交只含 `tasks/079-p2-portable-cli.md` 一个文件，落在 `feature/task-079-p2-portable-cli` 分支最前端。
+
+## 实现备注
+
+> 开发轮（DevFullstackRustReact）交付说明。**所有结论可复现**，命令附在对应位置。
+
+### 1. 实际改动文件清单
+
+**白名单内（7 个落地 + 2 个确认不适用）**：
+
+| 文件 | 类型 | 说明 |
+|---|---|---|
+| `cli/Cargo.toml` | **新建** | 独立 crate `c-clean-cli`，不依赖 tauri |
+| `cli/src/main.rs` | **新建** | 参数解析 / 四个子命令 / 渲染 / 12 条单测 |
+| `Cargo.toml` | 改 | workspace members 加 `cli` |
+| `.github/workflows/release.yml` | 改 | 便携版构建 + zip 打包 + CLI exe 上传 |
+| `docs/CLI.md` | **新建** | 安装 / 子命令 / JSON / 便携版 / 退出码 / 脚本 |
+| `docs/PROJECT_STATE.md` | 改 | 状态同步（单独提交） |
+| `tasks/079-p2-portable-cli.md` | 改 | 本段「实现备注」（单独 `docs(task)` 提交） |
+
+**白名单列了但实际不适用**：
+
+| 文件 | 为什么不动 |
+|---|---|
+| `src-tauri/tauri.conf.json` | **路径本身就是错的**（真实路径 `app/src-tauri/tauri.conf.json`），而且**不该改**：便携版的 `appDirectoriesOverride` 是一个**相对 exe 的路径**，只在 exe 目录可写时有效。写进共享配置会让**安装版**（装到 `Program Files`，只读）每次写库都失败——Tauri 官方文档原话是「Unless every distribution of the app is portable, keep relative paths out of the shared configuration and apply them to the portable build flavor only, for instance with the CLI's `--config` flag」。所以改用独立配置文件 + `--config`（见 §4）。 |
+
+**白名单外（2 个，都是「不加功能就不存在」）**：
+
+| # | 文件 | 为什么必须加 |
+|---|---|---|
+| 1 | `app/src-tauri/tauri.portable.conf.json` | **新建**。便携版配置必须单独一个文件：`--config` 支持「JSON 文件或内联 JSON」，但把一段转义过的 JSON 塞进 YAML 的 `run:` 块既难读又容易写错，独立文件还能被编辑器按 schema 校验。 |
+| 2 | `Cargo.lock` | 加了 workspace 成员 `cli`，lock 里必须出现 `c-clean-cli` 条目（本项目 `Cargo.lock` 入库是立项决策）。 |
+
+### 2. CLI binary 名称确认
+
+**`c-clean-cli`**（产物 `target/release/c-clean-cli.exe`）。
+
+- `[[bin]] name = "c-clean-cli"` 显式声明，不依赖 crate 名推导（crate 名也叫 `c-clean-cli`，但显式写死能避免将来改 crate 名时产物跟着变）；
+- 与 GUI 的 `cdisk-cleaner.exe`、提权助手 `cclean-elevation.exe` 并列，三个 exe 名字一眼能分清谁是谁。
+
+### 3. 子命令参数设计
+
+```text
+c-clean-cli <子命令> [选项]
+
+scan          扫描并列出可清理项（摘要 + 前 N 条）
+dry-run       扫描并列出全部条目（不删除）
+clean         扫描 + 清理；默认只预览，加 --yes 才真的移入保险箱
+list-rules    列出内置规则与用户自定义规则
+
+--format <table|json>   输出格式（默认 table）
+--drive <C,D>           只扫指定盘（逗号分隔；默认全部固定盘）
+--data-dir <PATH>       数据目录
+--limit <N>             scan / clean 预览的打印条数上限（默认 50）
+--yes                   clean 时真的执行
+--include-l2            clean 时连 L2 一起清
+-h/--help  -V/--version
+```
+
+三个设计取舍：
+
+1. **不给子命令 = 打帮助，不扫描**。「什么都不做」是最安全的默认值——很多 CLI 默认执行主操作，误敲一次就动文件；
+2. **`--yes` / `--include-l2` 只能配 `clean`**。写错子命令（`scan --yes`）时静默忽略会让人以为文件被清了，所以直接报用法错误（退出码 2）；
+3. **退出码 2 = 用法错误**，与「跑起来但失败」（1）分开。脚本里最常见的分支就是「我参数写错了」，混在 1 里只能靠 stderr 猜。
+
+### 4. 便携版数据路径确认
+
+**数据目录优先级**（`pick_data_root`，纯函数、有单测）：
+
+1. `--data-dir <PATH>`
+2. 环境变量 `CCLEAN_DATA_DIR`
+3. `<exe 目录>\portable_data`（**存在即用** —— 便携版）
+4. `%APPDATA%\com.and0114.cclean`（与 GUI 安装版同一个库）
+
+**机制**：Tauri 2 的 `app.appDirectoriesOverride`（**没有 `bundle.windows.portable` 这个打包目标**）。`app/src-tauri/tauri.portable.conf.json`：
+
+```json
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "app": { "appDirectoriesOverride": "./portable_data" }
+}
+```
+
+它把 `app_data_dir()` / `app_local_data_dir()` 等路径 API 的根改成「相对 exe 的目录」，GUI 与 CLI 都跟着走。
+
+**真机实证（override 的作用域）**：
+
+```text
+便携构建（tauri build --no-bundle --config src-tauri/tauri.portable.conf.json）
+  cdisk-cleaner.exe 里 "portable_data" 出现 1 次
+普通构建（pnpm --filter app tauri build）
+  cdisk-cleaner.exe 里 "portable_data" 出现 0 次
+```
+
+即：**只有便携版带这个覆盖，安装版完全不受影响**——这正是把它从共享配置里拿出来的理由。
+
+**真机实证（数据真的跟着 exe 走）**：把 CLI exe 放进一个含 `portable_data/` 的目录里跑：
+
+```text
+target/portable-smoke/
+├── c-clean-cli.exe
+└── portable_data/
+    ├── README.txt
+    └── data/cdiskcleaner.db      ← 运行后自动创建
+```
+
+`%APPDATA%` 未被触碰。
+
+**为什么 `portable_data/` 里要放一个 README**：`Compress-Archive` **会跳过空目录**，纯空的 `portable_data` 解压后就不存在了，CLI 的「目录存在即便携」判断会失效 → 回退到 `%APPDATA%` → 用户看到「数据不见了」。放一个说明文件既让目录非空，也顺便给用户解释这个目录是什么。
+
+### 5. CI 双 artifact 配置
+
+在 `release.yml` 的「校验产物」之后插入两步：
+
+1. **构建便携版**：`tauri build --no-bundle --config src-tauri/tauri.portable.conf.json` + `cargo build --release -p c-clean-cli`；
+2. **打包 zip**：按 `bundle.resources` 的映射布局 staging（`cdisk-cleaner.exe` / `c-clean-cli.exe` / `cclean-elevation.exe` / `rules/` / `scripts/` / `portable_data/README.txt`），`Compress-Archive` 成 `C-DiskCleaner_<ver>_portable_x64.zip`，并自检 `portable_data\README.txt` 在不在。
+
+Release 的 `files:` 追加：
+
+```yaml
+            target/release/c-clean-cli.exe
+            C-DiskCleaner_*_portable_x64.zip
+```
+
+顺序说明：便携构建放在「校验产物（版本号 + .sig）」**之后**，因为它会用 `--no-bundle` 重新生成 `target/release/cdisk-cleaner.exe`；先校验安装包，就不会有任何相互影响。
+
+### 6. `cargo test --workspace`
+
+```text
+passed=632 failed=0 ignored=15
+```
+
+（task-078 收尾时 620 passed → **+12**，全部是 CLI 单测）
+
+| 用例 | 覆盖点 |
+|---|---|
+| `no_args_shows_help` | 不给子命令 = 帮助，绝不默认扫描 |
+| `parses_subcommands` | 四个子命令 + `clean` 的 `yes/include_l2` 组合 |
+| `parses_value_flags` | `--format/--limit/--drive/--data-dir`，盘符大小写与冒号归一 |
+| `rejects_usage_errors` | 9 种用法错误（未知子命令 / 未知开关 / 缺值 / 两个子命令 / `--yes` 配错子命令…） |
+| `parse_drives_rejects_garbage` | `1` / `CC` / `C,,D` / 空项都拒；重复项去重 |
+| `data_root_priority` | 数据目录四档优先级 + `%APPDATA%` 缺失时报错不瞎猜 |
+| `renders_table_with_aligned_columns` | **CJK 按 2 列算**，含中文路径那行「路径」列起点与表头一致 |
+| `renders_empty_list` / `formats_bytes` / `display_width_counts_cjk_as_two` | 空态 / 单位换算 / 宽度函数 |
+| `scan_json_keeps_documented_field_names` | **JSON 字段名契约**（`totalItems/totalBytes/shown/items[].path,sizeBytes,module,riskLevel`），且 `id` 不外泄 |
+| `scan_json_truncates_items_but_keeps_true_total` | `--limit` 只截 `items`/`shown`，`totalItems` 必须是真实总数 |
+
+### 7. `c-clean-cli --help`
+
+```text
+c-clean-cli — C-Disk Cleaner 命令行（便携版核心）
+
+用法:
+  c-clean-cli <子命令> [选项]
+
+子命令:
+  scan          扫描并列出可清理项（摘要 + 前 N 条）
+  dry-run       扫描并列出全部条目（不删除）
+  clean         扫描 + 清理；默认只预览，加 --yes 才真的移入保险箱
+  list-rules    列出内置规则与用户自定义规则
+  help          显示本帮助
+
+选项:
+  --format <table|json>   输出格式（默认 table）
+  --drive <C,D>           只扫指定盘（逗号分隔；默认全部固定盘）
+  --data-dir <PATH>       数据目录（默认 %APPDATA%\com.and0114.cclean，
+                          便携版为 exe 同目录的 portable_data）
+  --limit <N>             scan 打印条数上限（默认 50）
+  --yes                   clean 时真的执行（否则只预览）
+  --include-l2            clean 时连 L2 一起清（默认只清 L1 安全项）
+  -h, --help              显示帮助
+  -V, --version           显示版本
+
+退出码: 0 成功 / 1 运行期错误 / 2 用法错误
+```
+
+### 8. 真机冒烟证据（终端输出）
+
+**① `list-rules`**（`--data-dir target/cli-smoke`，避免污染真实库）：
+
+```text
+内置规则库 v1.0.0（1 条）
+  [A] npm_cache  (L1)
+
+用户自定义规则（0 条）
+  （无。可在 GUI 设置页添加）
+```
+
+**② `scan`**：
+
+```text
+[scan] session=1 条目=5870 合计=334.9 MB 成功模块=["scan_temp.ps1", "scan_windows_update.ps1",
+  "scan_prefetch.ps1", "scan_browser_cache.ps1", "scan_dev_cache.ps1"] 跳过=[]
+共 5870 项，合计 334.9 MB
+
+大小     风险  模块            路径
+-------  ----  --------------  ------------------------------------------
+13.0 MB  L2    windows_update  C:\WINDOWS\SoftwareDistribution\Download\SharedFileCache\e9ab08...
+12.9 MB  L1    browser_cache   C:\Users\...\cache2\entries\9AE3ADAB...
+...
+（只显示前 3 条，加 --limit 5870 或改用 dry-run 看全部）
+```
+
+**③ `scan --format json`**：
+
+```json
+{
+  "items": [
+    {
+      "module": "windows_update",
+      "path": "C:\\WINDOWS\\SoftwareDistribution\\Download\\SharedFileCache\\e9ab08...",
+      "riskLevel": "L2",
+      "sizeBytes": 13590379
+    }
+  ],
+  "shown": 1,
+  "totalBytes": 351211583,
+  "totalItems": 5869
+}
+```
+
+**④ `clean`（无 `--yes`，预览）**：
+
+```text
+[提示] 未加 --yes，只预览不删除。确认要清理请加 --yes。
+
+【预览】将清理 5828 项，合计 297.4 MB（未删除任何文件）
+...（表格）
+另有 41 条 L2（需逐项确认）未包含；确认要一起清请加 --include-l2。
+
+确认无误后执行：c-clean-cli clean --yes
+```
+
+**⑤ 便携布局（数据跟着 exe 走）**：
+
+```text
+target/portable-smoke> .\c-clean-cli.exe list-rules
+内置规则库：未找到（扫描不受影响，只是没有外部 L3 红线）   ← 该目录没有 rules/，符合预期
+用户自定义规则（0 条）
+
+--- 生成的文件 ---
+portable_data/data/cdiskcleaner.db      ← DB 落在 exe 旁边
+portable_data/README.txt
+```
+
+**GUI 截图未产出**：本机 WebView2 渲染进程创建即崩（Crashpad 持续新增 `.dmp`、CDP 9222 不通），按项目约定开发轮不做 GUI 取证。
+
+### 9. 打包安装冒烟证据
+
+```text
+# 便携版（裸 exe，无安装包）
+pnpm --filter app tauri build --no-bundle --config src-tauri/tauri.portable.conf.json
+   Finished `release` profile [optimized] target(s) in 2m 03s
+   Built application at: D:\GitHub\C-clean\target\release\cdisk-cleaner.exe
+
+# 安装版（回归）
+pnpm --filter app tauri build
+   Finished 2 bundles at:
+     ...\bundle\nsis\C-DiskCleaner_0.2.1_x64-setup.exe (4.54 MiB)
+     ...\bundle\msi\C-DiskCleaner_0.2.1_x64_en-US.msi (6.71 MiB)
+   Error A public key has been found, but no private key.
+```
+
+- **两条路径都出包成功**；NSIS/MSI 体积与 task-078 持平（4.54 / 6.71 MiB）——CLI 不进 GUI 安装包，符合预期；
+- **末尾签名步失败属已知预期**：私钥正源在 CI secret，本地没有；
+- **zip 打包步骤本地未跑**（`Compress-Archive` 那步在 CI 里；本地等价验证是手工 staging + 便携布局冒烟，见 §8⑤）；
+- **安装态复跑未做**：非管理员 shell 下 MSI per-user 静默安装未完成即被终止，归测试轮。
+
+### 10. CI
+
+**未跑。** 按项目流程（`MEMORY.md`「CI / 分支流程」）：开发分支不触发 CI，由测试环节拉 PR 后触发。
+
+### 11. 与本任务文档不符的偏差（汇总）
+
+| # | 任务书说法 | 实际处理 |
+|---|---|---|
+| 1 | 用 clap 4 解析参数 | **零依赖手写解析器**。本项目一贯零依赖（提权 exe 手写 FFI / 报告手写拼接 / glob 手写 DP）；clap 会带进 6+ 个传递依赖；参数形态只有 4 子命令 + 7 开关，手写 100 行且**能直接单测**（clap 的解析行为只能靠集成测试间接验） |
+| 2 | `bundle.windows.portable`（Tauri 2 原生支持） | **这个配置项不存在**。Tauri 2 的 bundle target 只有 `nsis/msi/app/dmg/deb/rpm/appimage/updater`；便携场景的官方机制是 `app.appDirectoriesOverride` |
+| 3 | 改 `src-tauri/tauri.conf.json` 加便携配置 | **路径写错**（真实 `app/src-tauri/`）且**不该改**：相对路径的 override 会让安装版（Program Files 只读）写库失败，Tauri 文档明确要求只作用于便携构建。改用 `app/src-tauri/tauri.portable.conf.json` + `--config` |
+| 4 | 便携版 = 单 exe | **不是单 exe**：还要 `rules/`（外部 L3 红线）、`scripts/`（ps1 回退）、`cclean-elevation.exe`（还原点/DISM）。`AppPaths::pick_resource_root` 要求「同时含 rules/ 与 scripts/ 的目录」。所以便携版是**一个文件夹**，不是单个 exe |
+| 5 | 单元 1（binary）与单元 2（子命令）分两次提交 | **合成一次提交**（`5856c9d`）：CLI 只有一个 `main.rs`，「只有 binary 骨架、没有子命令」的中间态是不可运行的死代码。子命令的正确性修复单独一次（`5c107fd`），测试单独一次（`069b407`） |
+| 6 | 未提 CLI exe 的发布 | CI 额外 `cargo build --release -p c-clean-cli` 并把 `c-clean-cli.exe` **单独上传**到 Release，同时打进便携 zip。理由：文档承诺「每个 Release 都带 c-clean-cli.exe」，脚本用户不想为拿一个 CLI 去解压整个便携包 |
+| 7 | 真机冒烟 / 打包安装冒烟「必做、不可裁剪」 | 开发轮**未做 GUI 部分**（按 `MEMORY.md`：开发轮不做 GUI/真机 UI 测试），给的是 CLI 真机输出 + 便携布局实证 + 出包证据 |
+| 8 | CI「必做」 | 开发轮**不开 PR**，按 `MEMORY.md`「开发阶段不触发 CI」 |
+
+### 12. 遗留问题
+
+- **`clean --include-l2` 不创建系统还原点**。还原点是 GUI 的交互式提权流程（要弹 UAC），命令行做不了。已在输出里明确警告，文档也写了「真要清 L2 建议用 GUI」。若要补，得给提权 exe 加一个非交互入口 + `--accept-no-restore-point` 之类的显式开关，属独立任务。
+- **CLI 没有「关闭占用进程并重试」**（GUI 的 `cleanup_retry_locked`）。被占用文件会进 `failures`，关掉程序重跑即可。
+- **CLI 一次最多处理 50 万条**（翻页上限 1000 页 × 500 条），超出打警告并截断。
+- **便携版不能放在只读目录**（`Program Files`）：它的前提就是 exe 旁边可写。文档已写明。
+- **`portable_data` 的判定是「目录存在」而不是「目录可写」**：可写性探测会真的落盘临时文件，在 Program Files 下还会弹 UAC 失败提示。存在性判断零副作用，代价是「用户手建了一个空的 portable_data 但放在只读盘」时会写失败——属边缘情况，文档已提示。
+- **P2 全部完成**。下一阶段：发版 `v0.4.0` / UI 深色适配补完（Items / SafeBox / History）/ 规则导入导出。
+- **规则库 `rules/cache_rules.json` 的 `modules` 段依然没有扫描消费者**（task-078 起就是双份真值源，本任务未触及）。建议发版前拍板：要么让内置模块按规则库驱动，要么删掉 `modules` 段只留 `whitelist_deny`。
+
