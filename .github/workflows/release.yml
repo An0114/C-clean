@@ -124,6 +124,69 @@ jobs:
           node scripts/release-lib.mjs verify-artifacts --version $env:RELEASE_VERSION --bundle $env:BUNDLE_DIR
           if ($LASTEXITCODE -ne 0) { exit 1 }
 
+      # ===== 便携版（task-079）=====
+      #
+      # **Tauri 2 没有 `bundle.windows.portable` 这个打包目标**（任务书假设的），
+      # 官方给便携场景的机制是 `app.appDirectoriesOverride`：把 `app_data_dir()`
+      # 等路径 API 的根改成一个**相对 exe 的目录**。相对路径只在「exe 所在目录可写」
+      # 时有效（便携布局、target 目录），装到 Program Files 里会写失败——所以这个
+      # 覆盖**绝不能**写进共享的 tauri.conf.json，只能通过 `--config` 只作用于
+      # 便携版这一次构建。这正是 Tauri 官方文档给的建议做法。
+      #
+      # `--no-bundle`：便携版不需要安装包，只要裸 exe + 资源文件，自己打 zip。
+      - name: 构建便携版（数据目录跟随 exe）
+        shell: pwsh
+        run: |
+          pnpm --filter app tauri build --no-bundle --config src-tauri/tauri.portable.conf.json
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          if (-not (Test-Path "target/release/cdisk-cleaner.exe")) {
+            throw "便携版 exe 未生成"
+          }
+          # CLI 是便携版的核心入口之一（task-079）。独立 crate，不走 Tauri 构建。
+          cargo build --release -p c-clean-cli
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          if (-not (Test-Path "target/release/c-clean-cli.exe")) {
+            throw "CLI exe 未生成"
+          }
+
+      - name: 打包便携版 zip
+        shell: pwsh
+        run: |
+          $stage = "target/portable"
+          if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+
+          # 布局必须与 bundle.resources 的映射一致：rules/ 与 scripts/ 在 exe 同级，
+          # 提权 exe 也在同级。AppPaths::pick_resource_root 找的就是「同时含 rules/
+          # 与 scripts/ 的目录」，而 release 下它只会看 resource_dir()（= exe 目录）。
+          Copy-Item "target/release/cdisk-cleaner.exe" $stage
+          Copy-Item "target/release/c-clean-cli.exe" $stage
+          Copy-Item "app/src-tauri/binaries/cclean-elevation.exe" $stage
+          Copy-Item "rules" (Join-Path $stage "rules") -Recurse
+          Copy-Item "scripts" (Join-Path $stage "scripts") -Recurse
+
+          # portable_data 必须**存在且非空**：
+          #   - 存在：CLI 用 `portable_data 是否 is_dir()` 判断便携布局；
+          #   - 非空：`Compress-Archive` 会跳过空目录，纯空目录解压后就没了，
+          #     CLI 会误判成安装版并回退到 %APPDATA%（数据「消失」）。
+          $pd = Join-Path $stage "portable_data"
+          New-Item -ItemType Directory -Force -Path $pd | Out-Null
+          $note = "C-Disk Cleaner 便携版数据目录`r`n`r`n本目录存放数据库、保险箱与日志（便携版不写 %APPDATA%）。`r`n删掉本目录等于重置应用：扫描历史、保险箱里的可恢复条目都会丢。`r`n请勿把便携版放在只读位置（如 Program Files），否则写入会失败。"
+          Set-Content -Path (Join-Path $pd "README.txt") -Value $note -Encoding utf8
+
+          $zip = "C-DiskCleaner_$($env:RELEASE_VERSION)_portable_x64.zip"
+          if (Test-Path $zip) { Remove-Item $zip -Force }
+          Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $zip -CompressionLevel Optimal
+          if (-not (Test-Path $zip)) { throw "便携版 zip 未生成" }
+          Get-ChildItem $zip | ForEach-Object {
+            Write-Host "便携版: $($_.Name) ($([math]::Round($_.Length / 1MB, 2)) MiB)"
+          }
+          # 自检：zip 里必须能看到 exe 与 portable_data 的说明文件
+          $names = (Get-ChildItem $stage -Recurse -File | ForEach-Object { $_.FullName.Replace("$PWD\", "") })
+          Write-Host "--- 便携版内容 ---"
+          $names | ForEach-Object { Write-Host $_ }
+          if (-not ($names -match "portable_data\\\\README.txt")) { throw "portable_data 说明文件缺失" }
+
       # ===== 生成 latest.json（updater 索引文件）=====
       # 取 NSIS 安装包 + 其 .sig 原文，URL 指向本次 Release 的 tag。
       - name: Generate latest.json
@@ -152,4 +215,6 @@ jobs:
             target/release/bundle/nsis/*.sig
             target/release/bundle/msi/*.msi
             target/release/bundle/msi/*.sig
+            target/release/c-clean-cli.exe
+            C-DiskCleaner_*_portable_x64.zip
             latest.json
