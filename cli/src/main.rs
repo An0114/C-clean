@@ -360,6 +360,26 @@ pub struct Row {
     pub risk_level: String,
 }
 
+/// 构造 `scan` / `dry-run` 的 JSON 载荷。
+///
+/// 抽成纯函数是为了**把 JSON 契约钉进单测**：`docs/CLI.md` 里写明了这几个字段名，
+/// 而脚本会按它们取值。字段改名不会有任何编译错误，只会让用户的脚本悄悄读到
+/// `undefined`——所以必须有断言守着。
+pub fn scan_json(rows: &[Row], shown: usize) -> serde_json::Value {
+    let total_bytes: i64 = rows.iter().map(|r| r.size_bytes.max(0)).sum();
+    serde_json::json!({
+        "totalItems": rows.len(),
+        "totalBytes": total_bytes,
+        "shown": shown,
+        "items": rows.iter().take(shown).map(|r| serde_json::json!({
+            "path": r.path,
+            "sizeBytes": r.size_bytes,
+            "module": r.module_code,
+            "riskLevel": r.risk_level,
+        })).collect::<Vec<_>>(),
+    })
+}
+
 /// 渲染条目表。`detailed=false` 时只出「大小 / 风险 / 模块 / 路径」四列。
 pub fn render_rows(rows: &[Row]) -> String {
     if rows.is_empty() {
@@ -703,17 +723,7 @@ fn cmd_scan(
             } else {
                 rows.len().min(opt.limit)
             };
-            let v = serde_json::json!({
-                "totalItems": rows.len(),
-                "totalBytes": total_bytes,
-                "shown": shown,
-                "items": rows.iter().take(shown).map(|r| serde_json::json!({
-                    "path": r.path,
-                    "sizeBytes": r.size_bytes,
-                    "module": r.module_code,
-                    "riskLevel": r.risk_level,
-                })).collect::<Vec<_>>(),
-            });
+            let v = scan_json(&rows, shown);
             println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default());
         }
         Format::Table => {
@@ -1095,5 +1105,52 @@ mod tests {
         assert_eq!(display_width("abc"), 3);
         assert_eq!(display_width("中文"), 4);
         assert_eq!(display_width("a中b"), 4);
+    }
+
+    // ===== JSON 契约（docs/CLI.md 承诺的字段名）=====
+
+    #[test]
+    fn scan_json_keeps_documented_field_names() {
+        let rows = vec![Row {
+            id: 7,
+            path: "C:\\a.tmp".into(),
+            size_bytes: 2048,
+            module_code: "temp".into(),
+            risk_level: "L1".into(),
+        }];
+        let v = scan_json(&rows, 1);
+
+        // 顶层字段：改名会让脚本读到 undefined，且不会有任何编译错误
+        assert_eq!(v["totalItems"], 1);
+        assert_eq!(v["totalBytes"], 2048);
+        assert_eq!(v["shown"], 1);
+        let items = v["items"].as_array().expect("items 应是数组");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["path"], "C:\\a.tmp");
+        assert_eq!(items[0]["sizeBytes"], 2048);
+        assert_eq!(items[0]["module"], "temp");
+        assert_eq!(items[0]["riskLevel"], "L1");
+        // id 是内部字段，**不该**出现在对外 JSON 里（脚本用不上，多一个就多一处要维护）
+        assert!(items[0].get("id").is_none());
+    }
+
+    #[test]
+    fn scan_json_truncates_items_but_keeps_true_total() {
+        // `--limit` 只影响 items/shown，totalItems 必须是真实总数——
+        // 否则脚本会以为「只有 2 条」，实际有 5 条（这正是真机冒烟抓到的那个 bug 的镜像）
+        let rows: Vec<Row> = (0..5)
+            .map(|i| Row {
+                id: i,
+                path: format!("C:\\f{i}.tmp"),
+                size_bytes: 10,
+                module_code: "temp".into(),
+                risk_level: "L1".into(),
+            })
+            .collect();
+        let v = scan_json(&rows, 2);
+        assert_eq!(v["totalItems"], 5);
+        assert_eq!(v["shown"], 2);
+        assert_eq!(v["items"].as_array().unwrap().len(), 2);
+        assert_eq!(v["totalBytes"], 50);
     }
 }
