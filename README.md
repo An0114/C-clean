@@ -5,7 +5,7 @@
 
 **每一个删除决定都有依据，每一次清理都能追溯。**
 
-当前版本：**v0.2.1**（[更新日志](CHANGELOG.md)）· 平台：Windows 10 / 11 x64 · 许可证：MIT
+当前版本：**v0.4.0**（[更新日志](CHANGELOG.md)）· 平台：Windows 10 / 11 x64 · 许可证：MIT
 
 ---
 
@@ -24,8 +24,9 @@
 
 ### 核心清理
 
-- **扫描**：五类目标——浏览器缓存、开发工具缓存（npm/pnpm/Cargo 等）、预读取文件、系统临时文件、Windows 更新残留。按脚本分阶段推进，实时进度与计数；支持**中途取消**（在下一个脚本前停下，已扫到的结果保留可用）。
-- **清理**：按风险分级（L0 仅提示 / L1 可直接清 / L2 需逐项确认 / L3 硬编码禁止），列表每行带**四色风险徽标**与悬停说明；执行前可 **dry-run 预览**，看到「将被删除的文件数 / 大小 / 路径清单」以及会被拦下的项与原因；「**全选 L1（安全）**」一键只勾本页安全项，L2/L3 不勾。
+- **扫描**：五类目标——浏览器缓存、开发工具缓存（npm/pnpm/Cargo 等）、预读取文件、系统临时文件、Windows 更新残留。按模块分阶段推进，实时进度与计数；支持**中途取消**（在下一个模块前停下，已扫到的结果保留可用）。**支持多盘**：可指定扫哪几个固定磁盘，也可只扫某一个。
+- **清理**：按风险分级（L0 仅提示 / L1 可直接清 / L2 需逐项确认 / L3 硬编码禁止），列表每行带**四色风险徽标**与悬停说明；执行前可 **dry-run 预览**，看到「将被删除的文件数 / 大小 / 路径清单」以及会被拦下的项与原因；「**全选 L1（安全）**」一键只勾本页安全项，L2/L3 不勾；支持**按磁盘筛选**。
+- **自定义规则**：可以自己加「哪个目录算可清理」，模式支持 `*`（单层）、`**`（跨层）、`?`（单字符）；可随时启停、编辑、删除。**只允许 L1 / L2**——L3 是红线等级，不允许被自定义规则覆盖；命中内置模块已覆盖的目录时会自动抑制，不重复计入。
 - **清理报告**：完成后可导出 **HTML 单文件**（含清理前后空间对比，双击即看）或 **CSV 明细**（UTF-8 BOM，Excel 打开中文不乱码）。
 - **保险箱**：所有删除**先移入保险箱**（默认 7 天可恢复，过期条目自动清理并写审计日志）。支持按时间区间、多 session 组合筛选；每条记录显示「来源」批次；可批量恢复（父目录缺失自动创建）或永久删除。
 - **占用进程处置**：文件被程序占用导致删不掉时，列出占用进程并可「关闭占用进程并重试」；可选**清理后自动重启被关闭的进程**（默认关闭，支持进程名白名单）。
@@ -42,11 +43,16 @@
 
 - **提权与还原点**：需要管理员权限的操作交给**独立提权程序**执行，按需 UAC、完成即退出，无常驻提权进程；该程序只认白名单内的固定命令，参数全部硬编码。
 - **系统托盘**：关闭窗口隐藏到托盘继续后台工作；右键菜单「立即扫描 / 打开主窗口 / 退出」；支持开机自启。
-- **仪表盘**：C 盘已用空间**环形图**、最近 30 天释放量**趋势图**、WinSxS 分析卡片。
+- **仪表盘**：**每个固定盘一个环形图**（已用百分比 + 可用容量）、最近 30 天释放量**趋势图**、WinSxS 分析卡片。
 - **自动扫描**：可设每天 / 每周 / 每月在后台静默扫描（**只扫描、不删除**），完成后发系统通知。
 - **深浅色主题**：跟随系统 / 浅色 / 深色三态，切换即时生效。
 - **自动更新**：启动时非阻塞检查新版本，顶部 banner 提示；下载时显示进度条、百分比、已下载大小与实时速度；失败按原因给中文提示并可重试。
 - **规则库热更新**：规则从 GitHub 拉取并校验 checksum，支持回滚到上一版；离线时自动降级使用本地规则库。
+
+### 命令行与便携版
+
+- **CLI 入口**（`c-clean-cli`）：四个子命令 `scan` / `dry-run` / `clean` / `list-rules`，全部支持 `--format json`，便于写脚本或接到别的工具里。**不依赖 Tauri**——扫描、分级、白名单、保险箱、审计复用同一套引擎，不存在「CLI 和 GUI 结果不一样」。安全默认与 GUI 一致：**默认只预览不动文件**、**默认只清 L1**、**删除一律先移入保险箱**。详见 [`docs/CLI.md`](docs/CLI.md)。
+- **便携版**：zip 解压即用，**数据跟着 exe 走**（`portable_data/`），不写 `%APPDATA%`，可与安装版共存。
 
 ## 安装
 
@@ -56,6 +62,8 @@
 |---|---|---|
 | NSIS（推荐） | `C-DiskCleaner_x.y.z_x64-setup.exe` | 安装向导，体积更小 |
 | MSI | `C-DiskCleaner_x.y.z_x64_en-US.msi` | 适合企业环境批量部署（`msiexec /i`） |
+| 便携版 | `C-DiskCleaner_x.y.z_portable_x64.zip` | 解压即用，数据存在同目录 `portable_data/`，不写注册表与 `%APPDATA%` |
+| CLI | `c-clean-cli.exe`（含在便携版 zip 内，也单独提供） | 命令行入口，见 [`docs/CLI.md`](docs/CLI.md) |
 
 > **首次运行会被 SmartScreen 拦截**（安装包未做代码签名）。点「更多信息 → 仍要运行」即可。
 > 为什么不做签名、什么条件下会做，见 [`docs/research/code-signing-evaluation.md`](docs/research/code-signing-evaluation.md)。
@@ -82,6 +90,7 @@ pnpm tauri build                    # 打包（产物在 target/release/bundle/�
 pnpm --filter app test              # 前端单测（vitest）
 cargo test --workspace              # Rust 全量测试
 cargo clippy --workspace --all-targets -- -D warnings
+cargo run -p c-clean-cli -- --help  # 跑 CLI（不进 GUI 包，构建快）
 ```
 
 打包需要 updater 签名私钥（缺失会以「public key found but no private key」失败）：
@@ -95,9 +104,10 @@ pnpm tauri build
 
 | 层 | 选型 |
 |---|---|
-| 桌面框架 | [Tauri 2](https://tauri.app/)（Rust 核心 + 系统 WebView，安装包约 4 MB） |
+| 桌面框架 | [Tauri 2](https://tauri.app/)（Rust 核心 + 系统 WebView，安装包约 4.5 MB） |
 | 前端 | React 18 + TypeScript + Vite |
-| 核心引擎 | Rust（扫描 / 分级 / 执行 / 保险箱 / 审计） |
+| 核心引擎 | Rust（扫描 / 分级 / 执行 / 保险箱 / 审计）——GUI 与 CLI 共用同一份 |
+| CLI | 纯 Rust binary（零第三方参数解析依赖，复用 engine，不链 Tauri） |
 | 本地存储 | SQLite（`rusqlite` bundled，带手写迁移器） |
 | 系统集成 | Windows Restart Manager（占用进程处置）、DISM（组件存储分析/清理）、系统还原点、UAC 提权独立 exe、托盘与通知、注册表直接读写（`windows` crate FFI，不引第三方 winreg 封装） |
 | 规则库 | JSON（远端拉取 + checksum 校验 + 本地回滚） |
@@ -108,9 +118,10 @@ pnpm tauri build
 C-clean/
 ├── app/                  Tauri 应用（React 前端 + src-tauri 主进程壳）
 ├── engine/               Rust 核心（db / scan / execute / ipc）
+├── cli/                  命令行入口（c-clean-cli，不依赖 Tauri，复用 engine）
 ├── elevation/            独立提权 exe（按需 UAC，完成即退出）
 ├── rules/                JSON 规则库（与 scripts/ 共用同一规则源）
-├── scripts/              扫描脚本（5 个 scan_*.ps1 + smoke_test.ps1）+ 发版工具（release-lib.mjs）
+├── scripts/              扫描脚本的 ps1 回退实现（5 个 scan_*.ps1 + smoke_test.ps1）+ 发版工具（release-lib.mjs）
 ├── docs/                 设计文档、评审报告、测试报告、技术评估、项目状态白板
 ├── tasks/                任务文档（按编号拆分）
 ├── CHANGELOG.md          更新日志
@@ -135,6 +146,7 @@ C-clean/
 - [`docs/PROJECT_STATE.md`](docs/PROJECT_STATE.md)——项目当前状态与已知问题
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)——模块边界与关键约束
 - [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md)——面向用户的功能说明（改 UI 时请同步更新）
+- [`docs/CLI.md`](docs/CLI.md)——命令行用法与 JSON 输出字段（改 CLI 时请同步更新）
 
 提交前请确保 `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace`、`pnpm --filter app lint/test/build` 全部通过。
 
