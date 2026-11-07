@@ -1,6 +1,6 @@
 [package]
 name = "c-clean-cli"
-version = "0.1.0"
+version = "0.4.0"
 description = "C-Disk Cleaner 命令行入口（便携版核心）：scan / clean / dry-run / list-rules"
 edition.workspace = true
 rust-version.workspace = true
