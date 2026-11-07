@@ -185,7 +185,9 @@ jobs:
           $names = (Get-ChildItem $stage -Recurse -File | ForEach-Object { $_.FullName.Replace("$PWD\", "") })
           Write-Host "--- 便携版内容 ---"
           $names | ForEach-Object { Write-Host $_ }
-          if (-not ($names -match "portable_data\\\\README.txt")) { throw "portable_data 说明文件缺失" }
+          # -like 通配符：反斜杠按字面处理，避免 -match 正则里反斜杠双重转义的坑
+          # （PowerShell 双引号不转义 \，写 \\\\ 会变成正则匹配两个反斜杠，永远匹配不上单 \ 路径）。
+          if (-not ($names -like "*portable_data\README.txt")) { throw "portable_data 说明文件缺失" }
 
       # ===== 生成 latest.json（updater 索引文件）=====
       # 取 NSIS 安装包 + 其 .sig 原文，URL 指向本次 Release 的 tag。
