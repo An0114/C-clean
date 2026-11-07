@@ -3,9 +3,18 @@
 > **特别声明**：本文件是项目唯一真实数据源，也是「每次任务结束必更新、必单独提交」的文件。后续所有 Agent 必须遵守：任何任务完成后都要先更新本文件，再单独提交一次（commit message 形如 `docs(state): ... (#task-00X)`），不得与业务代码混在同一个 commit。
 
 ## 当前目标
-**P2 全部完成（2026-11-06）**：多盘扫描（task-077）+ 用户自定义规则（task-078）+ **便携版 + CLI（task-079）**。CLI 是独立 crate `cli/`（`c-clean-cli`），**不依赖 Tauri**，`scan / dry-run / clean / list-rules` 四个子命令全复用 engine 的扫描与清理链路（含 L3 白名单、保险箱、审计日志）。便携版走 Tauri 2 的 `app.appDirectoriesOverride`（**没有 `bundle.windows.portable` 这种东西**），数据跟着 exe 走。**下一阶段：发版 `v0.4.0`（release-prep）/ UI 深色适配补完（Items/SafeBox/History）/ 规则导入导出**。历史决策不变：代码签名不做、品牌图标不做、G6 不修；跨盘恢复 fallback / RmShutdown 连带兄弟进程 / RmShutdown 30s 无进度三项维持现状。
+**v0.4.0 发版准备就绪（2026-11-07）**：版本号四处（+2 处白名单遗漏）升到 `0.4.0`、CHANGELOG 补齐 v0.4.0 条目、README / 用户手册同步。**版本线 = R5 架构债（5 个 ps1 全部 Rust 重写，task-074~076）+ P2 三项（多盘扫描 task-077 / 用户自定义规则 task-078 / 便携版 CLI task-079）**，patch 承载不了，故 minor 发版。**发版动作不在开发轮**：tag `v0.4.0` 由 DocsKeeper 在 PR 合并 main 后手动打（打 tag 才会触发 release.yml 出 NSIS + 便携版 + CLI）。**下一阶段 = UI 深色适配补完（Items / SafeBox / History，task-081）/ 规则导入导出**。历史决策不变：代码签名不做、品牌图标不做、G6 不修；跨盘恢复 fallback / RmShutdown 连带兄弟进程 / RmShutdown 30s 无进度三项维持现状。
 
 ## 最近一次变更
+2026-11-07：**task-080 开发完成（v0.4.0 release-prep），状态 `testing`**（`feature/task-080-release-v0.4.0`）：
+  - **① 版本号 `0.2.1` → `0.4.0`**：`app/src-tauri/tauri.conf.json`（前端 `getVersion()` 的唯一来源）、`app/src-tauri/Cargo.toml`、`app/package.json`、根 `package.json`（**白名单漏了**）+ **`cli/Cargo.toml`**（**白名单漏了，但不改就出不来验收标准要的 `c-clean-cli --version` = 0.4.0**，它读的是 `env!("CARGO_PKG_VERSION")`）。根 `Cargo.toml` 是纯 workspace（无 `[package]`），没有 version 可改。`engine` / `elevation` 保持 `0.1.0`（内部库，版本独立是常态，且 elevation 不进版本线）。
+  - **② CHANGELOG v0.4.0 条目**：新增（多盘 / 自定义规则 / CLI / 便携版）+ 架构优化（R5 五模块 Rust 化，含 Firefox 缓存导致条目数 653 倍的用户可见副作用）+ 测试（新增 62 条 Rust + 17 条前端）+ 已知问题（新增三条：三页深色未覆盖 / 规则无导入导出 / 规则库 `modules` 段双份真值源）。**日期写 2026-11-07 而不是任务书示例的 11-06**——11-06 是派发日，实际准备日是 11-07。
+  - **③ README + 用户手册同步**：README 版本号 / 功能列表（多盘、自定义规则、CLI、便携版）/ 安装表（加便携版 zip 与 CLI 行）/ 目录结构（加 `cli/`）/ 技术栈 / 开发命令；`docs/USER_GUIDE.md` 头部版本 + **3.1 由「C 盘环形图」改「每盘一个环」**（顺带修正了原文档写错的阈值：代码是 ≥85% 红、≥70% 橙，原文写的是「85 转橙、95 转红」）+ 4.1 多盘说明（**明写「非系统盘 0 项是正确结果」**）/ 4.2~4.4「脚本」改「模块」、删掉已不适用的「PowerShell 执行策略」失败原因 + 5.1 加按盘筛选 + **12 章新增 12.2 自定义规则**（原 12.2~12.4 顺延为 12.3~12.5）+ **新增第 15 章「命令行（CLI）与便携版」**（原第 15 章常见问题顺延为 16，含一处交叉引用同步）。
+  - **门禁**：`cargo check --workspace --all-targets` 0、`cargo test --workspace` **632 passed / 0 failed / 15 ignored**（无代码改动，纯回归）、lint **0 error**（2 warning 均 SafeBox.tsx 既有）、`pnpm build` 250.34 kB、`cargo build --workspace` 输出 `cdisk-cleaner v0.4.0` / `c-clean-cli v0.4.0`。
+  - **打包冒烟（比任务书要求的更实）**：`tauri build` 出 **`C-DiskCleaner_0.4.0_x64-setup.exe`（4.54 MiB）+ `C-DiskCleaner_0.4.0_x64_en-US.msi`（6.70 MiB）**——**文件名已带 0.4.0**；MSI **per-user 静默安装到干净目录成功**（`msiexec exit 0`），安装态 `cdisk-cleaner.exe` 的 `FileVersion` / `ProductVersion` **均为 0.4.0**，`rules/` + `scripts/` 已打包，**安装目录不含 `portable_data`**；便携配置构建的 exe 里 `portable_data` 出现 **1 次**、安装态 exe **0 次**（override 作用域实证）；便携布局实测 CLI `--version` = `0.4.0`、DB 落 `portable_data/data/cdiskcleaner.db`。**验完已卸载干净**（`msiexec /x` exit 0，目录消失）。
+  - **一个坑（值得记）**：`tauri build` **不编译 CLI**，release 目录里的 `c-clean-cli.exe` 会停留在上一次构建的版本——第一次核对时它报的是 `0.1.0`。CI 的 `release.yml` 里有单独的 `cargo build --release -p c-clean-cli`（第 146 行），所以发版不受影响；但**本地手动验版本号必须单独跑这一步**。
+  - **未做**：真机 GUI 窗口冒烟（本机 WebView2 渲染进程创建即崩，MEMORY 已记）、tag 与 Release（按流程归 DocsKeeper / 测试轮）、CI（开发轮不触发）。
+
 2026-11-06：**task-079 开发完成（P2 收官：便携版 + CLI），状态 `testing`**（`feature/task-079-p2-portable-cli`）：
   - **① CLI 独立 binary（`cli/`，`c-clean-cli`）**：独立 crate，**不依赖 tauri**，只 `use engine::...`——扫描/清理/白名单/保险箱/审计全部复用 GUI 那条唯一入口，一行都没绕过。**任务书要求 clap 4，改为零依赖手写解析器**：本项目一贯零依赖（提权 exe 手写 FFI、报告手写拼接、glob 手写 DP），clap 会带进 6+ 个传递依赖；参数形态只有 4 子命令 + 7 个开关，手写 100 行且**能直接单测**（clap 的解析行为只能靠集成测试间接验）。
   - **② 四个子命令**：`scan`（摘要 + 前 N 条）/ `dry-run`（全部明细）/ `clean`（**默认只预览**，`--yes` 才动文件）/ `list-rules`（内置 + 用户规则）+ `--format json`。**三条安全设计与 GUI 完全一致**：默认 dry-run、默认只清 L1（L2 需额外 `--include-l2`）、删除是**移入保险箱**（可恢复）而非抹掉。**`--include-l2` 不创建系统还原点**（那是 GUI 的交互式提权流程，命令行弹不了 UAC），所以在输出里明确警告。
@@ -652,6 +661,7 @@
 - [x] 077：**P2 起步——多盘扫描**——**① 磁盘枚举**（`scan/drive_enum.rs`：`GetLogicalDrives` 位图 + `GetDriveTypeW` **只收 `DRIVE_FIXED`**——U 盘/网络盘列进清理列表是安全问题不是性能问题；容量查询失败仍返回该盘、记 0；`drive_letter_of` 认 `C:\`/`c:/`/`\\?\C:\`，UNC 返回 None）；**② 编排层按盘过滤**（**不是按盘换路径**——5 个模块根目录都锚定在 `%TEMP%`/`%LOCALAPPDATA%`/`%APPDATA%`/`%SystemRoot%`，`D:\Windows\Temp` 不存在；模块级跳过 + 条目级过滤两层；**Prefetch/Update 只在系统盘跑不靠硬编码 C:**，靠 `%SystemRoot%` 自然跳过；槽位按实际要跑的模块数切、标签带盘符；新增 `scripts_skipped`「跳过≠失败」与 `per_drive` 按盘汇总）；**③ v3 迁移**（**任务书的 `v2__drive_letter.sql` 是错的，v2 已被 task-056 占用**，两个 v2 会让后一个永远不执行且无报错；用 **VIRTUAL 生成列**从 path 派生 + `(session_id, drive_letter)` 组合索引；生成列保证与 path 物理上不可能不一致，且不碰两条入库路径共用的 `runner.rs`）；**④ 前端**（Dashboard 单环→多盘并列，一次 `drive_list` 拿全部；`totalBytes=0` 显示「容量未知」；Items 盘筛选**服务端过滤** + 切换时清空勾选）（`feature/task-077-p2-multi-drive-scan`；**开发轮完成，状态 `testing`**；门禁 check/clippy/fmt 0、`cargo test --workspace` **585 passed**（+32）、vitest **189**（+9）、lint 0 error、build **244.06 kB**；真机数据：固定盘 C 400G / D 551.6G，不限盘 **7704 项 / 491.6 MB 全在 C:**，**只选 D: → 0 项 / 5 模块全跳过 / 返回 Ok**；**真机 GUI 与安装态冒烟未做**，按流程归测试轮）
 - [x] 078：**P2——用户自定义规则管理**——**① v4 迁移 + CRUD**（`user_rules` 表：pattern 唯一索引 + enabled 索引；**`risk_level` 加 `CHECK (IN ('L1','L2'))`——L3 是「红线永不删除」，一条 L3 的清理规则语义自相矛盾，库层面挡死**；`created_at/updated_at` 用 **INTEGER unix 秒**而非任务书的 TEXT，与全库时间列和前端 `formatTs` 对齐；5 个 CRUD 函数 + 5 条 Tauri 命令）；**② 规则真正参与扫描**（**关键发现：`rules/loader.rs` 在扫描链路上原本没有消费者**，只服务 L3 外部红线与规则库比对——新增 `scan/modules/user_rules.rs` 才让「加规则→扫描→有条目」成立；**三道过滤**：glob 匹配 → **逐条真实路径过 L3 红线**（创建时校验静态根，扫描时校验真实路径，两者不能互相替代）→ 内置优先抑制；每条规则 20,000 条上限 + 回调式遍历；`loader.rs` 新增 `builtin_dir_prefixes`/`covered_by_builtin`）；**③ Settings UI**（`UserRulesSection`：列表/新增弹窗/编辑预填/删除 confirm/开关；**更新时原样带回 enabled** 防「改名把开关重置」；单字段开关走独立命令；校验失败显示后端真实原因）；**④ 测试 +18**（含真实端到端：加规则 → run_all → cleanup_item 出现 user_rules 条目 → 停用 → 新 session 不再出现）（`feature/task-078-p2-user-custom-rules`；**开发轮完成，状态 `testing`**；门禁 check/clippy/fmt 0、`cargo test --workspace` **620 passed**（+18）、vitest **197**（+8）、lint 0 error、build **250.34 kB**；**真实升级验证**：仓库 v1 时代库副本实测 v1→v4 全部成功；**真机 GUI 与安装态冒烟未做**，按流程归测试轮）
 - [x] 079：**P2 收官——便携版 + CLI 入口**——**① CLI 独立 crate**（`cli/`，`c-clean-cli`，**不依赖 tauri**，扫描/清理/白名单/保险箱/审计全复用 engine；**任务书要 clap 4，改零依赖手写解析器**——本项目一贯零依赖且手写解析器可直接单测）；**② 四子命令**（`scan` / `dry-run` / `clean` / `list-rules` + `--format json`；**默认 dry-run、默认只清 L1、删除走保险箱**；`--include-l2` 明确警告「不创建系统还原点」）；**③ 便携版**（**任务书的 `bundle.windows.portable` 在 Tauri 2 不存在**，正解是 `app.appDirectoriesOverride` + `--config` 只作用于便携构建——写进共享配置会让安装版往 Program Files 写数据而失败；CI 出裸 exe 再连同 rules/scripts/提权 exe/CLI 打 zip，`portable_data/` 放 README 占位防空目录被 `Compress-Archive` 丢掉）；**④ 文档**（`docs/CLI.md`）；**真机冒烟抓到真 bug**：`list_pending_page` 单页上限 500 → CLI 只看到 500/5870 条、`clean` 会漏清 5370 条，已改翻页取全（`feature/task-079-p2-portable-cli`；**开发轮完成，状态 `testing`**；门禁 check/clippy/fmt 0、`cargo test --workspace` **632 passed**（+12）、lint 0 error、build 250.34 kB；便携布局实测 DB 落在 `portable_data/`；**真机 GUI 与安装态冒烟未做**，按流程归测试轮）
+- [x] 080：**v0.4.0 发版准备**——**① 版本号 6 处**（`tauri.conf.json` / `app/src-tauri/Cargo.toml` / `app/package.json` / 根 `package.json` / `cli/Cargo.toml` + `Cargo.lock`；根 `Cargo.toml` 是纯 workspace 无 version，`engine`/`elevation` 保持 0.1.0）；**② CHANGELOG v0.4.0**（新增 / 架构优化 / 测试 / 已知问题四段）；**③ README + USER_GUIDE 同步**（含 3.1 改多盘环、新增 12.2 自定义规则、新增第 15 章 CLI、章节顺延）；**④ 打包冒烟**（NSIS 4.54 MiB + MSI 6.70 MiB，文件名带 0.4.0；MSI per-user 装到干净目录，安装态 exe 版本 0.4.0，验完卸载）。**tag 与 Release 不在开发轮**，归 DocsKeeper / 测试轮。
 > 注：040~047 的完成明细未回填本清单（历史遗漏），以「最近一次变更」段与 `tasks/040-*.md`~`tasks/047-*.md` 为准。
 > 编号顺延（2026-10-24）：原定 050 的「safe_box 增强」顺延为 **051**，050 让位给发版阻塞级的打包资源路径缺陷。
 
@@ -674,10 +684,10 @@
 - [B 低] **品牌图标（决策不做）**：沿用 Tauri 默认占位，待后续有设计出 1024×1024 源 PNG 后再跑 `tauri icon`。
 ## 下一步计划
 1. **R5 架构债：5 个模块全部 Rust 化已完成（task-074/075/076）**。剩下的只有「删脚本」这一步：`paths::scripts_dir`、`tauri.conf.json` 的 `bundle.resources` 里 scripts 映射、`ScanRunner::run_script`、以及 `engine/tests/scan_orchestrator.rs` / `scan_progress_percent.rs` 两个 ps1 编排测试。**建议先让 v0.4.0 发一版、收集一个版本周期的反馈再删**——回退开关（`CCLEAN_RUST_*=0`）是唯一的兜底手段，脚本一删就没了。届时安装包能少带 5 个 ps1 文件。
-2. **P2 全部完成（task-077 多盘 / task-078 自定义规则 / task-079 便携版 + CLI）**。**下一阶段**：发版 `v0.4.0`（release-prep）/ **UI 深色适配补完**（Items / SafeBox / History 三页）/ 规则导入导出。两条与后续任务相关的结论仍然成立：
-   - **多盘仍缺「每盘都有」的目标**（task-077 只做了「哪些盘可以选」）：5 个内置模块在非系统盘上没有目标，所以「D 盘 0 项」是常态。要真正有产出需新增回收站（`$Recycle.Bin` 本就每卷一份）/ Top-N 大文件 / `Windows.old`。**task-078 的用户规则是绕开这个限制的唯一途径**（规则可指向任意盘的任意目录）。
-   - **规则库 `rules/cache_rules.json` 的 `modules` 段依然没有扫描消费者**（task-078 只把用户规则接进了扫描，没动内置那份）。要么把内置模块改成「按规则库驱动」（大改，需重新定义 5 个模块的路径来源），要么删掉 `modules` 段只保留 `whitelist_deny`（规则库瘦身）。**现在是「文件里写着一份、代码里硬编码一份」的双份真值源**，建议发版前拍板。
-3. **版本线**：task-072~079 攒着，发 **`v0.4.0`**（R5 架构级变更 + 多盘 + 自定义规则 + CLI/便携版都是新能力，patch 承载不了）。发版前需在 CHANGELOG 写清五件事：「5 个模块改由 Rust 扫描，ps1 仅作回退」、Firefox 缓存导致条目数暴涨、**多盘模式下非系统盘可能显示 0 项（不是 bug）**、**用户自定义规则只允许 L1/L2（L3 是红线等级）**、**新增 CLI 与便携版（便携版数据在 exe 同目录 `portable_data/`，不写 %APPDATA%）**。
+2. **v0.4.0 发版准备完成（task-080）**：版本号 / CHANGELOG / README / 用户手册已就绪，`feature/task-080-release-v0.4.0` 待测试轮 + PR + 合并 + 打 tag。**下一阶段**：**UI 深色适配补完（Items / SafeBox / History，task-081）** / 规则导入导出。两条与后续任务相关的产品结论仍然有效：
+   - **多盘仍缺「每盘都有」的目标**（task-077 只做了「哪些盘可以选」）：5 个内置模块在非系统盘上没有目标，所以「D 盘 0 项」是常态。要真正有产出需新增回收站（`$Recycle.Bin` 本就每卷一份）/ Top-N 大文件 / `Windows.old`。
+   - **规则库 `rules/cache_rules.json` 的 `modules` 段依然没有扫描消费者**（task-078 只把用户规则接进了扫描，没动内置那份）。要么改成规则库驱动（大改），要么删掉 `modules` 段只留 `whitelist_deny`。**现在是「文件里写一份、代码里硬编码一份」的双份真值源**，建议 task-081 前拍板。
+3. **版本线**：**`v0.4.0` 已准备就绪（task-080），待打 tag**。发版前需在 Release notes 写清四件事：「5 个模块改由 Rust 扫描，ps1 仅作回退」、Firefox 缓存导致条目数暴涨（7 → 4576）、**多盘模式下非系统盘可能显示 0 项（不是 bug）**、**用户自定义规则只允许 L1/L2（L3 是红线等级）**。
 4. **顺带能收敛的老问题**：风险等级现在分散在各 `modules/*.rs` 的常量里，`rules/cache_rules.json` 的 `modules` 段至今没有消费者、`grade/` 分级模块从未实现。5 个模块迁完后可以把分级收进 `ScanItem` 的构造处，规则库那份重复定义就能删掉。
 5. **三个待决策项已拍板（2026-11-03）**：
    - **L0 进清理列表**：后续要给 L0 找真实候选（现有模块只出 L1/L2），前端灰标 L0 已就绪（`RISK_META` 四色 L0 灰）；
@@ -687,40 +697,18 @@
 7. **遗留边界不变**：Top100 截断、残留「文件残留」误报无法归零、计划任务扫描非管理员恒空、DISM 15 分钟上限、深色未覆盖 Items/SafeBox/History 三页、跨盘恢复不支持、未做代码签名。
 
 ## 当前负责人 Agent
-**测试 Agent（提示词 9）**——`feature/task-079-p2-portable-cli` 开发轮已完成、状态 `testing`，待测试轮：独立重跑全部门禁 + 开 PR 触发 CI + **真机冒烟（任务书要求不可裁剪，开发轮做不了）**。本任务有三条独立路径，**分开验**：
-
-**【A. CLI】**（可自动化的部分最多，优先做）
-① `c-clean-cli --help` 打印帮助、退出码 0；`c-clean-cli` 不带子命令**只打帮助、不扫描**；
-② `c-clean-cli scan` 输出表格（大小/风险/模块/路径四列对齐），末尾有「只显示前 N 条」提示；
-③ `c-clean-cli scan --format json > x.json` 用 `python -m json.tool x.json` 能解析，字段为 `totalItems / totalBytes / shown / items[]`；**日志与警告必须在 stderr**（stdout 只有 JSON）；
-④ `c-clean-cli clean`（无 `--yes`）**必须只预览、一个文件都不动**；再 `clean --yes` 才真清，且清完去 GUI 保险箱页能看到条目（证明走的是保险箱而不是直接删）；
-⑤ `c-clean-cli clean --yes --include-l2` 应打印「不创建系统还原点」的警告；
-⑥ 退出码：`c-clean-cli nope` → 2；`c-clean-cli scan --format yaml` → 2；正常扫描 → 0；
-⑦ `c-clean-cli list-rules` 列出内置规则版本 + 用户规则（先去设置页加一条再验）。
-
-**【B. 便携版】**
-⑧ 解压 `C-DiskCleaner_<ver>_portable_x64.zip`，目录里应有 `cdisk-cleaner.exe` / `c-clean-cli.exe` / `cclean-elevation.exe` / `rules/` / `scripts/` / `portable_data/README.txt`；
-⑨ **双击 `cdisk-cleaner.exe` 应能启动，且 `portable_data/` 下出现 `data/cdiskcleaner.db`**——这是「数据跟着 exe 走」的唯一硬证据（开发轮已用 CLI 验过同一条路径，GUI 需真机确认）；
-⑩ 启动后 `%APPDATA%\com.and0114.cclean` **不应被创建**（若被创建说明 override 没生效，那就会与安装版抢同一个库）；
-⑪ 便携版里跑 `c-clean-cli list-rules` 应能读到 `rules/`（不再是「未找到」）。
-
-**【C. 安装版回归】**
-⑫ NSIS 装到干净目录仍能正常启动与扫描（**确认安装版数据仍在 `%APPDATA%`**，即 portable 的 override 没有污染共享配置）；
-⑬ CDP console 0 红错（G6 除外）；⑭ 深色主题跟随（本任务无前端改动，回归即可）。
-
-**注意**：本任务**没改前端、没改 DB schema**，GUI 出问题先查「是不是装成了便携版却去找 %APPDATA%」。**已知的正常现象**：`prefetch` 显示 0 项（ACL 限制）；非系统盘默认 0 项（需用户规则）。上一手：DevFullstackRustReact（task-079 开发）。再上一手：DocsKeeper（task-079 派发）。
-
-① 点「开始扫描」→ 清理页能看到 **`dev_cache` 模块的条目**（本机实测 `pip_cache` 21 项 / 0.1 MB，`npm_cache` 与 `pnpm_store` 为 0——**0 是正常的**，本机没装 npm/pnpm 缓存或已被清过）；
-② 清理页能看到 **`windows_update` 模块的条目**（本机实测 **9 项 / 29.6 MB**，类别 `update_download`）——**这批条目风险等级是 L2（黄色），不是绿色 L1**，这是设计如此：更新缓存文件多属 SYSTEM、更新安装中删会中断安装，所以不参与「全选 L1」；
-③ **全部 5 个模块都应走 Rust**：扫描时任务管理器里不应出现 `powershell.exe` 子进程（可对比 `CCLEAN_RUST_ALL=0` 启动后的表现）；
-④ **回退验证**：`CCLEAN_RUST_ALL=0` 启动再扫一次 → 结果应与默认模式**基本一致**（两边都是等价重写；唯一已知差异是 Firefox 缓存那条 task-075 的新增项会消失），且这次能看到 `powershell.exe` 起来；
-⑤ **单模块回退**：`CCLEAN_RUST_DEV_CACHE=0` / `CCLEAN_RUST_WINDOWS_UPDATE=0` 各试一次；
-⑥ 扫描速度应明显快于纯 ps1 模式（外部解释器每次启动 ~1s，5 个模块就是 5s 固定开销）；
-⑦ CDP console 0 红错（G6 除外）；⑧ 深色主题下清理页跟随（本任务无前端改动，回归即可）。
-
-另：安装态（NSIS 干净目录）复跑 ①②③④。**注意**：本任务**没有**改前端，条目显示出问题先查 `module_code` / `category` / `risk_level` 三个字段。**已知的正常现象**：`prefetch` 模块显示 0 项（ACL 限制，task-075 起就是这样）。
-
-上一手：DevFullstackRustReact（task-076 开发）。再上一手：DocsKeeper（task-076 派发）。
+**测试 Agent（提示词 9）**——`feature/task-080-release-v0.4.0` 开发轮已完成、状态 `testing`，待测试轮。
+**本任务几乎全是文档/版本号，但有一处必须实测**（否则「版本号升级成功」只是纸面结论）：
+① `cargo build --workspace` 输出 `cdisk-cleaner v0.4.0` 与 `c-clean-cli v0.4.0`；
+② **`./target/release/c-clean-cli.exe --version` 必须输出 `c-clean-cli 0.4.0`**——注意 `tauri build` **不编译 CLI**，先跑 `cargo build --release -p c-clean-cli`，否则会看到陈旧的 `0.1.0`（开发轮踩过）；
+③ NSIS/MSI 文件名带 `0.4.0`；装到干净目录后 `cdisk-cleaner.exe` 的 `FileVersion`/`ProductVersion` = `0.4.0`；
+④ GUI 关于页 / 设置页显示 v0.4.0（本机 WebView2 起不来，开发轮未做，**这是测试轮要补的真机证据**）；
+⑤ 便携版 zip 解压后 CLI `--version` = `0.4.0`、数据落 `portable_data/`、`%APPDATA%\com.and0114.cclean` 不被创建；
+⑥ CHANGELOG 四段齐全、README 与 USER_GUIDE 的版本号不再是 0.2.1；
+⑦ **文档一致性抽查**：USER_GUIDE 第 12 章小节编号 12.1~12.5 连续、第 15/16 章标题与目录一致、「杀毒软件拦截」的 FAQ 锚点指向 `#16-常见问题`（原 `#15` 已改）。
+**发版动作不在测试轮**：PR 合并 main 后由 **DocsKeeper 手动打 tag**（`git tag -a v0.4.0 -m "..."` + `git push origin v0.4.0`），tag 才会触发 `release.yml` 出 NSIS + MSI + 便携版 zip + CLI。
+**已知预期**：`tauri build` 末尾签名步报「public key found but no private key」——项目一贯如此，不是本次引入。
+上一手：DevFullstackRustReact（task-080 开发）。再上一手：DocsKeeper（task-080 派发）。
 
 ## Git 提交记录
 | Commit | 任务 | 说明 |
@@ -1222,7 +1210,10 @@
 | 0f0bff9 | #task-079 | feat(bundle): 便携版打包配置（appDirectoriesOverride + CI 双 artifact + CLI exe） |
 | b3e1b15 | #task-079 | docs(cli): CLI 使用文档（安装 + 子命令示例 + JSON 格式 + 便携版） |
 | 069b407 | #task-079 | test(cli): 参数解析 / 数据目录三档 / 表格对齐 / JSON 契约单测（12 条） |
-| （本次） | #task-079 | docs(state): 任务079完成，P2 收官——便携版 + CLI 入口就绪 |
+| 859184e | #task-080 | chore(release): 版本号升级至 v0.4.0（四处同步） |
+| c929a4f | #task-080 | docs(changelog): v0.4.0 条目（R5 收官 + P2 全部完成） |
+| 5ab73ea | #task-080 | docs(readme): 功能列表同步（多盘扫描 + 自定义规则 + CLI + 便携版） |
+| （本次） | #task-080 | docs(state): 任务080完成，v0.4.0 release-prep 就绪 |
 
 ---
 变更轨迹：
@@ -1365,3 +1356,5 @@
 - 2026-11-04  task-077  P2 起步（多盘扫描）：**磁盘枚举**（`scan/drive_enum.rs` 新建：`GetLogicalDrives()` 位图 + `GetDriveTypeW` **只收 `DRIVE_FIXED`(3)**——U 盘/网络盘/光驱/内存盘一律排除，这是**安全边界**：把 U 盘列进清理列表，用户一次误勾就是删别人机器上的数据；容量走 `GetDiskFreeSpaceExW`，**查询失败仍返回该盘、容量记 0**（「盘存在但查不到容量」≠「盘不存在」，前端对 `totalBytes=0` 显示「容量未知」而不是画 0% 的空环）；`drive_letter_of` 认 `C:\` / `c:/` / `\\?\C:\`（剥长路径前缀，canonicalize 的产物真实存在），UNC 与相对路径返回 `None` 而不是硬套成 `'\'`。**`DRIVE_FIXED` 常量在 windows 0.58 的 `Storage::FileSystem` 里没有导出**（实测 `unresolved import`），按头文件原值写 `const DRIVE_FIXED: u32 = 3` 并留注释，避免下次又去 import 一个不存在的名字）；**编排层按盘过滤**（**关键判断：「多盘」= 按盘过滤，不是按盘换路径**。5 个模块的根目录全是 `%TEMP%` / `%LOCALAPPDATA%` / `%APPDATA%` / `%SystemRoot%` 锚定的，`D:\Windows\Temp` 这类路径根本不存在，硬造出来只会扫到 0 项还骗用户「已扫 D 盘」。两层实现：**模块级**——根目录全不在选中盘就整个模块跳过（连扫描都不做，省掉几千个文件的遍历）；**条目级**——模块照跑但只留落在选中盘上的条目（覆盖 `%TEMP%` 在 D:、系统在 C: 的跨盘情形）。**「Prefetch / Windows Update 只在系统盘跑」不靠硬编码 `C:`**——它们的根是 `%SystemRoot%`，用户不选系统盘就自然跳过，Windows 装在 D 盘的机器照样正确。槽位按**实际要跑的模块数**切（不是固定 5），标签带盘符；新增 `scripts_skipped`（**跳过≠失败**：用户选了没有目标的盘，结果是 0 项而不是 `AllScriptsFailed`）与 `per_drive`（从 DB 按 session 汇总，Rust / ps1 两条路径都覆盖，被选中但 0 项的盘也列出）。**没加 `ScanProgress.drive` 字段**——盘符写进 `current_path` 标签就够了，加字段要连带动 `runner.rs`（白名单外）与多处测试构造点，对前端零可见收益）；**DB v3 迁移**（**任务书的 `v2__drive_letter.sql` 是错的：v2 已被 task-056 占用**（`safe_box.restored_at`）。两个 v2 会让后一个**永远不执行且无任何报错**（`migrate()` 只跑「版本号 > user_version」）。改为 v3，用 **VIRTUAL 生成列** `drive_letter` 从 `path` 派生——`ALTER TABLE ADD COLUMN` 只允许加虚拟生成列（STORED 只能建表时指定），且生成列在物理上**不可能**与 path 不一致，也不用碰 `runner.rs` 这个 ps1/Rust 共用的入库入口；表达式与 Rust 侧 `drive_letter_of` 逐条对齐并有交叉断言（不一致的表现是「Rust 过滤认为在 D 盘、DB 记成 C 盘」）；索引是 `(session_id, drive_letter)` **组合**而非单列——本表所有查询都以 session 打头，单列索引用不上。**测试踩坑**：`PRAGMA table_info` **不列生成列**（要 `table_xinfo`），`cleanup_item.session_id` 有外键（要先插 `scan_session`））；**列表按盘筛选**（`list_pending_page_by_drive` 新增函数而不是给旧函数加参数——加参数要改一批既有用例的字面量，不值得；SQL 用 `drive_letter` 列命中索引而不是 `substr(path,1,1)`；盘符在服务端归一化（`"C"` / `"c"` / `"C:"` 都认），归一化后为空串退化为「不筛选」而不是「筛一个不存在的盘」）；**前端**（Dashboard 单环→**多盘并列**，一次 `drive_list` 拿全部（`drive_list` 自带 total/free，N 个盘不该发 N+1 次 IPC）；Items 加盘筛选下拉框，**服务端过滤**——前端只筛当前页的话 `total` 与分页条还是全量数字，用户翻十页也翻不完；切换盘时**清空勾选**（否则「清理已选」会删掉列表里看不见的项）；有筛选才带 `drive` 实参，不筛选时载荷仍是 `{page,pageSize}`，既有测试零改动）。**真机数据**：固定盘 **C: 400 GB / 218 GB 可用、D: 551.6 GB / 247 GB 可用**；不限盘 **7704 项 / 491.6 MB，全部落在 C:**（temp 3096、browser_cache 4578、dev_cache 21、windows_update 9、prefetch 0）；**只选 D: → 0 项、5 个模块全跳过、返回 Ok**。这就是「多盘」在本产品的真实形态：**D 盘 0 项是正确结果，不是漏扫**——那 5 个模块在 D 盘上没有任何目标；要让 D 盘真有条目，得加「每盘都有」的扫描目标（回收站 / Top-N 大文件 / Windows.old），那是独立任务。门禁 check/fmt/clippy 0、cargo test **585 passed**（+32）、vitest **189**（+9）、lint 0 error、build **244.06 kB**（+1.05 kB）、**tauri build 出 NSIS 4.51 MiB + MSI 6.68 MiB**（末尾签名步无私钥失败属已知预期）。**真机 GUI/安装态冒烟未做**（本机 WebView2 起不来），归测试轮
 - 2026-11-04  task-078  P2（用户自定义规则）：**v4 迁移 + CRUD**（`user_rules` 表：`pattern` 唯一索引 + `enabled` 索引；**两处纠正任务书**：① `risk_level` 加 `CHECK (IN ('L1','L2'))`——**L3 的语义是「红线永不删除」，一条 L3 的清理规则会扫出永远删不掉的条目，自相矛盾**，库层面挡死，绕过 IPC 直连 DB 也写不进；② `created_at/updated_at` 用 **INTEGER unix 秒**而不是 TEXT，本库所有时间列都是 INTEGER 且前端 `formatTs(unixSec: number)` 只吃数字，同一张库里两种时间表示最容易出错。5 个 CRUD 函数 + 5 条 Tauri 命令；**错误走 `Err(String)` 而不是 `Envelope::err`**——后者的 `message` 是 `&'static str`，装不下「路径模式太宽泛」这种逐条不同的原因，用户会只看到「内部错误」）；**规则真正参与扫描（本任务核心）**——**关键发现：`rules/loader.rs` 在扫描链路上原本没有任何消费者**（只服务 `external_deny_list` 与规则库更新/回滚比对，5 个内置模块各自硬编码路径），所以「只改 loader 就能让规则生效」是错的；新增 `scan/modules/user_rules.rs`，**三道过滤缺一不可**：`glob_match`（自写 DP 匹配器，`*` 段内 / `**` 跨段 / `?` 单字符，防 `*a*a*a…` 指数爆炸）→ **逐条真实路径过 `whitelist::classify`**（创建时校验的是「模式的静态根」，而通配符可能展开到子目录里的敏感文件，**两者不能互相替代**）→ `covered_by_builtin` 内置优先抑制（否则 `%TEMP%\*` 会让同一批文件出现两遍、大小重复计）。`loader.rs` 新增 `builtin_dir_prefixes`/`covered_by_builtin` 承载「内置优先」，**边界必须落在分隔符上**（纯前缀会把 `c:\temp2` 误判成 `c:\temp` 之下）；每条规则 **20,000 条上限** + 回调式遍历（够数即停，不把整棵树读进内存）；`category` 用 `user_rule_<id>` 而不是规则名（id 稳定，改名不会让清理方案失效）；**Settings UI**（`UserRulesSection`：列表 / 新增弹窗 / 编辑预填 / 删除 confirm / 开关即时生效；**更新时原样带回 `enabled`** 防「改名顺手把开关重置成开」；单字段开关走独立命令 `user_rules_set_enabled`，不复用 update——多传一个字段就多一个覆盖机会；模式太宽泛 / 指向受保护位置等校验原因**直接显示后端原文**）；**真实升级验证**：仓库里 `data/cdiskcleaner.db` 是 **v1 时代**的库（9 张表），复制副本按 `MIGRATIONS` 顺序实测 **v1 → v4 全部成功**（`drive_letter` 生成列 + `user_rules` 表 + 两个索引都在），既有数据无损。门禁 check/fmt/clippy 0、cargo test **620 passed**（+18）、vitest **197**（+8）、lint 0 error、build **250.34 kB**（+6.28 kB）、**tauri build 出 NSIS 4.54 MiB + MSI 6.71 MiB**（末尾签名步无私钥失败属已知预期）。**真机 GUI/安装态冒烟未做**（本机 WebView2 起不来），归测试轮
 - 2026-11-06  task-079  P2 收官（便携版 + CLI）：**CLI 独立 crate**（`cli/`，`c-clean-cli`，**不依赖 tauri**——扫描/清理/白名单/保险箱/审计全复用 engine 那条唯一入口，一行都没绕过；**任务书要 clap 4，改为零依赖手写解析器**：本项目一贯零依赖（提权 exe 手写 FFI、报告手写拼接、glob 手写 DP），clap 要带进 6+ 个传递依赖，而参数形态只有 4 子命令 + 7 个开关，手写 100 行且**能直接单测**——clap 的解析行为只能靠集成测试间接验）；**四个子命令**（`scan` 摘要 + 前 N 条 / `dry-run` 全部明细 / `clean` **默认只预览**、`--yes` 才动文件 / `list-rules` 内置 + 用户规则，全部支持 `--format json`；**三条安全设计与 GUI 完全一致**：默认 dry-run、默认只清 L1（L2 需 `--include-l2`）、删除是**移入保险箱**（可恢复）而非抹掉；`--include-l2` 明确警告「不创建系统还原点」——那是 GUI 的交互式提权流程，命令行弹不了 UAC）；**便携版**（**任务书的 `bundle.windows.portable` 在 Tauri 2 里不存在**，官方机制是 `app.appDirectoriesOverride`——把 `app_data_dir()` 等路径 API 的根改成相对 exe 的目录；且**只能通过 `--config` 作用于便携版那一次构建**，写进共享的 `tauri.conf.json` 会让安装版往 Program Files 写数据而失败（Tauri 文档原话）。新增 `app/src-tauri/tauri.portable.conf.json`，CI 用 `tauri build --no-bundle --config ...` 出裸 exe，再连同 `rules/`、`scripts/`、提权 exe、CLI exe 打 zip；`portable_data/` 里放 README 占位——**`Compress-Archive` 会跳过空目录**，纯空目录解压后消失，CLI 就会误判成安装版；CI 同时把 `c-clean-cli.exe` 作为独立产物上传）；**文档**（`docs/CLI.md`：安装 / 四子命令示例 / JSON 字段表 / 便携版布局 / 退出码 / 典型脚本 / 已知限制）。**真机冒烟（CLI）**：`list-rules` 列出内置 v1.0.0 + 用户规则；`scan` 真扫 **5870 项 / 334.9 MB**（5 模块全 Rust）；`--format json` 字段与文档一致；**便携布局实测**——CLI exe 放进含 `portable_data/` 的目录里跑，DB 落在 `portable_data/data/cdiskcleaner.db`，`%APPDATA%` 未被触碰。**真机冒烟抓到一个真 bug**：`list_pending_page` 单页上限 500，CLI 只读第一页 → 报「共 500 项」且 `clean` 只会清 500 条、**剩下 5370 条静默漏掉**；改成翻页取全（50 万条兜底），修复后总数与编排层一致。**override 作用域实证**：便携构建的 exe 里 `portable_data` 字符串出现 1 次，普通构建的 exe 里 **0 次**——证明它确实只作用于便携版，安装版不受影响。门禁 check/fmt/clippy 0、cargo test **632 passed**（+12，全部是 CLI 单测）、lint 0 error、`pnpm build` 250.34 kB（无前端改动）、**tauri build 出 NSIS 4.54 MiB + MSI 6.71 MiB**（与 task-078 持平：CLI 不进 GUI 包）。**真机 GUI/安装态冒烟未做**（本机 WebView2 起不来），归测试轮
+
+- 2026-11-07  task-080  v0.4.0 发版准备：**版本号 6 处升到 0.4.0**（`tauri.conf.json` / `app/src-tauri/Cargo.toml` / `app/package.json` / **根 `package.json`** / **`cli/Cargo.toml`** + `Cargo.lock`；**后两处是白名单遗漏**——根 `package.json` 不升会留下 0.2.1 的残留，`cli/Cargo.toml` 不升则验收标准要的 `c-clean-cli --version` 出不来 0.4.0，因为它读的是 `env!("CARGO_PKG_VERSION")`。根 `Cargo.toml` 是纯 workspace（无 `[package]`），没有 version 可改；`engine`/`elevation` 保持 0.1.0——内部库版本独立是常态，且 elevation 不进版本线）；**CHANGELOG v0.4.0**（新增：多盘 / 自定义规则 / CLI / 便携版；架构优化：R5 五模块 Rust 化，**明写 Firefox 缓存导致条目数 7 → 4576 的用户可见副作用**；测试：新增 62 条 Rust + 17 条前端；已知问题：新增三页深色未覆盖 / 规则无导入导出 / 规则库 `modules` 段双份真值源。**日期按实际准备日写 11-07，不是任务书示例的 11-06**）；**README 同步**（版本号 / 功能列表 / 安装表加便携版 zip 与 CLI / 目录结构加 `cli/` / 技术栈 / 开发命令 / 文档链接）；**USER_GUIDE 同步**（头部版本；**3.1 由「C 盘环形图」改「每盘一个环」，顺带修正原文档写错的阈值——代码是 ≥85% 红 / ≥70% 橙，原文写的「85 转橙、95 转红」是错的**；4.1 多盘说明**明写「非系统盘 0 项是正确结果」**；4.2~4.4「脚本」改「模块」并删掉已不适用的「PowerShell 执行策略」失败原因；5.1 加按盘筛选；**12 章新增 12.2 自定义规则**，原 12.2~12.4 顺延为 12.3~12.5；**新增第 15 章「命令行（CLI）与便携版」**，原第 15 章常见问题顺延为 16 并同步交叉引用）。**门禁**：check 0 / `cargo test --workspace` **632 passed**（无代码改动，纯回归）/ lint 0 error（2 warning 均 SafeBox.tsx 既有）/ `pnpm build` 250.34 kB。**打包冒烟**：`tauri build` 出 **`C-DiskCleaner_0.4.0_x64-setup.exe`（4.54 MiB）+ `C-DiskCleaner_0.4.0_x64_en-US.msi`（6.70 MiB）**，文件名带 0.4.0；**MSI per-user 静默装到干净目录成功**（exit 0），安装态 exe `FileVersion`/`ProductVersion` 均 0.4.0，`rules/`+`scripts/` 已打包，**安装目录不含 `portable_data`**；便携构建 exe 里 `portable_data` 出现 1 次、安装态 0 次（override 作用域实证）；便携布局 CLI `--version` = 0.4.0、DB 落 `portable_data/data/cdiskcleaner.db`；验完已 `msiexec /x` 卸载干净。**踩坑**：`tauri build` **不编译 CLI**，release 目录的 `c-clean-cli.exe` 会停在旧版本（首次核对报的是 0.1.0）——CI 的 `release.yml` 有单独 `cargo build --release -p c-clean-cli` 所以发版不受影响，但本地验版本必须单独跑这一步。**未做**：真机 GUI 窗口冒烟（本机 WebView2 渲染进程创建即崩）、tag 与 Release（归 DocsKeeper / 测试轮）、CI（开发轮不触发）。
