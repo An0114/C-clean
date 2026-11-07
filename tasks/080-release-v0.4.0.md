@@ -205,3 +205,143 @@ DevAgent 交付物（后续执行结果）：
 4. 本任务文档本身**由 DocsKeeper 在派发时**单独提交一次：
    `docs(task): 新增任务080-发版v0.4.0（R5收官+P2全部完成） (#task-080)`，
    该提交只含 `tasks/080-release-v0.4.0.md` 一个文件，落在 `feature/task-080-release-v0.4.0` 分支最前端。
+
+---
+
+## 实现备注
+
+> 由 DevFullstackRustReact 在开发轮追加（2026-11-07）。
+
+### 1. 实际改动文件清单（与白名单对照）
+
+| 文件 | 白名单 | 说明 |
+|---|---|---|
+| `app/src-tauri/tauri.conf.json` | ✅（任务书写成 `src-tauri/`，路径错） | `version` 0.2.1 → 0.4.0 |
+| `app/src-tauri/Cargo.toml` | ✅（同上） | `version` 0.2.1 → 0.4.0 |
+| `app/package.json` | ✅ | `version` 0.2.1 → 0.4.0 |
+| `package.json`（根） | ❌ **遗漏** | `version` 0.2.1 → 0.4.0。不升会留下 0.2.1 的残留 |
+| `cli/Cargo.toml` | ❌ **遗漏** | `version` 0.1.0 → 0.4.0。**不改则验收标准 12 的 `c-clean-cli --version` 出不来 0.4.0**（读 `env!("CARGO_PKG_VERSION")`） |
+| `Cargo.lock` | ❌ **遗漏** | 版本号变更的必然产物 |
+| `CHANGELOG.md` | ✅ | 新增 v0.4.0 条目 |
+| `README.md` | ✅ | 版本号 / 功能列表 / 安装表 / 目录结构 / 技术栈 / 开发命令 |
+| `docs/USER_GUIDE.md` | ✅ | 版本号 / 3.1 多盘 / 4.1~4.4 / 5.1 / 12 章 / 新增 15 章 |
+| `docs/PROJECT_STATE.md` | ✅ | 单独提交 |
+
+**白名单列了但确认不需要改**：根 `Cargo.toml` —— 它是**纯 workspace 清单**（只有 `[workspace]` 段，无 `[package]`），**没有 version 字段**。任务书写「如统一版本则同步」，实际情况是不需要。
+
+**未改**：`engine/Cargo.toml`（0.1.0）、`elevation/Cargo.toml`（0.1.0）—— 内部库版本独立是常态，且 `elevation` 不进版本线。
+
+### 2. 版本号确认
+
+| 位置 | 值 |
+|---|---|
+| `app/src-tauri/tauri.conf.json` | `0.4.0` |
+| `app/src-tauri/Cargo.toml` | `0.4.0` |
+| `app/package.json` | `0.4.0` |
+| `package.json`（根） | `0.4.0` |
+| `cli/Cargo.toml` | `0.4.0` |
+| 根 `Cargo.toml` | 无 version 字段（纯 workspace） |
+
+前端版本号来自 `@tauri-apps/api/app` 的 `getVersion()`，唯一来源是 `tauri.conf.json` —— 改一处即可，代码里**没有硬编码版本号**（已 grep 确认 `app/src`、`app/src-tauri/src`、`engine/src`、`cli/src` 中的 `0.2.1` 全部是历史注释，不是版本常量）。
+
+### 3. CHANGELOG v0.4.0 条目摘要
+
+`## [0.4.0] - 2026-11-07`（**日期按实际准备日写，任务书示例是 11-06 即派发日**），四段：
+
+- **新增**：多盘扫描（含「非系统盘 0 项是正确结果」的说明）/ 用户自定义规则（L1-L2 限制、内置优先、20000 条上限）/ CLI 四子命令 / 便携版。
+- **架构优化**：R5 五模块 Rust 化（不再 spawn PowerShell；ps1 保留回退；**明写 Firefox 缓存导致条目数 7 → 4576 的用户可见副作用**）+ `drive_letter` 派生列。
+- **测试**：新增 62 条 Rust + 17 条前端；累计 632 / 197 全绿。
+- **已知问题**：新增三条（三页深色未覆盖 / 规则无导入导出 / 规则库 `modules` 段双份真值源），并说明 v0.2.x 的其余问题除「深色未全覆盖」外仍有效。
+
+### 4. README 功能列表更新摘要
+
+- 版本号 `v0.2.1` → `v0.4.0`；
+- 扫描条目补「支持多盘」；新增「自定义规则」条目；
+- 仪表盘描述由「C 盘环形图」改「每个固定盘一个环形图」；
+- 新增「命令行与便携版」小节（CLI 四子命令 + 安全默认 + 指向 `docs/CLI.md`）；
+- 安装表新增「便携版 zip」与「CLI」两行；
+- 目录结构新增 `cli/`；`scripts/` 说明改为「ps1 回退实现」；
+- 技术栈新增 CLI 行；开发命令新增 `cargo run -p c-clean-cli -- --help`；贡献段新增 `docs/CLI.md` 链接。
+
+### 5. 构建输出（版本号 0.4.0）
+
+```text
+$ cargo build --workspace
+   Compiling cdisk-cleaner v0.4.0 (D:\GitHub\C-clean\app\src-tauri)
+   Compiling c-clean-cli v0.4.0 (D:\GitHub\C-clean\cli)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 00s
+
+$ cargo build --release -p c-clean-cli
+   Compiling c-clean-cli v0.4.0 (D:\GitHub\C-clean\cli)
+    Finished `release` profile [optimized] target(s) in 7.49s
+
+$ ./target/release/c-clean-cli.exe --version
+c-clean-cli 0.4.0
+
+$ pnpm --filter app build
+dist/assets/index-DAVbbap7.js  250.34 kB │ gzip: 77.59 kB
+✓ built in 2.60s
+```
+
+`pnpm build` 本身不打印应用版本（Vite 只打产物大小），应用版本由 `tauri.conf.json` 决定、经 `tauri build` 体现为**产物文件名**与 **exe 版本资源**，见第 6 节。
+
+### 6. 打包冒烟证据
+
+```text
+Running makensis to produce ...\bundle\nsis\C-DiskCleaner_0.4.0_x64-setup.exe
+Running light to produce ...\bundle\msi\C-DiskCleaner_0.4.0_x64_en-US.msi
+Finished 2 bundles at:
+    C-DiskCleaner_0.4.0_x64-setup.exe (4.54 MiB)
+    C-DiskCleaner_0.4.0_x64_en-US.msi (6.70 MiB)
+```
+
+**安装态实测（MSI per-user 静默装到干净目录）**：
+
+```text
+msiexec /i C-DiskCleaner_0.4.0_x64_en-US.msi /qn ALLUSERS=2 MSIINSTALLPERUSER=1 INSTALLDIR=target\install-smoke
+→ exit 0
+安装目录内容：cdisk-cleaner.exe / cclean-elevation.exe / rules/ / scripts/ / Uninstall.lnk
+cdisk-cleaner.exe  FileVersion = 0.4.0   ProductVersion = 0.4.0   17.95 MB
+安装目录含 portable_data？ False（正确——安装版不该被便携 override 污染）
+rules/cache_rules.json、rules/rules_meta.json、scripts/scan_*.ps1 均已打包
+→ 验完 msiexec /x 卸载，exit 0，目录消失
+```
+
+**便携版实测**：
+
+```text
+便携配置构建的 exe：portable_data 字符串出现 1 次
+安装态 exe：      portable_data 字符串出现 0 次
+→ 证明 appDirectoriesOverride 只作用于便携版那一次构建
+
+便携布局（exe + rules/ + scripts/ + portable_data/ 同目录）：
+  c-clean-cli --version → c-clean-cli 0.4.0
+  c-clean-cli list-rules → 内置规则库 v1.0.0（1 条）
+  DB 落点 → portable_data/data/cdiskcleaner.db
+```
+
+**真机 GUI 窗口冒烟：未做。** 本机 WebView2 渲染进程创建即崩（见 `MEMORY.md`），无法取窗口截图。开发轮能给的替代证据是：安装态 exe 的版本资源 = 0.4.0、`getVersion()` 的唯一来源（`tauri.conf.json`）= 0.4.0、前端无硬编码版本。**窗口内「关于页 / 设置页显示 v0.4.0」必须由测试 Agent 在真机补**。
+
+### 7. CI
+
+**未跑**——按 `MEMORY.md` 的流程约定：**开发轮不触发 CI**，由测试轮开 PR 触发。故本备注不含 CI run URL。已知风险：task-074/075 的 CI 曾在「Rust 测试」步骤红而本地全绿，本分支推上去需测试轮定位（纯文档改动，理论上不应引入新红）。
+
+### 8. 与本任务文档不符的偏差
+
+1. **当前版本不是 v0.1.7，是 v0.2.1**（任务书「现状」段写错）。本次从 0.2.1 升到 0.4.0。
+2. **`src-tauri/` 实际在 `app/src-tauri/`**（任务书全文的路径都少了 `app/`）。
+3. **根 `Cargo.toml` 没有 version**（纯 workspace），不需要改。
+4. **白名单漏了 3 个必改文件**：根 `package.json`、`cli/Cargo.toml`、`Cargo.lock`。其中 `cli/Cargo.toml` 属于**不改就无法通过验收标准 12** 的硬遗漏。
+5. **版本号实际改了 5 个文件（6 处，含 `Cargo.lock`）而不是任务书说的「四处」**。
+6. **CHANGELOG 日期写 2026-11-07**（实际准备日），任务书示例是 11-06（派发日）。
+7. **`docs/USER_GUIDE.md` 顺带修正了原文档的错误**：3.1 节原文写「超过 85% 转橙，超过 95% 转红」，而代码（`Dashboard.tsx`）是 `>=85% 红 / >=70% 橙`。既然这一节本来就要改成多盘描述，一并改对，不留已知错误。
+8. **章节顺延**：USER_GUIDE 新增 12.2「自定义规则」使原 12.2~12.4 顺延为 12.3~12.5；新增第 15 章「命令行（CLI）与便携版」使原第 15 章「常见问题」顺延为 16。两处交叉引用（`#124-行为偏好`、`#15-常见问题`）已同步。
+9. **`latest.json` 未改**：它当前是 `0.1.0` 占位，文件内注释明确写「首次 workflow_dispatch 触发后，release.yml 会用真实签名覆盖此文件」——属 CI 产物，手改无意义且会被覆盖。也不在白名单内。
+10. **tag 未打**：按任务书「由 DocsKeeper 在 PR 合并 main 后手动打」，开发轮不做。
+
+### 9. 遗留问题
+
+- **真机 GUI 版本号显示未取证**（WebView2 崩溃）——测试轮补。
+- **v0.4.0 尚未真正发布**：需 PR 合并 main → DocsKeeper 打 tag → `release.yml` 出四个产物（NSIS / MSI / 便携版 zip / CLI exe）。
+- **下一阶段**：UI 深色适配补完（Items / SafeBox / History，task-081）/ 规则导入导出。
+- 规则库 `rules/cache_rules.json` 的 `modules` 段仍是双份真值源，建议 task-081 前拍板。
