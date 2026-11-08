@@ -25,6 +25,9 @@ pub mod dev_cache;
 pub mod prefetch;
 /// task-083 B2：基于已安装软件清单的缓存识别。
 pub mod software_cache;
+#[cfg(test)]
+#[path = "software_cache_test.rs"]
+mod software_cache_test;
 pub mod temp;
 /// 用户自定义规则扫描（task-078）。
 pub mod user_rules;
