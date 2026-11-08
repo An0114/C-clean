@@ -367,7 +367,11 @@ fn orchestrator_runs_five_rust_modules_without_any_ps1() {
                 "windows_update",
                 "prefetch",
                 "browser_cache",
-                "dev_cache"
+                "dev_cache",
+                // task-083：软件感知是**数据驱动的追加步骤**，不占 SCRIPTS 槽位，
+                // 但确实会产生自己 module_code 的条目。这里同步放开白名单。
+                // 注意「5 个 Rust 模块」的断言仍然成立（scripts_succeeded 不含它）。
+                "software_cache"
             ]
             .contains(&c.as_str()),
             "出现了非法 module_code: {c}"
