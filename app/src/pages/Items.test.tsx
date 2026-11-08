@@ -699,3 +699,32 @@ describe("盘筛选（task-077）", () => {
     expect(screen.getAllByRole("checkbox").length).toBeGreaterThan(0);
   });
 });
+
+// ===== task-082：路径列横向滚动 =====
+//
+// 路径常常长到几百字符（浏览器缓存的 hash 目录尤其夸张），折行会把每行撑成
+// 三五行、整张表失去可读性。改成「一行 + 横向滚动 + hover 看完整」。
+
+describe("路径列横向滚动（task-082）", () => {
+  it("路径列包了一层可横向滚动的容器（overflow-x 写在 td 上不生效）", async () => {
+    mockInvoke();
+    render(<Items />);
+    await waitFor(() => expect(screen.getByText("C:\\Temp\\locked.txt")).toBeInTheDocument());
+
+    const cell = screen.getByText("C:\\Temp\\locked.txt");
+    const box = cell.tagName === "DIV" ? cell : cell.querySelector("div");
+    expect(box).toBeTruthy();
+    expect(box!.style.maxWidth).toBe("400px");
+    expect(box!.style.overflowX).toBe("auto");
+    expect(box!.style.whiteSpace).toBe("nowrap");
+  });
+
+  it("hover 显示完整路径（title 挂在 td 上）", async () => {
+    mockInvoke();
+    render(<Items />);
+    await waitFor(() => expect(screen.getByText("C:\\Temp\\locked.txt")).toBeInTheDocument());
+
+    const td = screen.getByText("C:\\Temp\\locked.txt").closest("td");
+    expect(td?.getAttribute("title")).toBe("C:\\Temp\\locked.txt");
+  });
+});

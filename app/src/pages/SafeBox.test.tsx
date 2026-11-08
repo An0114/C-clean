@@ -277,3 +277,43 @@ describe("审计历史展开（D19）", () => {
     );
   });
 });
+
+// ===== task-082：来源 / 大小的 hover 说明 =====
+//
+// 这三条钉的是「列表里显示的信息不够时，hover 能补上」：
+// 路径会被列宽截断、大小是四舍五入值、来源只有一个井号。
+
+describe("来源与大小的 hover 说明（task-082）", () => {
+  it("路径列 title 是完整路径（列宽有限，长路径必然被截断）", async () => {
+    await renderLoaded();
+    // 同一个路径在「审计历史」展开行里也会出现（那里没有 title），
+    // 所以不能只取第一个匹配——找那个真的挂了 title 的单元格。
+    const cells = screen
+      .getAllByText("C:\\Temp\\a.bin")
+      .map((el) => el.closest("td"))
+      .filter((td): td is HTMLTableCellElement => td !== null);
+    const titled = cells.find((td) => td.getAttribute("title"));
+    expect(titled?.getAttribute("title")).toBe("C:\\Temp\\a.bin");
+  });
+
+  it("大小列 title 给精确字节数（列表显示的是四舍五入值）", async () => {
+    await renderLoaded();
+    // ENTRIES[0] = 1024 B → 列表显示「1.0 KB」
+    const td = screen.getByText("1.0 KB").closest("td");
+    const title = td?.getAttribute("title") ?? "";
+    expect(title).toContain("1,024");
+    expect(title).toContain("1024 B");
+  });
+
+  it("来源列 title 说明「#7」是清理批次（光看井号没人知道指什么）", async () => {
+    await renderLoaded();
+    const span = screen.getByText("#7");
+    expect(span.getAttribute("title")).toContain("清理批次 #7");
+  });
+
+  it("历史遗留条目（sourceTaskId=null）仍保留原有的解释性 title", async () => {
+    await renderLoaded();
+    const legacy = screen.getByText("历史（无来源）");
+    expect(legacy.getAttribute("title")).toContain("v0.1.6");
+  });
+});

@@ -284,3 +284,43 @@ describe("注册表健康中心", () => {
     expect(screen.queryByText("GhostLauncher")).toBeNull();
   });
 });
+
+// ===== task-082：命令列横向滚动 =====
+//
+// 命令常常长到几百字符（带一堆 `--flag=value`），折行会把每行撑成好几行，
+// 整张表失去可读性。改成「一行 + 横向滚动 + hover 看完整」。
+
+describe("命令列横向滚动（task-082）", () => {
+  it("命令列包了一层可横向滚动的容器（overflow-x 写在 td 上不生效）", async () => {
+    mockInvoke();
+    render(<RegistryHealth />);
+    await screen.findByText("Everything");
+
+    const cell = screen.getByText("D:\\everything\\Everything.exe -startup");
+    // 文本在 div 里，div 才是滚动容器；td 本身没有 overflow
+    const box = cell.tagName === "DIV" ? cell : cell.querySelector("div");
+    expect(box).toBeTruthy();
+    expect(box!.style.maxWidth).toBe("300px");
+    expect(box!.style.overflowX).toBe("auto");
+    expect(box!.style.whiteSpace).toBe("nowrap");
+  });
+
+  it("hover 显示完整命令（title 挂在 td 上，不再挂注册表键）", async () => {
+    mockInvoke();
+    render(<RegistryHealth />);
+    await screen.findByText("Everything");
+
+    const cell = screen.getByText("D:\\everything\\Everything.exe -startup");
+    const td = cell.closest("td");
+    expect(td?.getAttribute("title")).toBe("D:\\everything\\Everything.exe -startup");
+  });
+
+  it("注册表键没丢——挪到了名称列（原来挂在命令列 title 上，答非所问）", async () => {
+    mockInvoke();
+    render(<RegistryHealth />);
+    await screen.findByText("Everything");
+
+    const nameTd = screen.getByText("Everything").closest("td");
+    expect(nameTd?.getAttribute("title")).toContain("CurrentVersion\\Run");
+  });
+});
