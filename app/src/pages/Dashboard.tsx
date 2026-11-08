@@ -338,56 +338,63 @@ export default function Dashboard({ scanSignal = 0 }: { scanSignal?: number }) {
         </div>
       )}
 
-      {status === "ok" && data && (
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "1fr 1fr",
-            gap: 12,
-          }}
-        >
-          <div style={cardStyle}>
-            <div style={labelStyle}>总释放空间</div>
-            <div style={valueStyle("var(--text)")}>{formatBytes(data.totalBytesFreed)}</div>
-          </div>
-          <div style={cardStyle}>
-            <div style={labelStyle}>成功次数</div>
-            <div style={valueStyle("var(--text)")}>{data.successCount}</div>
-          </div>
-          <div style={cardStyle}>
-            <div style={labelStyle}>失败次数</div>
-            <div style={valueStyle(data.failedCount > 0 ? "#dc2626" : "var(--text)")}>
-              {data.failedCount}
-            </div>
-          </div>
-          <div style={cardStyle}>
-            <div style={labelStyle}>清理轮次</div>
-            <div style={valueStyle("var(--text)")}>{data.sessionCount}</div>
-          </div>
-        </div>
-      )}
-
-      {/* task-063：C 盘空间环形图 → task-077：多盘并列 */}
+      {/* task-063：C 盘空间环形图 → task-077：多盘并列
+          task-082（backlog 82.1）：磁盘空间卡**上移到统计卡之前**、通栏横排。
+          理由：用户打开应用第一眼看的是「盘还剩多少」，这个信息该在最上面。 */}
       <DriveRings />
 
-      {/* task-082：WinSxS 与趋势图并排。
-          `auto-fit + minmax(340px, 1fr)`：宽屏两列、窄屏自动堆叠，
-          不用 JS 判窗口宽度。340px 是「卡片内还有按钮和一行说明」的下限，
-          再窄就会把趋势图的柱子挤成一团。 */}
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fit, minmax(340px, 1fr))",
-          gap: 12,
-          marginTop: 12,
-        }}
-      >
-        {/* task-065：WinSxS 组件存储（C 模块） */}
-        <WinsxsCard />
+      {/* task-082（backlog 82.2/82.3）：统计卡左置、趋势图右置。
+          用 flex + `flex: 11 / 9` 表达 55% : 45%：
+          - 宽屏：按 11:9 分配，统计卡 2×2 网格在左、趋势图在右，顶部对齐（默认 align-items: stretch + 两张卡同高）；
+          - 窄屏（< ~700px）：`flex-wrap` 自动换行，两块各自占满整行，不挤压。
 
-        {/* task-061：最近 30 天释放量趋势 */}
-        <TrendChart />
+          为什么不用 `grid-template-columns: "11fr 9fr"`：inline style 写不了媒体查询，
+          grid 的 fr 不会换行，窄窗口下会被压成两条细缝。flex 的 `1 1 340px` 才是自适应的。 */}
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginTop: 12 }}>
+        {status === "ok" && data && (
+          <div
+            style={{
+              flex: "11 1 340px",
+              display: "grid",
+              gridTemplateColumns: "1fr 1fr",
+              gap: 12,
+              // 让统计卡在窄屏换行后不会因为 min-height 撑得过高
+              alignContent: "start",
+            }}
+          >
+            <div style={cardStyle}>
+              <div style={labelStyle}>总释放空间</div>
+              <div style={valueStyle("var(--text)")}>{formatBytes(data.totalBytesFreed)}</div>
+            </div>
+            <div style={cardStyle}>
+              <div style={labelStyle}>成功次数</div>
+              <div style={valueStyle("var(--text)")}>{data.successCount}</div>
+            </div>
+            <div style={cardStyle}>
+              <div style={labelStyle}>失败次数</div>
+              <div style={valueStyle(data.failedCount > 0 ? "#dc2626" : "var(--text)")}>
+                {data.failedCount}
+              </div>
+            </div>
+            <div style={cardStyle}>
+              <div style={labelStyle}>清理轮次</div>
+              <div style={valueStyle("var(--text)")}>{data.sessionCount}</div>
+            </div>
+          </div>
+        )}
+
+        {/* 趋势图右置（45%）。统计卡还在 loading / error 时它照常渲染——
+            趋势数据是另一个接口，不该被统计的失败拖住。 */}
+        <div style={{ flex: "9 1 340px", display: "flex" }}>
+          <TrendChart />
+        </div>
       </div>
+
+      {/* task-065：WinSxS 组件存储（C 模块）
+          task-082：单独一行。backlog 82 只要求「统计卡左 / 趋势图右」，
+          没给 WinSxS 位置；它内容最多（分析按钮 + 进度 + DISM 输出），
+          挤进任何一栏都会把那一栏撑变形。 */}
+      <WinsxsCard />
     </main>
   );
 }
@@ -636,9 +643,10 @@ function TrendChart() {
     setHover(null);
   }, [days]);
 
-  // task-082：不再自带 marginTop——间距由外层并排容器的 gap 统一给，
-  // 否则并排后每张卡片顶部会多出 12px 的错位。
-  const box: React.CSSProperties = cardStyle;
+  // task-082：不再自带 marginTop——它现在和统计卡同处一个 flex 行，
+  // 间距由外层 gap 统一给。`flex: 1` 让它在右栏撑满宽度（父级是 flex 容器），
+  // 高度由 `align-items: stretch`（默认）拉到与左栏统计卡一致，实现「顶部对齐」。
+  const box: React.CSSProperties = { ...cardStyle, flex: 1 };
   const title = (
     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
       <span style={labelStyle}>最近 {days} 天释放趋势</span>
@@ -987,7 +995,7 @@ function WinsxsCard() {
   const canClean = hasReclaimable && !cleaning && !analyzing;
 
   return (
-    <div style={cardStyle} data-testid="winsxs-card">
+    <div style={{ ...cardStyle, marginTop: 12 }} data-testid="winsxs-card">
       <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
         <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>
           WinSxS 组件存储
