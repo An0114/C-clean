@@ -418,7 +418,7 @@ export default function SafeBox() {
             borderRadius: 4,
             border: "1px solid #16a34a",
             background: selected.size === 0 ? "rgba(22, 163, 74, 0.3)" : "#16a34a",
-            color: "#fff",
+            color: selected.size === 0 ? "var(--text-muted)" : "#fff",
             cursor: selected.size === 0 ? "not-allowed" : "pointer",
           }}
         >
@@ -433,7 +433,7 @@ export default function SafeBox() {
             borderRadius: 4,
             border: "1px solid #b91c1c",
             background: selected.size === 0 ? "rgba(185, 28, 28, 0.35)" : "#b91c1c",
-            color: "#fff",
+            color: selected.size === 0 ? "var(--text-muted)" : "#fff",
             cursor: selected.size === 0 ? "not-allowed" : "pointer",
           }}
         >
