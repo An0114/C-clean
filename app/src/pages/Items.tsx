@@ -1047,7 +1047,27 @@ export default function Items({
                     {riskMeta(r.riskLevel).label}
                   </span>
                 </td>
-                <td style={{ ...tdStyle, fontFamily: "monospace", fontSize: 12 }}>{r.path}</td>
+                {/* task-082：路径列横向滚动。
+                    **必须包一层 div**——`overflow-x` 写在 `<td>` 上不生效
+                    （table-cell 的 overflow 会作用到整个表格，浏览器直接忽略）。
+                    路径常常长到几百字符，折行会把每行撑成三五行、整张表失去可读性，
+                    所以选 `nowrap + 横向滚动`，`title` 兜底给完整路径。 */}
+                <td style={tdStyle} title={r.path}>
+                  <div
+                    style={{
+                      maxWidth: 400,
+                      overflowX: "auto",
+                      whiteSpace: "nowrap",
+                      fontFamily: "monospace",
+                      fontSize: 12,
+                      // 滚动条跟随主题（标准属性，可写进 inline style）
+                      scrollbarWidth: "thin",
+                      scrollbarColor: "var(--border) transparent",
+                    } as React.CSSProperties}
+                  >
+                    {r.path}
+                  </div>
+                </td>
                 <td style={tdStyle}>{formatBytes(r.sizeBytes)}</td>
                 <td style={tdStyle}>{r.moduleCode}</td>
                 <td style={tdStyle}>#{r.sessionId}</td>
