@@ -288,8 +288,12 @@ export default function Items({
   // task-081：表格行 hover 高亮。
   //
   // 为什么用 state 而不是 CSS `:hover`：本项目全部是 inline style，没有样式表，
-  // 写不了伪类。用 `var(--bg)` 做高亮色——浅色下是 #f9fafb（比白底略灰）、
-  // 深色下是 #0f172a（比 #1e293b 略暗），两种主题都能看出行被选中，不必判主题。
+  // 写不了伪类。
+  //
+  // 高亮色用 `var(--surface)`（卡片色）而不是 `var(--bg)`（页面色）：表格本身是透明的，
+  // 行背景就等于页面背景，用 `--bg` 做 hover 在两种主题下都**毫无变化**（深色下
+  // 两者同为 #0f172a，肉眼完全看不出）。`--surface` 比页面背景亮一档：
+  // 深色 #0f172a → #1e293b（明显）、浅色 #f9fafb → #ffffff（轻微但可辨）。
   const [hoverRowId, setHoverRowId] = useState<number | null>(null);
 
   // task-077：盘筛选。空串 = 全部盘。
@@ -737,8 +741,10 @@ export default function Items({
             padding: "6px 14px",
             borderRadius: 6,
             border: "1px solid #16a34a",
-            background: l1Count === 0 ? "#bbf7d0" : "#16a34a",
-            color: l1Count === 0 ? "#166534" : "#fff",
+            background: l1Count === 0 ? "rgba(22, 163, 74, 0.3)" : "#16a34a",
+            // task-081：disabled 态底色是半透明，白字在上面几乎看不见（浅色下更明显）。
+            // 用 muted 文字——它在两种主题下都与半透明底有足够对比度。
+            color: l1Count === 0 ? "var(--text-muted)" : "#fff",
             fontSize: 13,
             cursor: l1Count === 0 ? "not-allowed" : "pointer",
           }}
@@ -752,8 +758,8 @@ export default function Items({
             padding: "6px 14px",
             borderRadius: 6,
             border: "1px solid #2563eb",
-            background: selected.size === 0 || busy ? "#bfdbfe" : "#2563eb",
-            color: "#fff",
+            background: selected.size === 0 || busy ? "rgba(37, 99, 235, 0.3)" : "#2563eb",
+            color: selected.size === 0 || busy ? "var(--text-muted)" : "#fff",
             cursor: selected.size === 0 || busy ? "not-allowed" : "pointer",
           }}
         >
@@ -767,7 +773,7 @@ export default function Items({
             borderRadius: 6,
             border: "1px solid #b91c1c",
             background: selected.size === 0 || busy ? "rgba(185, 28, 28, 0.3)" : "#b91c1c",
-            color: "#fff",
+            color: selected.size === 0 || busy ? "var(--text-muted)" : "#fff",
             cursor: selected.size === 0 || busy ? "not-allowed" : "pointer",
           }}
         >
@@ -1011,7 +1017,7 @@ export default function Items({
                 key={r.id}
                 onMouseEnter={() => setHoverRowId(r.id)}
                 onMouseLeave={() => setHoverRowId(null)}
-                style={{ background: hoverRowId === r.id ? "var(--bg)" : "transparent" }}
+                style={{ background: hoverRowId === r.id ? "var(--surface)" : "transparent" }}
               >
                 <td style={tdStyle}>
                   <input
