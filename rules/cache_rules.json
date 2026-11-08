@@ -1,16 +1,46 @@
 {
-  "version": "1.0.0",
+  "version": "1.1.0",
   "modules": {
     "A": [
       {
         "id": "npm_cache",
         "category": "npm_cache",
         "display_name": "npm 缓存",
-        "paths": ["%LOCALAPPDATA%\\npm-cache", "~/.npm/_cacache"],
+        "paths": [
+          "%LOCALAPPDATA%\\npm-cache",
+          "~/.npm/_cacache"
+        ],
         "risk_level": "L1",
         "description": "npm 包下载缓存",
         "impact_note": "删除后下次安装依赖重新下载",
         "rebuild_note": "自动重建",
+        "elevated": false
+      },
+      {
+        "id": "download_transient",
+        "category": "download_transient",
+        "display_name": "下载目录临时文件",
+        "paths": [
+          "%USERPROFILE%\\Downloads"
+        ],
+        "matches": [
+          {
+            "type": "glob",
+            "pattern": "*.tmp"
+          },
+          {
+            "type": "suffix",
+            "pattern": ".part"
+          },
+          {
+            "type": "regex",
+            "pattern": "^~\\$.*"
+          }
+        ],
+        "risk_level": "L1",
+        "description": "下载过程中残留的临时文件 / 未完成的下载分片 / Office 锁文件",
+        "impact_note": "删除后不影响已下载完成的文件；正在进行的下载需重新拉取",
+        "rebuild_note": "不会自动重建，由下次下载产生",
         "elevated": false
       }
     ]

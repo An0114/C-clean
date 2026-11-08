@@ -31,6 +31,12 @@ pub enum LoadError {
     /// 规则条目出现 `risk_level="L3"`（L3 永不写入可清理规则）。
     #[error("规则条目禁止为 L3: {0}")]
     L3InRules(String),
+    /// task-083 反向断言：L1/L2 规则的 paths 落在 L3 红线目录下。
+    ///
+    /// 与 `L3InRules` 的区别：那条是「规则自己标了 L3」，这条是「规则标了 L1
+    /// 但路径指向受保护目录」——后者更危险，因为它能绕过分级检查被真的删掉。
+    #[error("L3 红线反向断言失败（{0} 条冲突）: {1:?}")]
+    L3PathConflict(usize, Vec<String>),
     /// 路径变量展开失败。
     #[error("路径变量展开失败: {0}")]
     Expand(#[from] ExpandError),
@@ -95,6 +101,18 @@ pub fn load(rules_dir: &Path) -> Result<LoadedRules, LoadError> {
                 return Err(LoadError::L3InRules(entry.id.clone()));
             }
         }
+    }
+
+    // 5b. task-083 反向断言：L1/L2 的 paths 不得落在 whitelist_deny 里。
+    //     复用同一份红线清单（不新建第二份），冲突明细全量返回，
+    //     让启动日志能一次列出所有问题而不是修一条报一条。
+    let conflicts = crate::rules::schema::find_l3_conflicts(&rules);
+    if !conflicts.is_empty() {
+        let lines: Vec<String> = conflicts
+            .iter()
+            .map(|c| format!("{} ({} ⊂ {})", c.rule_id, c.path, c.deny))
+            .collect();
+        return Err(LoadError::L3PathConflict(lines.len(), lines));
     }
 
     // 6. 变量展开校验：whitelist_deny 与所有 paths 都必须能展开。
@@ -207,6 +225,8 @@ mod tests {
             impact_note: String::new(),
             rebuild_note: String::new(),
             elevated: false,
+            // task-083：新增的 matches 字段，存量用例按「旧规则」处理（空 = 不过滤）
+            matches: Vec::new(),
         }
     }
 

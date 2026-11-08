@@ -1,6 +1,6 @@
 {
-  "version": "1.0.0",
-  "checksum_sha256": "bec1ab744ce2c3adab2c20e5397715340d9ffb35f8f733fcd410b3670aaebfd9",
+  "version": "1.1.0",
+  "checksum_sha256": "c3f79b6f87927cb842e02df553971f7db4d7145d4b54bae9a09c51cf7923ce2f",
   "source_url": "https://raw.githubusercontent.com/An0114/C-clean/main/rules/cache_rules.json",
   "downloaded_at": 0,
   "custom_rules": []

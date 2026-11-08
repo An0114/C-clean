@@ -16,6 +16,9 @@ rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.152"
 sha2 = "0.10.9"
+# task-083：`matches` 规则的 regex 类型。`regex` 本来就是本仓库的传递依赖
+# （Cargo.lock 已有 1.13.1），显式声明不会引入新的下载或版本漂移。
+regex = "1"
 thiserror = "1"
 
 [dev-dependencies]
