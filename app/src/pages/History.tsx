@@ -23,18 +23,18 @@ const PAGE_SIZE = 20;
 const thStyle: React.CSSProperties = {
   textAlign: "left",
   padding: "8px 12px",
-  borderBottom: "1px solid #e5e7eb",
+  borderBottom: "1px solid var(--border)",
   fontSize: 12,
-  color: "#6b7280",
+  color: "var(--text-muted)",
   fontWeight: 600,
-  background: "#f9fafb",
+  background: "var(--bg)",
 };
 
 const tdStyle: React.CSSProperties = {
   padding: "8px 12px",
-  borderBottom: "1px solid #f3f4f6",
+  borderBottom: "1px solid var(--border)",
   fontSize: 13,
-  color: "#111827",
+  color: "var(--text)",
   verticalAlign: "top",
 };
 
@@ -76,7 +76,7 @@ export default function History() {
       {status === "loading" && (
         <div style={{ opacity: 0.5, padding: 12 }}>
           {[0, 1, 2, 3].map((i) => (
-            <div key={i} style={{ background: "#e5e7eb", height: 16, marginBottom: 8, borderRadius: 4 }} />
+            <div key={i} style={{ background: "var(--border)", height: 16, marginBottom: 8, borderRadius: 4 }} />
           ))}
         </div>
       )}
@@ -84,9 +84,9 @@ export default function History() {
       {status === "error" && (
         <div
           style={{
-            background: "#fee2e2",
-            border: "1px solid #fca5a5",
-            color: "#b91c1c",
+            background: "rgba(220, 38, 38, 0.16)",
+            border: "1px solid rgba(220, 38, 38, 0.45)",
+            color: "#ef4444",
             padding: 12,
             borderRadius: 8,
           }}
@@ -99,7 +99,7 @@ export default function History() {
 
       {status === "ok" && (
         <>
-          <table style={{ width: "100%", borderCollapse: "collapse", background: "#fff", border: "1px solid #e5e7eb", borderRadius: 8 }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 8 }}>
             <thead>
               <tr>
                 <th style={thStyle}>时间</th>
@@ -111,7 +111,7 @@ export default function History() {
             <tbody>
               {rows.length === 0 && (
                 <tr>
-                  <td colSpan={4} style={{ ...tdStyle, textAlign: "center", color: "#6b7280", padding: 24 }}>
+                  <td colSpan={4} style={{ ...tdStyle, textAlign: "center", color: "var(--text-muted)", padding: 24 }}>
                     暂无记录
                   </td>
                 </tr>
@@ -121,7 +121,7 @@ export default function History() {
                   <td style={{ ...tdStyle, whiteSpace: "nowrap" }}>{formatTs(r.createdAt)}</td>
                   <td style={{ ...tdStyle, whiteSpace: "nowrap" }}>{r.eventType}</td>
                   <td style={{ ...tdStyle, maxWidth: 360, wordBreak: "break-all" }}>{r.path}</td>
-                  <td style={{ ...tdStyle, maxWidth: 320, wordBreak: "break-all", color: "#6b7280" }}>
+                  <td style={{ ...tdStyle, maxWidth: 320, wordBreak: "break-all", color: "var(--text-muted)" }}>
                     {r.detail ?? "-"}
                   </td>
                 </tr>
@@ -133,7 +133,7 @@ export default function History() {
             <button disabled={!canPrev} onClick={() => load(Math.max(0, offset - PAGE_SIZE))}>
               上一页
             </button>
-            <span style={{ fontSize: 12, color: "#6b7280" }}>
+            <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
               第 {offset + 1}–{offset + rows.length} 条
             </span>
             <button disabled={!canNext} onClick={() => load(offset + PAGE_SIZE)}>
