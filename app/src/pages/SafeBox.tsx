@@ -114,15 +114,15 @@ const EMPTY_HISTORY: HistoryState = { id: null, loading: false, rows: [], error:
 const thStyle: React.CSSProperties = {
   textAlign: "left",
   padding: "8px 10px",
-  borderBottom: "1px solid #e5e7eb",
+  borderBottom: "1px solid var(--border)",
   fontSize: 12,
-  color: "#6b7280",
+  color: "var(--text-muted)",
   fontWeight: 600,
 };
 
 const tdStyle: React.CSSProperties = {
   padding: "8px 10px",
-  borderBottom: "1px solid #f3f4f6",
+  borderBottom: "1px solid var(--border)",
   fontSize: 13,
 };
 
@@ -405,7 +405,7 @@ export default function SafeBox() {
         <button onClick={() => void load()} disabled={busy}>
           刷新
         </button>
-        <span style={{ fontSize: 13, color: "#374151" }}>
+        <span style={{ fontSize: 13, color: "var(--text)" }}>
           共 {total} 项 / 总大小 {formatBytes(totalBytes)}
         </span>
         <button
@@ -417,7 +417,7 @@ export default function SafeBox() {
             fontSize: 12,
             borderRadius: 4,
             border: "1px solid #16a34a",
-            background: selected.size === 0 ? "#bbf7d0" : "#16a34a",
+            background: selected.size === 0 ? "rgba(22, 163, 74, 0.3)" : "#16a34a",
             color: "#fff",
             cursor: selected.size === 0 ? "not-allowed" : "pointer",
           }}
@@ -431,8 +431,8 @@ export default function SafeBox() {
             padding: "6px 12px",
             fontSize: 12,
             borderRadius: 4,
-            border: "1px solid #dc2626",
-            background: selected.size === 0 ? "#fca5a5" : "#dc2626",
+            border: "1px solid #b91c1c",
+            background: selected.size === 0 ? "rgba(185, 28, 28, 0.35)" : "#b91c1c",
             color: "#fff",
             cursor: selected.size === 0 ? "not-allowed" : "pointer",
           }}
@@ -451,7 +451,7 @@ export default function SafeBox() {
           flexWrap: "wrap",
         }}
       >
-        <span style={{ fontSize: 12, color: "#6b7280", paddingTop: 6 }}>时间</span>
+        <span style={{ fontSize: 12, color: "var(--text-muted)", paddingTop: 6 }}>时间</span>
         {PRESETS.map((p) => {
           const active = timePreset === p.key;
           return (
@@ -463,9 +463,9 @@ export default function SafeBox() {
                 padding: "4px 10px",
                 fontSize: 12,
                 borderRadius: 4,
-                border: `1px solid ${active ? "#2563eb" : "#d1d5db"}`,
-                background: active ? "#2563eb" : "#fff",
-                color: active ? "#fff" : "#374151",
+                border: `1px solid ${active ? "#2563eb" : "var(--border)"}`,
+                background: active ? "#2563eb" : "var(--surface)",
+                color: active ? "#fff" : "var(--text)",
                 cursor: status === "loading" ? "not-allowed" : "pointer",
               }}
             >
@@ -474,7 +474,7 @@ export default function SafeBox() {
           );
         })}
 
-        <span style={{ fontSize: 12, color: "#6b7280", paddingTop: 6, marginLeft: 8 }}>
+        <span style={{ fontSize: 12, color: "var(--text-muted)", paddingTop: 6, marginLeft: 8 }}>
           Session
         </span>
         <select
@@ -483,7 +483,14 @@ export default function SafeBox() {
           aria-label="session 多选"
           value={sessionIds.map(String)}
           onChange={onChangeSessions}
-          style={{ padding: "2px 4px", fontSize: 12, minWidth: 180 }}
+          style={{
+            padding: "2px 4px",
+            fontSize: 12,
+            minWidth: 180,
+            background: "var(--surface)",
+            color: "var(--text)",
+            border: "1px solid var(--border)",
+          }}
         >
           {sessions.map((s) => (
             <option key={s.sessionId} value={String(s.sessionId)}>
@@ -499,13 +506,13 @@ export default function SafeBox() {
             清空
           </button>
         </div>
-        <span style={{ fontSize: 11, color: "#9ca3af", paddingTop: 6 }}>
+        <span style={{ fontSize: 11, color: "var(--text-muted)", paddingTop: 6 }}>
           {sessionIds.length === 0
             ? "（未选 = 全部 session）"
             : `已选 ${sessionIds.length} 个 session`}
         </span>
         {/* task-053 G8：把「筛不到老条目」这件事说清楚，避免被当成修复失效。 */}
-        <span style={{ fontSize: 11, color: "#9ca3af", paddingTop: 6 }}>
+        <span style={{ fontSize: 11, color: "var(--text-muted)", paddingTop: 6 }}>
           早于 v0.1.6 的条目无来源信息
         </span>
       </div>
@@ -517,9 +524,12 @@ export default function SafeBox() {
             padding: 10,
             borderRadius: 6,
             fontSize: 13,
-            background: result.ok ? "#dcfce7" : "#fee2e2",
-            color: result.ok ? "#166534" : "#b91c1c",
-            border: `1px solid ${result.ok ? "#86efac" : "#fca5a5"}`,
+            background:
+              result.ok ? "rgba(22, 163, 74, 0.16)" : "rgba(220, 38, 38, 0.16)",
+            color: result.ok ? "#16a34a" : "#ef4444",
+            border: `1px solid ${
+              result.ok ? "rgba(22, 163, 74, 0.45)" : "rgba(220, 38, 38, 0.45)"
+            }`,
           }}
         >
           {result.text}
@@ -527,16 +537,21 @@ export default function SafeBox() {
       )}
 
       {status === "loading" && (
-        <div style={{ color: "#6b7280", fontSize: 13 }}>加载中...</div>
+        <div style={{ color: "var(--text-muted)", fontSize: 13 }}>加载中...</div>
       )}
 
       {status === "error" && (
-        <div style={{ color: "#b91c1c", fontSize: 13 }}>加载失败：{msg}</div>
+        <div style={{ color: "#ef4444", fontSize: 13 }}>加载失败：{msg}</div>
       )}
 
       {status === "ok" && entries.length === 0 && (
         <div
-          style={{ color: "#9ca3af", fontSize: 13, textAlign: "center", padding: "32px 0" }}
+          style={{
+            color: "var(--text-muted)",
+            fontSize: 13,
+            textAlign: "center",
+            padding: "32px 0",
+          }}
         >
           保险箱为空
         </div>
@@ -584,7 +599,7 @@ export default function SafeBox() {
                         无从分辨，用户会误判成「修了还是全 —」。改为显式文案 + 淡灰。 */}
                     {r.sourceTaskId == null ? (
                       <span
-                        style={{ color: "#9ca3af", fontSize: 12 }}
+                        style={{ color: "var(--text-muted)", fontSize: 12 }}
                         title="该条目入箱时间早于来源功能上线（v0.1.6），当时未记录来源批次，无法追溯"
                       >
                         历史（无来源）
@@ -603,7 +618,8 @@ export default function SafeBox() {
                           fontSize: 12,
                           borderRadius: 4,
                           border: "1px solid #2563eb",
-                          background: restoringId === r.id ? "#bfdbfe" : "#2563eb",
+                          background:
+                            restoringId === r.id ? "rgba(37, 99, 235, 0.3)" : "#2563eb",
                           color: "#fff",
                           cursor: busy ? "not-allowed" : "pointer",
                         }}
@@ -617,8 +633,8 @@ export default function SafeBox() {
                           padding: "4px 10px",
                           fontSize: 12,
                           borderRadius: 4,
-                          border: "1px solid #dc2626",
-                          background: purgingId === r.id ? "#fecaca" : "#dc2626",
+                          border: "1px solid #b91c1c",
+                          background: purgingId === r.id ? "rgba(185, 28, 28, 0.3)" : "#b91c1c",
                           color: "#fff",
                           cursor: busy ? "not-allowed" : "pointer",
                         }}
@@ -631,9 +647,9 @@ export default function SafeBox() {
                           padding: "4px 10px",
                           fontSize: 12,
                           borderRadius: 4,
-                          border: "1px solid #6b7280",
-                          background: history.id === r.id ? "#e5e7eb" : "#fff",
-                          color: "#374151",
+                          border: "1px solid var(--border)",
+                          background: history.id === r.id ? "var(--bg)" : "var(--surface)",
+                          color: "var(--text)",
                           cursor: "pointer",
                         }}
                       >
@@ -646,19 +662,19 @@ export default function SafeBox() {
                 {/* task-051：审计历史展开行（同一时刻只展开一行） */}
                 {history.id === r.id && (
                   <tr>
-                    <td colSpan={6} style={{ background: "#f9fafb", padding: "10px 12px" }}>
+                    <td colSpan={6} style={{ background: "var(--bg)", padding: "10px 12px" }}>
                       {history.loading && (
-                        <div style={{ fontSize: 12, color: "#6b7280" }}>加载中…</div>
+                        <div style={{ fontSize: 12, color: "var(--text-muted)" }}>加载中…</div>
                       )}
                       {!history.loading && history.error !== "" && (
-                        <div style={{ fontSize: 12, color: "#b91c1c" }}>
+                        <div style={{ fontSize: 12, color: "#ef4444" }}>
                           历史加载失败：{history.error}
                         </div>
                       )}
                       {!history.loading &&
                         history.error === "" &&
                         history.rows.length === 0 && (
-                          <div style={{ fontSize: 12, color: "#9ca3af" }}>
+                          <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
                             该路径暂无审计记录
                           </div>
                         )}
@@ -685,7 +701,7 @@ export default function SafeBox() {
                                       ...tdStyle,
                                       fontFamily: "monospace",
                                       fontSize: 11,
-                                      color: "#6b7280",
+                                      color: "var(--text-muted)",
                                     }}
                                   >
                                     {h.detail ?? "—"}
@@ -714,7 +730,7 @@ export default function SafeBox() {
             alignItems: "center",
             gap: 12,
             fontSize: 13,
-            color: "#374151",
+            color: "var(--text)",
           }}
         >
           <button
