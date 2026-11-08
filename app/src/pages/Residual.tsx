@@ -94,8 +94,16 @@ function typeLabel(residualType: string): string {
 /** 置信度徽标：高 = 绿，低 = 橙（低置信必须视觉上就「不安心」）。 */
 function ConfidenceBadge({ value }: { value: string }) {
   const high = value === "high";
+  // task-082：徽标只有「高/低」两个字，光看颜色说明不了什么。hover 给判定依据——
+  // 这两句话直接对应 `engine::scan::residual` 的两个分支：
+  //   high = 注册表记了安装目录、但目录已不存在（记录可信）；
+  //   low  = 目录在、注册表找不到归属（绿色软件/便携版/自建目录都会落到这里）。
+  const hint = high
+    ? "高置信：注册表里记录了安装目录，但该目录已不存在——确实已卸载或半卸载。本工具不代删注册表键，需清理请到「应用和功能」修复或卸载"
+    : "低置信：目录还在，但注册表里找不到归属。绿色软件、便携版、商店应用、用户自建目录都会落到这里，可能误判——删除前请先确认目录内容（会移入保险箱保留 7 天）";
   return (
     <span
+      title={hint}
       style={{
         display: "inline-block",
         padding: "1px 6px",
@@ -105,6 +113,7 @@ function ConfidenceBadge({ value }: { value: string }) {
         border: `1px solid ${high ? "#6ee7b7" : "#fcd34d"}`,
         color: high ? "#065f46" : "#92400e",
         whiteSpace: "nowrap",
+        cursor: "help",
       }}
     >
       {high ? "高置信" : "低置信"}

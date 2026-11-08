@@ -588,10 +588,21 @@ export default function SafeBox() {
                       disabled={busy}
                     />
                   </td>
-                  <td style={{ ...tdStyle, fontFamily: "monospace", fontSize: 12 }}>
+                  {/* task-082：路径可能很长，hover 给完整路径（列宽有限，截断难免）。 */}
+                  <td
+                    style={{ ...tdStyle, fontFamily: "monospace", fontSize: 12 }}
+                    title={r.originalPath}
+                  >
                     {r.originalPath}
                   </td>
-                  <td style={tdStyle}>{formatBytes(r.sizeBytes)}</td>
+                  {/* task-082：大小列显示的是 `formatBytes` 的四舍五入值，
+                      hover 给精确字节数——恢复前想核对「这到底是不是那个大文件」时有用。 */}
+                  <td
+                    style={tdStyle}
+                    title={`${r.sizeBytes.toLocaleString("zh-CN")} 字节（${r.sizeBytes} B）`}
+                  >
+                    {formatBytes(r.sizeBytes)}
+                  </td>
                   <td style={tdStyle}>{formatTs(r.quarantinedAt)}</td>
                   <td style={tdStyle}>
                     {/* task-053 G8：source_task_id 一旦写成 NULL 就无法回填（信息当时即丢失），
@@ -605,7 +616,11 @@ export default function SafeBox() {
                         历史（无来源）
                       </span>
                     ) : (
-                      `#${r.sourceTaskId}`
+                      // task-082：hover 说明「来源」到底是什么——列表里只显示 `#7`，
+                      // 光看一个井号没人知道它指什么。
+                      <span title={`来源：清理批次 #${r.sourceTaskId}（该批次清理时移入保险箱）`}>
+                        {`#${r.sourceTaskId}`}
+                      </span>
                     )}
                   </td>
                   <td style={tdStyle}>
