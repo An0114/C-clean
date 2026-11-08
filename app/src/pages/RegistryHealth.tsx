@@ -513,7 +513,7 @@ function RunTab({
                 </span>
               )}
             </td>
-            <td style={{ ...tdStyle, fontWeight: 500 }}>
+            <td style={{ ...tdStyle, fontWeight: 500 }} title={i.registryKey}>
               {i.name}
               {!i.exists && (
                 <div style={{ marginTop: 3 }}>
@@ -521,16 +521,30 @@ function RunTab({
                 </div>
               )}
             </td>
-            <td
-              style={{
-                ...tdStyle,
-                wordBreak: "break-all",
-                fontFamily: "ui-monospace, SFMono-Regular, Consolas, monospace",
-                fontSize: 11,
-              }}
-              title={i.registryKey}
-            >
-              {i.path}
+            {/* task-082：命令列横向滚动。
+                **必须包一层 div**——`overflow-x` 写在 `<td>` 上是不生效的
+                （CSS 规范里 table-cell 的 overflow 会作用到整个表格）。
+                原来的 `wordBreak: "break-all"` 会把长命令折成多行，与「横向滚动」
+                二选一；这里改成 `nowrap + 滚动`，一行内左右拖动更符合看命令行的习惯。
+                title 原来挂的是 `registryKey`（hover 命令列却看到注册表键，答非所问），
+                改挂 `i.path` 完整命令；键挪到「名称」列，信息没丢。 */}
+            <td style={tdStyle} title={i.path}>
+              <div
+                style={{
+                  maxWidth: 300,
+                  overflowX: "auto",
+                  whiteSpace: "nowrap",
+                  fontFamily: "ui-monospace, SFMono-Regular, Consolas, monospace",
+                  fontSize: 11,
+                  // 滚动条跟随主题：`scrollbar-color` 是标准属性（Chromium 121+ 支持），
+                  // 比 `::-webkit-scrollbar` 好在能写进 inline style——本项目没有样式表。
+                  // 深色下用 `--border` 当滑块色，不会出现一条刺眼的白条。
+                  scrollbarWidth: "thin",
+                  scrollbarColor: "var(--border) transparent",
+                } as React.CSSProperties}
+              >
+                {i.path}
+              </div>
             </td>
             <td style={tdStyle}>
               <RiskBadge level={i.riskLevel} />
