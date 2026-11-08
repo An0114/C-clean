@@ -31,6 +31,15 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
+      # Tauri bundle 会从 GitHub releases 下载 NSIS 工具链（nsis-3.11.zip）到
+      # %LOCALAPPDATA%\tauri。冷启动每次都重下，GitHub 边缘偶发 504 就整步红。
+      # 缓存该目录后，热运行直接命中本地、不再外拉。
+      - name: Cache Tauri 打包工具链（NSIS 等）
+        uses: actions/cache@v4
+        with:
+          path: C:\Users\runneradmin\AppData\Local\tauri
+          key: tauri-tools-${{ runner.os }}-v1
+
       # bugfix/task-035-release-signing：发版脚本的纯逻辑单测（node:test，无额外依赖）。
       # 覆盖版本号解析/注入、.sig 产物校验、latest.json 生成，守住两个发版 bug 不回归。
       - name: 发版脚本单测
