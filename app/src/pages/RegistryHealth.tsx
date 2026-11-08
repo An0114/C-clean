@@ -487,10 +487,15 @@ function RunTab({
       head={
         <>
           <th style={{ ...thStyle, width: 36 }}>选</th>
-          <th style={thStyle}>名称</th>
-          <th style={thStyle}>命令</th>
-          <th style={{ ...thStyle, width: 130 }}>风险</th>
-          <th style={thStyle}>建议</th>
+          {/* task-082：**每一列都要定宽**。
+              表格是 `table-layout: auto`，只要有一列没给宽度，浏览器就按内容撑——
+              名称（`doubaowork`）和建议（一整句话）会把总宽顶出容器，右侧两列默认看不见；
+              反过来只给部分列定宽，没定宽的那列又会被挤成每行 4 个字。
+              36 + 140 + 260 + 100 + 220 ≈ 756，在 771 的容器里刚好放下。 */}
+          <th style={{ ...thStyle, width: 140 }}>名称</th>
+          <th style={{ ...thStyle, width: 260 }}>命令</th>
+          <th style={{ ...thStyle, width: 100 }}>风险</th>
+          <th style={{ ...thStyle, width: 220 }}>建议</th>
         </>
       }
     >
@@ -513,7 +518,10 @@ function RunTab({
                 </span>
               )}
             </td>
-            <td style={{ ...tdStyle, fontWeight: 500 }}>
+            <td
+              style={{ ...tdStyle, fontWeight: 500, wordBreak: "break-word" }}
+              title={i.registryKey}
+            >
               {i.name}
               {!i.exists && (
                 <div style={{ marginTop: 3 }}>
@@ -521,21 +529,42 @@ function RunTab({
                 </div>
               )}
             </td>
-            <td
-              style={{
-                ...tdStyle,
-                wordBreak: "break-all",
-                fontFamily: "ui-monospace, SFMono-Regular, Consolas, monospace",
-                fontSize: 11,
-              }}
-              title={i.registryKey}
-            >
-              {i.path}
+            {/* task-082：命令列横向滚动。
+                **必须包一层 div**——`overflow-x` 写在 `<td>` 上是不生效的
+                （CSS 规范里 table-cell 的 overflow 会作用到整个表格）。
+                原来的 `wordBreak: "break-all"` 会把长命令折成多行，与「横向滚动」
+                二选一；这里改成 `nowrap + 滚动`，一行内左右拖动更符合看命令行的习惯。
+                title 原来挂的是 `registryKey`（hover 命令列却看到注册表键，答非所问），
+                改挂 `i.path` 完整命令；键挪到「名称」列，信息没丢。 */}
+            <td style={tdStyle} title={i.path}>
+              <div
+                style={{
+                  maxWidth: 300,
+                  overflowX: "auto",
+                  whiteSpace: "nowrap",
+                  fontFamily: "ui-monospace, SFMono-Regular, Consolas, monospace",
+                  fontSize: 11,
+                  // 滚动条跟随主题：`scrollbar-color` 是标准属性（Chromium 121+ 支持），
+                  // 比 `::-webkit-scrollbar` 好在能写进 inline style——本项目没有样式表。
+                  // 深色下用 `--border` 当滑块色，不会出现一条刺眼的白条。
+                  scrollbarWidth: "thin",
+                  scrollbarColor: "var(--border) transparent",
+                } as React.CSSProperties}
+              >
+                {i.path}
+              </div>
             </td>
             <td style={tdStyle}>
               <RiskBadge level={i.riskLevel} />
             </td>
-            <td style={{ ...tdStyle, color: "var(--text-muted)", lineHeight: 1.6 }}>
+            <td
+              style={{
+                ...tdStyle,
+                color: "var(--text-muted)",
+                lineHeight: 1.6,
+                wordBreak: "break-word",
+              }}
+            >
               {i.recommendation}
             </td>
           </tr>
@@ -581,7 +610,11 @@ function ReadOnlyTab({
   }
 
   return (
-    <div style={{ ...cardStyle, marginTop: 12, padding: 0, overflow: "hidden" }}>
+    // task-082：原来 `overflow: hidden` 会把超出容器宽度的列**直接裁掉**——
+    // 命令列改成「固定 300px + 不折行」后，表格总宽更容易超出，右侧的
+    // 「风险」「建议」就整列看不见且滚不到。改成 `overflowX: auto`：
+    // 超宽时整表可横向拖动，列一个都不会丢。
+    <div style={{ ...cardStyle, marginTop: 12, padding: 0, overflowX: "auto" }}>
       <div
         style={{
           padding: "12px 16px",
@@ -607,10 +640,11 @@ function ReadOnlyTab({
       <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
         <thead>
           <tr>
-            <th style={thStyle}>名称</th>
-            <th style={thStyle}>路径</th>
+            {/* task-082：同 RunTable——每一列都定宽，否则长内容会把总宽顶出容器。 */}
+            <th style={{ ...thStyle, width: 150 }}>名称</th>
+            <th style={{ ...thStyle, width: 260 }}>路径</th>
             <th style={{ ...thStyle, width: 100 }}>风险</th>
-            <th style={thStyle}>建议</th>
+            <th style={{ ...thStyle, width: 220 }}>建议</th>
           </tr>
         </thead>
         <tbody>
@@ -630,7 +664,14 @@ function ReadOnlyTab({
               <td style={tdStyle}>
                 <RiskBadge level={i.riskLevel} />
               </td>
-              <td style={{ ...tdStyle, color: "var(--text-muted)", lineHeight: 1.6 }}>
+              <td
+              style={{
+                ...tdStyle,
+                color: "var(--text-muted)",
+                lineHeight: 1.6,
+                wordBreak: "break-word",
+              }}
+            >
                 {i.recommendation}
               </td>
             </tr>
@@ -643,7 +684,11 @@ function ReadOnlyTab({
 
 function Table({ head, children }: { head: React.ReactNode; children: React.ReactNode }) {
   return (
-    <div style={{ ...cardStyle, marginTop: 12, padding: 0, overflow: "hidden" }}>
+    // task-082：原来 `overflow: hidden` 会把超出容器宽度的列**直接裁掉**——
+    // 命令列改成「固定 300px + 不折行」后，表格总宽更容易超出，右侧的
+    // 「风险」「建议」就整列看不见且滚不到。改成 `overflowX: auto`：
+    // 超宽时整表可横向拖动，列一个都不会丢。
+    <div style={{ ...cardStyle, marginTop: 12, padding: 0, overflowX: "auto" }}>
       <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
         <thead>
           <tr>{head}</tr>

@@ -57,19 +57,21 @@ const RISK_META: Record<string, { label: string; fg: string; bg: string; hint: s
     label: "L1",
     fg: "#16a34a",
     bg: "rgba(22, 163, 74, 0.16)",
-    hint: "L1 安全缓存：删除不影响系统，相关程序会自动重建",
+    // task-082：hover 除了说「风险多高」，还要说「影响什么」——
+    // 用户真正想知道的是「删了会发生什么」，而不是一个等级符号。
+    hint: "L1 安全缓存：删除不影响系统，相关程序下次使用时会自动重建（如浏览器缓存、包管理器缓存、预读取文件）",
   },
   L2: {
     label: "L2",
     fg: "#d97706",
     bg: "rgba(217, 119, 6, 0.18)",
-    hint: "L2 需确认：删除可能影响某些功能，清理前会创建系统还原点",
+    hint: "L2 需确认：可能是正在运行的程序正在使用的文件（如临时安装包、更新下载缓存），删除可能让该程序报错；清理前会创建系统还原点",
   },
   L3: {
     label: "L3",
     fg: "#ef4444",
     bg: "rgba(220, 38, 38, 0.16)",
-    hint: "L3 红线项：禁止自动清理，仅展示",
+    hint: "L3 受保护，不允许删除，也禁止自动清理：系统关键路径或用户个人文件（如 System32、桌面、文档），误删可能导致系统或程序无法启动。这里只展示，不给勾选框",
   },
 };
 
@@ -1047,7 +1049,27 @@ export default function Items({
                     {riskMeta(r.riskLevel).label}
                   </span>
                 </td>
-                <td style={{ ...tdStyle, fontFamily: "monospace", fontSize: 12 }}>{r.path}</td>
+                {/* task-082：路径列横向滚动。
+                    **必须包一层 div**——`overflow-x` 写在 `<td>` 上不生效
+                    （table-cell 的 overflow 会作用到整个表格，浏览器直接忽略）。
+                    路径常常长到几百字符，折行会把每行撑成三五行、整张表失去可读性，
+                    所以选 `nowrap + 横向滚动`，`title` 兜底给完整路径。 */}
+                <td style={tdStyle} title={r.path}>
+                  <div
+                    style={{
+                      maxWidth: 400,
+                      overflowX: "auto",
+                      whiteSpace: "nowrap",
+                      fontFamily: "monospace",
+                      fontSize: 12,
+                      // 滚动条跟随主题（标准属性，可写进 inline style）
+                      scrollbarWidth: "thin",
+                      scrollbarColor: "var(--border) transparent",
+                    } as React.CSSProperties}
+                  >
+                    {r.path}
+                  </div>
+                </td>
                 <td style={tdStyle}>{formatBytes(r.sizeBytes)}</td>
                 <td style={tdStyle}>{r.moduleCode}</td>
                 <td style={tdStyle}>#{r.sessionId}</td>

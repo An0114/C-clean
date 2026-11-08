@@ -212,7 +212,11 @@ fn notify(app: &AppHandle, body: &str) -> Result<(), String> {
 }
 
 /// 字节 → 人类可读（与前端 `formatBytes` 的口径保持一致：1024 进制、1 位小数）。
-fn human_bytes(bytes: i64) -> String {
+/// 字节数转人话。
+///
+/// **task-082 起改为 `pub(crate)`**：托盘的 tooltip 也要格式化字节，与其在
+/// `lib.rs` 里再抄一份（完全相同的 20 行），不如共用这一个。
+pub(crate) fn human_bytes(bytes: i64) -> String {
     const KB: f64 = 1024.0;
     const MB: f64 = KB * 1024.0;
     const GB: f64 = MB * 1024.0;
