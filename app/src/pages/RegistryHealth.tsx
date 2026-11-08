@@ -487,10 +487,15 @@ function RunTab({
       head={
         <>
           <th style={{ ...thStyle, width: 36 }}>选</th>
-          <th style={thStyle}>名称</th>
-          <th style={thStyle}>命令</th>
-          <th style={{ ...thStyle, width: 130 }}>风险</th>
-          <th style={thStyle}>建议</th>
+          {/* task-082：**每一列都要定宽**。
+              表格是 `table-layout: auto`，只要有一列没给宽度，浏览器就按内容撑——
+              名称（`doubaowork`）和建议（一整句话）会把总宽顶出容器，右侧两列默认看不见；
+              反过来只给部分列定宽，没定宽的那列又会被挤成每行 4 个字。
+              36 + 140 + 260 + 100 + 220 ≈ 756，在 771 的容器里刚好放下。 */}
+          <th style={{ ...thStyle, width: 140 }}>名称</th>
+          <th style={{ ...thStyle, width: 260 }}>命令</th>
+          <th style={{ ...thStyle, width: 100 }}>风险</th>
+          <th style={{ ...thStyle, width: 220 }}>建议</th>
         </>
       }
     >
@@ -513,7 +518,10 @@ function RunTab({
                 </span>
               )}
             </td>
-            <td style={{ ...tdStyle, fontWeight: 500 }} title={i.registryKey}>
+            <td
+              style={{ ...tdStyle, fontWeight: 500, wordBreak: "break-word" }}
+              title={i.registryKey}
+            >
               {i.name}
               {!i.exists && (
                 <div style={{ marginTop: 3 }}>
@@ -549,7 +557,14 @@ function RunTab({
             <td style={tdStyle}>
               <RiskBadge level={i.riskLevel} />
             </td>
-            <td style={{ ...tdStyle, color: "var(--text-muted)", lineHeight: 1.6 }}>
+            <td
+              style={{
+                ...tdStyle,
+                color: "var(--text-muted)",
+                lineHeight: 1.6,
+                wordBreak: "break-word",
+              }}
+            >
               {i.recommendation}
             </td>
           </tr>
@@ -625,10 +640,11 @@ function ReadOnlyTab({
       <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
         <thead>
           <tr>
-            <th style={thStyle}>名称</th>
-            <th style={thStyle}>路径</th>
+            {/* task-082：同 RunTable——每一列都定宽，否则长内容会把总宽顶出容器。 */}
+            <th style={{ ...thStyle, width: 150 }}>名称</th>
+            <th style={{ ...thStyle, width: 260 }}>路径</th>
             <th style={{ ...thStyle, width: 100 }}>风险</th>
-            <th style={thStyle}>建议</th>
+            <th style={{ ...thStyle, width: 220 }}>建议</th>
           </tr>
         </thead>
         <tbody>
@@ -648,7 +664,14 @@ function ReadOnlyTab({
               <td style={tdStyle}>
                 <RiskBadge level={i.riskLevel} />
               </td>
-              <td style={{ ...tdStyle, color: "var(--text-muted)", lineHeight: 1.6 }}>
+              <td
+              style={{
+                ...tdStyle,
+                color: "var(--text-muted)",
+                lineHeight: 1.6,
+                wordBreak: "break-word",
+              }}
+            >
                 {i.recommendation}
               </td>
             </tr>
