@@ -354,7 +354,12 @@ export default function Dashboard({ scanSignal = 0 }: { scanSignal?: number }) {
         {status === "ok" && data && (
           <div
             style={{
-              flex: "11 1 340px",
+              // `11 1 0` + `minWidth` 而不是 `11 1 340px`：
+              // flex-basis 若是 340px，两个 basis 会吃掉大部分宽度，剩余再按 11:9 分，
+              // 实测变成 50.5 : 49.5（比例被稀释）。basis 归零才能拿到真正的 55:45；
+              // 换行仍由 `minWidth` 兜底——窄于两个 340px 时自动堆叠。
+              flex: "11 1 0",
+              minWidth: 340,
               display: "grid",
               gridTemplateColumns: "1fr 1fr",
               gap: 12,
@@ -385,7 +390,7 @@ export default function Dashboard({ scanSignal = 0 }: { scanSignal?: number }) {
 
         {/* 趋势图右置（45%）。统计卡还在 loading / error 时它照常渲染——
             趋势数据是另一个接口，不该被统计的失败拖住。 */}
-        <div style={{ flex: "9 1 340px", display: "flex" }}>
+        <div style={{ flex: "9 1 0", minWidth: 340, display: "flex" }}>
           <TrendChart />
         </div>
       </div>
