@@ -55,20 +55,20 @@ const RISK_META: Record<string, { label: string; fg: string; bg: string; hint: s
   },
   L1: {
     label: "L1",
-    fg: "#15803d",
-    bg: "#dcfce7",
+    fg: "#16a34a",
+    bg: "rgba(22, 163, 74, 0.16)",
     hint: "L1 安全缓存：删除不影响系统，相关程序会自动重建",
   },
   L2: {
     label: "L2",
-    fg: "#b45309",
-    bg: "#fef3c7",
+    fg: "#d97706",
+    bg: "rgba(217, 119, 6, 0.18)",
     hint: "L2 需确认：删除可能影响某些功能，清理前会创建系统还原点",
   },
   L3: {
     label: "L3",
-    fg: "#b91c1c",
-    bg: "#fee2e2",
+    fg: "#ef4444",
+    bg: "rgba(220, 38, 38, 0.16)",
     hint: "L3 红线项：禁止自动清理，仅展示",
   },
 };
@@ -164,9 +164,9 @@ const formatProc = (p: { appName: string; pid: number }) => `${p.appName} (PID $
 const exportBtnStyle: React.CSSProperties = {
   padding: "4px 10px",
   borderRadius: 5,
-  border: "1px solid #9ca3af",
-  background: "#fff",
-  color: "#111827",
+  border: "1px solid var(--border)",
+  background: "var(--surface)",
+  color: "var(--text)",
   fontSize: 12,
   cursor: "pointer",
 };
@@ -222,15 +222,15 @@ const panelStyle = (bg: string, fg: string, border: string): React.CSSProperties
 const thStyle: React.CSSProperties = {
   textAlign: "left",
   padding: "8px 10px",
-  borderBottom: "1px solid #e5e7eb",
+  borderBottom: "1px solid var(--border)",
   fontSize: 12,
-  color: "#6b7280",
+  color: "var(--text-muted)",
   fontWeight: 600,
 };
 
 const tdStyle: React.CSSProperties = {
   padding: "8px 10px",
-  borderBottom: "1px solid #f3f4f6",
+  borderBottom: "1px solid var(--border)",
   fontSize: 13,
 };
 
@@ -284,6 +284,13 @@ export default function Items({
   // task-040 预览态。
   const [previewing, setPreviewing] = useState(false);
   const [preview, setPreview] = useState<Preview | null>(null);
+
+  // task-081：表格行 hover 高亮。
+  //
+  // 为什么用 state 而不是 CSS `:hover`：本项目全部是 inline style，没有样式表，
+  // 写不了伪类。用 `var(--bg)` 做高亮色——浅色下是 #f9fafb（比白底略灰）、
+  // 深色下是 #0f172a（比 #1e293b 略暗），两种主题都能看出行被选中，不必判主题。
+  const [hoverRowId, setHoverRowId] = useState<number | null>(null);
 
   // task-077：盘筛选。空串 = 全部盘。
   //
@@ -655,9 +662,9 @@ export default function Items({
             justifyContent: "space-between",
             alignItems: "flex-start",
             gap: 12,
-            background: "#eff6ff",
-            border: "1px solid #bfdbfe",
-            color: "#1e40af",
+            background: "rgba(37, 99, 235, 0.12)",
+            border: "1px solid rgba(37, 99, 235, 0.4)",
+            color: "#3b82f6",
             padding: "8px 10px",
             borderRadius: 6,
             fontSize: 12,
@@ -670,7 +677,7 @@ export default function Items({
             style={{
               border: "none",
               background: "transparent",
-              color: "#1e40af",
+              color: "#3b82f6",
               cursor: "pointer",
               fontSize: 12,
               padding: 0,
@@ -687,14 +694,22 @@ export default function Items({
         </button>
         {/* task-077：盘筛选。只在枚举到盘时出现（查不到就不显示，别给空下拉框）。 */}
         {drives.length > 0 && (
-          <label style={{ fontSize: 13, color: "#374151", display: "flex", alignItems: "center", gap: 6 }}>
+          <label style={{ fontSize: 13, color: "var(--text)", display: "flex", alignItems: "center", gap: 6 }}>
             磁盘
             <select
               aria-label="按磁盘筛选"
               value={driveFilter}
               onChange={(e) => changeDriveFilter(e.target.value)}
               disabled={busy}
-              style={{ padding: "4px 8px", borderRadius: 6, border: "1px solid #d1d5db" }}
+              style={{
+                padding: "4px 8px",
+                borderRadius: 6,
+                border: "1px solid var(--border)",
+                // 原生 select 不跟随主题：不给 background/color 的话，
+                // 深色下会保留系统的白底黑字，在暗页面上像个洞。
+                background: "var(--surface)",
+                color: "var(--text)",
+              }}
             >
               <option value="">全部</option>
               {drives.map((d) => (
@@ -705,7 +720,7 @@ export default function Items({
             </select>
           </label>
         )}
-        <span style={{ fontSize: 13, color: "#374151" }}>
+        <span style={{ fontSize: 13, color: "var(--text)" }}>
           已选 {selected.size} 项，共 {formatBytes(totalSelectedBytes)}
         </span>
         {/* task-064：一键全选 L1（安全项）。L2/L3 一律不选——L2 需要逐项确认，
@@ -768,9 +783,12 @@ export default function Items({
             padding: 10,
             borderRadius: 6,
             fontSize: 13,
-            background: result.tone === "ok" ? "#dcfce7" : "#fee2e2",
-            color: result.tone === "ok" ? "#166534" : "#b91c1c",
-            border: `1px solid ${result.tone === "ok" ? "#86efac" : "#fca5a5"}`,
+            background:
+              result.tone === "ok" ? "rgba(22, 163, 74, 0.16)" : "rgba(220, 38, 38, 0.16)",
+            color: result.tone === "ok" ? "#16a34a" : "#ef4444",
+            border: `1px solid ${
+              result.tone === "ok" ? "rgba(22, 163, 74, 0.45)" : "rgba(220, 38, 38, 0.45)"
+            }`,
           }}
         >
           <div style={{ fontWeight: 600 }}>{result.headline}</div>
@@ -805,7 +823,7 @@ export default function Items({
                 导出 CSV
               </button>
               {exportMsg && (
-                <span style={{ fontSize: 11, color: "#4b5563", wordBreak: "break-all" }}>
+                <span style={{ fontSize: 11, color: "var(--text-muted)", wordBreak: "break-all" }}>
                   {exportMsg}
                 </span>
               )}
@@ -841,9 +859,9 @@ export default function Items({
                 marginTop: 8,
                 padding: "6px 8px",
                 borderRadius: 4,
-                background: "#fef9c3",
-                color: "#854d0e",
-                border: "1px solid #fde047",
+                background: "rgba(234, 179, 8, 0.18)",
+                color: "#ca8a04",
+                border: "1px solid rgba(234, 179, 8, 0.45)",
               }}
             >
               以下进程受保护未关闭：
@@ -878,7 +896,7 @@ export default function Items({
               因为 RmShutdown 没有超时参数，我们也中断不了它。 */}
           {retrying && shutdownSecs !== null && (
             <div style={{ marginTop: 8, maxWidth: 380 }}>
-              <div style={{ fontSize: 12, color: "#92400e", marginBottom: 4 }}>
+              <div style={{ fontSize: 12, color: "#d97706", marginBottom: 4 }}>
                 正在关闭进程… 已等 {shutdownSecs}s（最多 30s）
                 {shutdownSecs > 30 ? "，已超过预期，仍在等待系统响应" : ""}
               </div>
@@ -906,7 +924,7 @@ export default function Items({
 
       {/* task-040 预览面板：只读展示，面板内不提供执行入口。 */}
       {preview?.kind === "ok" && (
-        <div style={panelStyle("#eff6ff", "#1e3a8a", "#93c5fd")}>
+        <div style={panelStyle("rgba(37, 99, 235, 0.12)", "#3b82f6", "rgba(37, 99, 235, 0.4)")}>
           <div style={{ fontWeight: 600, marginBottom: 6 }}>
             {formatDryRunHeadline(preview.resp)}
           </div>
@@ -915,14 +933,14 @@ export default function Items({
               {formatBreakdownLine(row)}
             </div>
           ))}
-          <div style={{ marginTop: 8, color: "#1d4ed8" }}>
+          <div style={{ marginTop: 8, color: "#3b82f6" }}>
             确认无误后点上方「清理已选」执行
           </div>
         </div>
       )}
 
       {preview?.kind === "blocked" && (
-        <div style={panelStyle("#fee2e2", "#b91c1c", "#fca5a5")}>
+        <div style={panelStyle("rgba(220, 38, 38, 0.14)", "#ef4444", "rgba(220, 38, 38, 0.4)")}>
           <div style={{ fontWeight: 600, marginBottom: 6 }}>
             {preview.blocked.length} 项命中红线，已阻止清理
           </div>
@@ -938,21 +956,21 @@ export default function Items({
       )}
 
       {preview?.kind === "empty" && (
-        <div style={panelStyle("#fef9c3", "#854d0e", "#fde047")}>
+        <div style={panelStyle("rgba(234, 179, 8, 0.16)", "#ca8a04", "rgba(234, 179, 8, 0.4)")}>
           已选条目已不在待清理列表（可能已被清理或扫描会话已过期），请点「刷新」
         </div>
       )}
 
       {preview?.kind === "error" && (
-        <div style={panelStyle("#fee2e2", "#b91c1c", "#fca5a5")}>
+        <div style={panelStyle("rgba(220, 38, 38, 0.14)", "#ef4444", "rgba(220, 38, 38, 0.4)")}>
           预览失败：{preview.message}
         </div>
       )}
 
-      {status === "loading" && <div style={{ color: "#6b7280", fontSize: 13 }}>加载中...</div>}
+      {status === "loading" && <div style={{ color: "var(--text-muted)", fontSize: 13 }}>加载中...</div>}
 
       {status === "error" && (
-        <div style={{ color: "#b91c1c", fontSize: 13 }}>
+        <div style={{ color: "#ef4444", fontSize: 13 }}>
           加载失败：{msg}
         </div>
       )}
@@ -983,13 +1001,18 @@ export default function Items({
           <tbody>
             {rows.length === 0 && (
               <tr>
-                <td colSpan={5} style={{ ...tdStyle, color: "#9ca3af", textAlign: "center" }}>
+                <td colSpan={5} style={{ ...tdStyle, color: "var(--text-muted)", textAlign: "center" }}>
                   暂无待清理项
                 </td>
               </tr>
             )}
             {rows.map((r) => (
-              <tr key={r.id}>
+              <tr
+                key={r.id}
+                onMouseEnter={() => setHoverRowId(r.id)}
+                onMouseLeave={() => setHoverRowId(null)}
+                style={{ background: hoverRowId === r.id ? "var(--bg)" : "transparent" }}
+              >
                 <td style={tdStyle}>
                   <input
                     type="checkbox"
@@ -1038,7 +1061,7 @@ export default function Items({
             alignItems: "center",
             gap: 12,
             fontSize: 13,
-            color: "#374151",
+            color: "var(--text)",
           }}
         >
           <button onClick={() => gotoPage(page - 1)} disabled={page <= 1 || status === "loading"}>
