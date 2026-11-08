@@ -765,8 +765,8 @@ export default function Items({
           style={{
             padding: "6px 14px",
             borderRadius: 6,
-            border: "1px solid #dc2626",
-            background: selected.size === 0 || busy ? "#fecaca" : "#dc2626",
+            border: "1px solid #b91c1c",
+            background: selected.size === 0 || busy ? "rgba(185, 28, 28, 0.3)" : "#b91c1c",
             color: "#fff",
             cursor: selected.size === 0 || busy ? "not-allowed" : "pointer",
           }}
