@@ -14,6 +14,8 @@ pub mod parser;
 pub mod registry_health;
 pub mod residual;
 pub mod runner;
+/// task-083 B1：已安装软件枚举（注册表 Uninstall 键）。
+pub mod software_enum;
 /// Windows 注册表最小封装（task-068 抽出，供 residual / registry_health 共用）。
 pub mod winreg;
 /// WinSxS 组件存储分析/清理（task-065，C 模块）。
