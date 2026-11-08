@@ -595,7 +595,11 @@ function ReadOnlyTab({
   }
 
   return (
-    <div style={{ ...cardStyle, marginTop: 12, padding: 0, overflow: "hidden" }}>
+    // task-082：原来 `overflow: hidden` 会把超出容器宽度的列**直接裁掉**——
+    // 命令列改成「固定 300px + 不折行」后，表格总宽更容易超出，右侧的
+    // 「风险」「建议」就整列看不见且滚不到。改成 `overflowX: auto`：
+    // 超宽时整表可横向拖动，列一个都不会丢。
+    <div style={{ ...cardStyle, marginTop: 12, padding: 0, overflowX: "auto" }}>
       <div
         style={{
           padding: "12px 16px",
@@ -657,7 +661,11 @@ function ReadOnlyTab({
 
 function Table({ head, children }: { head: React.ReactNode; children: React.ReactNode }) {
   return (
-    <div style={{ ...cardStyle, marginTop: 12, padding: 0, overflow: "hidden" }}>
+    // task-082：原来 `overflow: hidden` 会把超出容器宽度的列**直接裁掉**——
+    // 命令列改成「固定 300px + 不折行」后，表格总宽更容易超出，右侧的
+    // 「风险」「建议」就整列看不见且滚不到。改成 `overflowX: auto`：
+    // 超宽时整表可横向拖动，列一个都不会丢。
+    <div style={{ ...cardStyle, marginTop: 12, padding: 0, overflowX: "auto" }}>
       <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
         <thead>
           <tr>{head}</tr>
