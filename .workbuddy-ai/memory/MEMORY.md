@@ -33,6 +33,11 @@ _项目级、跨会话生效的稳定约定。用户明确交代的规则写这�
 - GitHub 网络（2026-10-29 更正，**这条最容易踩**）：本机跑着 **Clash Verge**（进程 `clash-verge` / `verge-mihomo`），**混合端口 7897**（不是 8607）。它开 fake-ip 时 `api.github.com` 被解析成 `198.18.0.111`（保留段），**代理一挂就全断**——直连和代理同时 000。
   - 探测顺序：先 `curl --max-time 15 https://api.github.com/rate_limit` 测直连 → 不行再 `--proxy http://127.0.0.1:7897` → 两个都 000 就查 `Get-NetTCPConnection -State Listen | ? LocalPort -in 7890,7897,8607,1080` 和 `Get-Process | ? ProcessName -match 'clash|mihomo'`。
   - 网络抖时**单次请求会偶发返回空体**，必须写重试（直连/代理交替，最多 6-8 轮），别当成鉴权失败。
+  - **2026-11-03 补充：先分清「TLS 坏」和「节点挂」，别瞎试凭据。** 三步定位：
+    1. `curl -sv --max-time 10 https://www.baidu.com` 看报错类型。若出现 `CRYPT_E_REVOCATION_OFFLINE (0x80092013)`，那是 **schannel 吊销检查离线**，加 `--ssl-no-revoke` 就好（git 用 `-c http.schannelCheckRevoke=false`），跟网络无关；
+    2. 若变成 `schannel: failed to receive handshake` / 000，再测**国内站**：`https://www.baidu.com` 通而 `https://www.google.com`、`https://github.com`、`https://api.github.com` 全 000 → **Clash 订阅节点挂了/到期**，不是本机 TLS、不是 token、不是仓库问题，只能等用户换节点；
+    3. 注意本机环境里还预置了 `https_proxy=127.0.0.1:14364`（WorkBuddy 沙箱代理），**curl 默认会读它**——想真直连必须 `--noproxy '*'`，否则你以为的「直连」其实也走了代理。
+  - 判定口诀：**baidu 通、google 不通 = 节点问题；baidu 也不通 = 本地代理/沙箱问题；只有 GitHub 不通 = 看是不是 fake-ip 残留。**
   - **Python urllib 走代理会 `SSL: UNEXPECTED_EOF_WHILE_READING`**（curl 走同一代理正常）。所以取数一律用 **curl**，python 只从 stdin 读 JSON 解析。
 - **永远带 `User-Agent`**（GitHub 无 UA 会 403）。
 - 本机**无 `gh` CLI**；建 PR / 查 check-runs 走 `git credential fill` 取 token + `api.github.com` REST。
