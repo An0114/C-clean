@@ -13,6 +13,32 @@
 历史决策不变：代码签名不做、品牌图标不做、G6 不修；跨盘恢复 fallback / RmShutdown 连带兄弟进程 / RmShutdown 30s 无进度三项维持现状。
 
 ## 最近一次变更
+2026-11-08：**task-081 开发完成（= backlog 095：Items / SafeBox / History 三页深色适配），状态 `testing`**（`feature/task-081-ui-dark-mode-items-safebox-history`）：
+  - **① 机制澄清（任务书的假设是错的）**：任务书让「读取全局 theme context」，但**本项目没有 theme context**。
+    主题的实现是 `App.tsx` 把 5 个 token 作为 **inline style 的 CSS 变量**挂在根 div 上（`--bg/--surface/--text/--text-muted/--border`），
+    页面用 `var(--xxx)` 取值，主题切换靠 App 重渲染重算变量值。所以正确做法是**把硬编码色换成变量**，不引入 context、不读 DOM。
+  - **② 色值也必须用现有 token，不能用任务书给的**：任务书要求深色背景 `#1e1e1e` / 文字 `#e0e0e0` / 边框 `#3c3c3c`，
+    但项目 token 是 `#0f172a` / `#f1f5f9` / `#334155`。照任务书的色值改，这三页会和已适配的 Dashboard/Settings **明显割裂**。
+  - **③ 中性色 → CSS 变量**：`#fff`→`--surface`、`#111827`/`#374151`→`--text`、`#6b7280`/`#9ca3af`→`--text-muted`、
+    `#e5e7eb`/`#f3f4f6`/`#d1d5db`→`--border`、`#f9fafb`→`--bg`。**浅色下这些变量取值与原来几乎逐值相同**，所以浅色不回归。
+    逐处判断而非全局替换：`#fff` 有两种语义（卡片底色 vs 彩色按钮上的白字），后者必须保留。
+  - **④ 语义色改半透明**：`#fee2e2`/`#dcfce7`/`#fef3c7`/`#eff6ff` 这类浅色底在深色页上是一块刺眼亮斑。
+    改成 `rgba(...)` 半透明后，叠在浅色底上是淡色、叠在深色底上是暗色，**一个值同时适配两档**，不需要判主题。
+    配套把语义文字提到 500 档（`#b91c1c`→`#ef4444`、`#166534`→`#16a34a`、`#92400e`/`#b45309`→`#d97706`、`#1e3a8a`→`#3b82f6`）——
+    深色下深红/深绿字在暗底上不可读（对比度约 1.6:1），提亮后两档都有 3.5:1 以上。
+  - **⑤ 红色按钮亮度调整（验收 6）**：`#dc2626` → **`#b91c1c`**。降亮度的同时**白字对比度反而从 5.9:1 升到 6.5:1**，
+    一次改动同时满足「不刺眼」和「更清楚」。Items 的「清理已选」一并统一（同一类操作不该两个颜色）。
+  - **⑥ disabled 态修正（顺带发现的既有缺陷）**：按钮 disabled 时是「半透明底 + 白字」，白字在浅蓝/浅红底上**几乎看不见**
+    （浅色下比深色下更糟）。改为 disabled 时文字用 `var(--text-muted)`。
+  - **⑦ Items 行 hover**：验收要求「深色下 hover 可辨认」。inline style 写不了 `:hover`，用 `onMouseEnter` + state 实现。
+    **第一版用 `var(--bg)` 是错的**——表格透明，行背景就等于页面背景，`--bg` 与页面同色，hover 完全看不出来（截图验证时发现）。
+    改用 `var(--surface)`（比页面背景亮一档）。
+  - **真机取证方式**：本机 WebView2 渲染进程创建即崩（MEMORY 已记），Tauri 窗口截图取不到。改用 **headless Edge + CDP**
+    加载 `vite preview` 的**生产构建产物**（= `tauri build` 嵌进 exe 的那份 dist），打桩 `window.__TAURI_INTERNALS__.invoke`
+    喂真实形态数据，跑**真实的 React 组件**截图。共 10 张，含浅色/深色三页、hover、以及「改 CSS 变量 → 整页即时换色」。
+  - **门禁**：lint **0 error**（2 warning 均 SafeBox.tsx 既有）、vitest **197 passed（14 files）**、`pnpm build` 251.64 kB（+1.3）。
+    **注意**：dev server 与 vitest 同时跑会让 jsdom worker 抢不到资源，出现「13/168 + 1 error」的假失败；停掉 dev server 后 14/197 全绿。
+
 2026-11-07：**v0.4.0 已发布并完成真机体验，通过**。tag / Release / NSIS+MSI+便携版+CLI 产物全部就位，真机走查无阻塞问题。**本次同时完成 v0.4.0 后全量 backlog 盘点**（基线：PRD v0.1 + 成熟设想.md + 2026-11-07 UI 改版评审 + 软件感知技术线评审），产出 082~109 共 28 条新待办，分 A/B/C/D/E 五组：
   - **E 组成立**：把 task-102~109 这条"规则库收敛 → 软件感知"能力线单列为一组，强依赖链 `102 路径外置 → 103 matches 字段 → 104 软件枚举器喂 103 → 105 安全红线随 106 每条规则并行补 → 106 扩展软件清单 → 107 多 Profile → 108 UI 展示 → 109 与用户规则去重联调`。102/103 是 P0 地基，不收敛则后续"软件感知"都建在沙地上。
   - **C 组交叉引用已做**：096（双份真值源）→ 由 task-102 落地；097（浏览器缓存覆盖）→ 部分由 task-106/107 承接。避免同一件事列两个待办导致漂移。
@@ -800,9 +826,14 @@
   - 现状缺口：D 盘 0 项是当前正确结果，需加"每盘都有"目标才兑现多盘价值。
   - 验收：① 回收站 `$Recycle.Bin`（每卷一份，L2）；② 各盘 Top-N 大文件（只读）；③ `Windows.old`（L2，仅系统盘）；④ 按盘归属，走白名单+保险箱。
 
-- [ ] **095：清理/保险箱/历史三页深色主题适配** ⚠️（P1，= task-081，已排期）
+- [x] **095（= task-081）：清理/保险箱/历史三页深色主题适配** ✅（2026-11-08 完成）
   - 出处：PRD P0 视觉一致性；task-061 只适配了外壳/Dashboard/Settings。
-  - 验收：三页颜色全部走 CSS 变量，与 light/dark/system 三态一致。
+  - 完成：三页中性色**全部**换成 `var(--bg/--surface/--text/--text-muted/--border)`；语义色（红/绿/黄/蓝）
+    底色改**半透明**（浅色亮斑在深色页上会刺眼），文字提到 500 档（两档都有对比度）；Items 表格行加 hover 高亮。
+  - **机制澄清**：本项目**没有 theme context**——主题是 App 把 5 个 CSS 变量作为 inline style 挂在根 div 上，
+    页面用 `var(--xxx)` 取值。所以「跟随主题」= 用变量，不需要读 context、也不需要订阅。
+  - 证据：headless Edge 加载**生产构建产物**（`vite preview` 的 dist，即打包装进 exe 的那份）截图 10 张，
+    含深色/浅色三页 + hover + 变量热切换；深色下 `--surface` 与 `--bg` 逐值核对无白底残留。
 
 - [ ] **098：dev_cache 扩 Gradle/Maven**（P1，已拍板）
   - 新增 `~/.gradle/caches`、`~/.m2/repository`，先定删哪几个子目录 + 独立开关（避免删错重下几百 MB 依赖）。
@@ -887,18 +918,25 @@
    - **批次 0（现在做）**：099 仪表盘布局重构 / 100 注册表命令列单元格滚动 / 101 清理页路径列单元格滚动。100/101 抽共享 `<ScrollCell>`。
    - **批次 1（P0 地基）**：088 逐项影响说明（数据落 rules/ 不硬编码前端）+ 102 内置 5 模块路径全部外置到 `cache_rules.json` + 103 规则 schema 加 `matches`。102/103 可合一个任务。
    - **批次 2（P1 并行）**：104 软件枚举器 + 106 扩展软件清单 + 105 随 106 每条规则并行补 L3 反向断言；**105.5 的 CI 敏感关键词守卫最先加**。
-   - **批次 3（P1 功能）**：082/083/084 大文件地图补完、090 残留一键定位、092 托盘菜单、093 非系统盘产出、095 深色三页、098 Gradle/Maven。
+   - **批次 3（P1 功能）**：082/083/084 大文件地图补完、090 残留一键定位、092 托盘菜单、093 非系统盘产出、098 Gradle/Maven（**095 深色三页已完成，移出批次**）。
    - **批次 4（P2 收尾）**：107 多 Profile → 108 UI 软件识别展示 → 109 规则去重联调（必须紧跟 102+106）；085/086/087/094。
 3. **两条待拍板**：089（自动清理 vs 仅自动扫描）、091（L0 只读候选目录）。拍板后再进批次 3/4。
 4. **遗留边界不变**：Top100 截断、残留"文件残留"误报无法归零、计划任务扫描非管理员恒空、DISM 15 分钟上限、跨盘恢复不支持、未做代码签名、品牌图标不做。
 
 ## 当前负责人 Agent
-**等待派发批次 0 第一个 UI 任务（建议 task-099：仪表盘布局重构）**。
-v0.4.0 已发布 + 真机通过，task-080 全链路闭环。下一个任务开工前，请按"待办事项"段 Backlog 的批次顺序派发：
-1. **批次 0 先做**：099 / 100 / 101 三个前端 UI 项（用户硬约束：UI 最前）。其中 100/101 是同一模式，建议抽共享 `<ScrollCell>`，可合一个任务；099 独立。
-2. 批次 0 合并后再进批次 1（088 + 102 + 103），不要跳级做 E 组——102/103 是地基。
-3. 089 / 091 两条待拍板项，请用户在派发批次 3 前给结论。
-上一手：DocsKeeper / 用户（v0.4.0 发版 + 真机走查 + backlog 盘点）。
+**测试 Agent（提示词 9）**——`feature/task-081-ui-dark-mode-items-safebox-history` 开发轮已完成、状态 `testing`。
+**本任务是纯样式改动，但有两条容易假绿**：
+① **浅色不回归**：中性色换成 `var(--xxx)` 后浅色取值几乎逐值相同，但语义色底色从实心改成了半透明、文字提亮了一档
+（`#b91c1c`→`#ef4444` 等）——**浅色下这几处会比原来柔和**，是刻意的，不是 bug；判定标准是「能看清 + 不刺眼」，不是像素级一致。
+② **深色取证不能只看 dev**：开发轮用的是 `vite preview` 的生产产物（即打包装进 exe 的 dist）。测试轮请在**安装态**复跑，
+重点看三页有无白底残留、红色按钮是否刺眼、disabled 按钮文字是否可读、Items 行 hover 是否看得出来。
+**已知边界（不在本任务范围，别当 bug 报）**：
+- **顶部更新 banner 在深色下仍是浅蓝亮块**（`#dbeafe`）——它在 `App.tsx` 里，任务书明确「App.tsx 不改动」；
+- **App 根 div 的 `background`/`color` 是字面值**（`background: tokens.bg`），不是 `var(--bg)`，靠 React 重渲染更新——同样在 App.tsx；
+- 其余未适配页面（方案/大文件/残留/注册表）不在本任务范围。
+**截图证据**：`target/shots/` 下 10 张（`target/` 是构建产物目录，不入库）。**测试轮需自己重新取证**，别引用开发轮的临时文件。
+上一手：DevFullstackRustReact（task-081 开发）。再上一手：DocsKeeper（task-081 派发）。
+
 
 ## Git 提交记录
 | Commit | 任务 | 说明 |
@@ -1404,6 +1442,14 @@ v0.4.0 已发布 + 真机通过，task-080 全链路闭环。下一个任务开�
 | c929a4f | #task-080 | docs(changelog): v0.4.0 条目（R5 收官 + P2 全部完成） |
 | 5ab73ea | #task-080 | docs(readme): 功能列表同步（多盘扫描 + 自定义规则 + CLI + 便携版） |
 | （本次） | #task-080 | docs(state): 任务080完成，v0.4.0 release-prep 就绪 |
+| 164f391 | #task-080 | docs(state): v0.4.0 发布闭环 + backlog 盘点（082~109 共 28 条，批次重排） |
+| 1d77bc0 | #task-081 | feat(ui): Items 页深色适配（跟随全局 theme context） |
+| 5a01001 | #task-081 | feat(ui): SafeBox 页深色适配（含红色按钮亮度调整） |
+| db91787 | #task-081 | feat(ui): History 页深色适配（时间戳/数字样式跟随主题） |
+| 540a7af | #task-081 | fix(ui): 统一危险操作按钮的深色亮度（Items 对齐 SafeBox 的 #b91c1c） |
+| 60ec038 | #task-081 | fix(ui): Items 行 hover 改用 --surface（--bg 与页面背景同色，hover 不可见） |
+| e09e7ba | #task-081 | fix(ui): disabled 按钮文字改 muted（白字压在半透明底上不可读） |
+| （本次） | #task-081 | docs(state): 任务081完成，UI 深色适配补完 |
 
 ---
 变更轨迹：
@@ -1548,3 +1594,5 @@ v0.4.0 已发布 + 真机通过，task-080 全链路闭环。下一个任务开�
 - 2026-11-06  task-079  P2 收官（便携版 + CLI）：**CLI 独立 crate**（`cli/`，`c-clean-cli`，**不依赖 tauri**——扫描/清理/白名单/保险箱/审计全复用 engine 那条唯一入口，一行都没绕过；**任务书要 clap 4，改为零依赖手写解析器**：本项目一贯零依赖（提权 exe 手写 FFI、报告手写拼接、glob 手写 DP），clap 要带进 6+ 个传递依赖，而参数形态只有 4 子命令 + 7 个开关，手写 100 行且**能直接单测**——clap 的解析行为只能靠集成测试间接验）；**四个子命令**（`scan` 摘要 + 前 N 条 / `dry-run` 全部明细 / `clean` **默认只预览**、`--yes` 才动文件 / `list-rules` 内置 + 用户规则，全部支持 `--format json`；**三条安全设计与 GUI 完全一致**：默认 dry-run、默认只清 L1（L2 需 `--include-l2`）、删除是**移入保险箱**（可恢复）而非抹掉；`--include-l2` 明确警告「不创建系统还原点」——那是 GUI 的交互式提权流程，命令行弹不了 UAC）；**便携版**（**任务书的 `bundle.windows.portable` 在 Tauri 2 里不存在**，官方机制是 `app.appDirectoriesOverride`——把 `app_data_dir()` 等路径 API 的根改成相对 exe 的目录；且**只能通过 `--config` 作用于便携版那一次构建**，写进共享的 `tauri.conf.json` 会让安装版往 Program Files 写数据而失败（Tauri 文档原话）。新增 `app/src-tauri/tauri.portable.conf.json`，CI 用 `tauri build --no-bundle --config ...` 出裸 exe，再连同 `rules/`、`scripts/`、提权 exe、CLI exe 打 zip；`portable_data/` 里放 README 占位——**`Compress-Archive` 会跳过空目录**，纯空目录解压后消失，CLI 就会误判成安装版；CI 同时把 `c-clean-cli.exe` 作为独立产物上传）；**文档**（`docs/CLI.md`：安装 / 四子命令示例 / JSON 字段表 / 便携版布局 / 退出码 / 典型脚本 / 已知限制）。**真机冒烟（CLI）**：`list-rules` 列出内置 v1.0.0 + 用户规则；`scan` 真扫 **5870 项 / 334.9 MB**（5 模块全 Rust）；`--format json` 字段与文档一致；**便携布局实测**——CLI exe 放进含 `portable_data/` 的目录里跑，DB 落在 `portable_data/data/cdiskcleaner.db`，`%APPDATA%` 未被触碰。**真机冒烟抓到一个真 bug**：`list_pending_page` 单页上限 500，CLI 只读第一页 → 报「共 500 项」且 `clean` 只会清 500 条、**剩下 5370 条静默漏掉**；改成翻页取全（50 万条兜底），修复后总数与编排层一致。**override 作用域实证**：便携构建的 exe 里 `portable_data` 字符串出现 1 次，普通构建的 exe 里 **0 次**——证明它确实只作用于便携版，安装版不受影响。门禁 check/fmt/clippy 0、cargo test **632 passed**（+12，全部是 CLI 单测）、lint 0 error、`pnpm build` 250.34 kB（无前端改动）、**tauri build 出 NSIS 4.54 MiB + MSI 6.71 MiB**（与 task-078 持平：CLI 不进 GUI 包）。**真机 GUI/安装态冒烟未做**（本机 WebView2 起不来），归测试轮
 
 - 2026-11-07  task-080  v0.4.0 发版准备：**版本号 6 处升到 0.4.0**（`tauri.conf.json` / `app/src-tauri/Cargo.toml` / `app/package.json` / **根 `package.json`** / **`cli/Cargo.toml`** + `Cargo.lock`；**后两处是白名单遗漏**——根 `package.json` 不升会留下 0.2.1 的残留，`cli/Cargo.toml` 不升则验收标准要的 `c-clean-cli --version` 出不来 0.4.0，因为它读的是 `env!("CARGO_PKG_VERSION")`。根 `Cargo.toml` 是纯 workspace（无 `[package]`），没有 version 可改；`engine`/`elevation` 保持 0.1.0——内部库版本独立是常态，且 elevation 不进版本线）；**CHANGELOG v0.4.0**（新增：多盘 / 自定义规则 / CLI / 便携版；架构优化：R5 五模块 Rust 化，**明写 Firefox 缓存导致条目数 7 → 4576 的用户可见副作用**；测试：新增 62 条 Rust + 17 条前端；已知问题：新增三页深色未覆盖 / 规则无导入导出 / 规则库 `modules` 段双份真值源。**日期按实际准备日写 11-07，不是任务书示例的 11-06**）；**README 同步**（版本号 / 功能列表 / 安装表加便携版 zip 与 CLI / 目录结构加 `cli/` / 技术栈 / 开发命令 / 文档链接）；**USER_GUIDE 同步**（头部版本；**3.1 由「C 盘环形图」改「每盘一个环」，顺带修正原文档写错的阈值——代码是 ≥85% 红 / ≥70% 橙，原文写的「85 转橙、95 转红」是错的**；4.1 多盘说明**明写「非系统盘 0 项是正确结果」**；4.2~4.4「脚本」改「模块」并删掉已不适用的「PowerShell 执行策略」失败原因；5.1 加按盘筛选；**12 章新增 12.2 自定义规则**，原 12.2~12.4 顺延为 12.3~12.5；**新增第 15 章「命令行（CLI）与便携版」**，原第 15 章常见问题顺延为 16 并同步交叉引用）。**门禁**：check 0 / `cargo test --workspace` **632 passed**（无代码改动，纯回归）/ lint 0 error（2 warning 均 SafeBox.tsx 既有）/ `pnpm build` 250.34 kB。**打包冒烟**：`tauri build` 出 **`C-DiskCleaner_0.4.0_x64-setup.exe`（4.54 MiB）+ `C-DiskCleaner_0.4.0_x64_en-US.msi`（6.70 MiB）**，文件名带 0.4.0；**MSI per-user 静默装到干净目录成功**（exit 0），安装态 exe `FileVersion`/`ProductVersion` 均 0.4.0，`rules/`+`scripts/` 已打包，**安装目录不含 `portable_data`**；便携构建 exe 里 `portable_data` 出现 1 次、安装态 0 次（override 作用域实证）；便携布局 CLI `--version` = 0.4.0、DB 落 `portable_data/data/cdiskcleaner.db`；验完已 `msiexec /x` 卸载干净。**踩坑**：`tauri build` **不编译 CLI**，release 目录的 `c-clean-cli.exe` 会停在旧版本（首次核对报的是 0.1.0）——CI 的 `release.yml` 有单独 `cargo build --release -p c-clean-cli` 所以发版不受影响，但本地验版本必须单独跑这一步。**未做**：真机 GUI 窗口冒烟（本机 WebView2 渲染进程创建即崩）、tag 与 Release（归 DocsKeeper / 测试轮）、CI（开发轮不触发）。
+
+- 2026-11-08  task-081（= backlog 095）  UI 深色适配补完（Items / SafeBox / History 三页）：**先纠正了任务书的两处前提**——① **本项目没有 theme context**，主题是 App 把 5 个 CSS 变量（`--bg/--surface/--text/--text-muted/--border`）作为 inline style 挂在根 div 上，页面用 `var()` 取值，所以「跟随主题」= 换变量，不需要 context/DOM 读取；② 任务书给的深色色值（`#1e1e1e`/`#e0e0e0`/`#3c3c3c`）与项目 token（`#0f172a`/`#f1f5f9`/`#334155`）**完全不同**，照抄会和已适配的 Dashboard/Settings 割裂。**中性色全部换变量**（浅色下取值几乎逐值相同，故不回归），逐处判断而非全局替换——`#fff` 有两种语义（卡片底 vs 彩色按钮白字），后者必须保留。**语义色改半透明**（`#fee2e2` 这类浅底在深色页上是刺眼亮斑；`rgba()` 叠在浅底是淡色、叠在深底是暗色，一个值适配两档），配套把语义文字提到 500 档（深红 `#b91c1c` 在暗底上对比度仅 1.6:1，不可读）。**红按钮 `#dc2626`→`#b91c1c`**：降亮度的同时白字对比度从 5.9 升到 6.5，一次改动满足两个目标；Items 的「清理已选」一并统一。**顺带修了两个既有缺陷**：① disabled 按钮是「半透明底 + 白字」，白字在浅蓝/浅红底上几乎看不见（浅色下更糟）→ 改 `var(--text-muted)`；② Items 行 hover 第一版用 `var(--bg)` **完全看不出**（表格透明，行背景等于页面背景，`--bg` 与之同色），截图验证时才发现，改用 `var(--surface)`。**取证方式**：本机 WebView2 崩（MEMORY 已记），改用 **headless Edge + CDP** 加载 `vite preview` 的**生产构建产物**（= 打包装进 exe 的 dist），打桩 `__TAURI_INTERNALS__.invoke` 喂真实数据，跑真实 React 组件截 10 张图，含浅色/深色三页 + hover + 变量热切换（改 5 个变量后整页即时换色，证明无硬编码残留）。**踩坑**：Edge headless 的相对路径按**进程工作目录**解析，`--screenshot=target/x.png` 会报「系统找不到指定的路径」，必须给绝对路径；React 的 `onMouseEnter` 是 `mouseover` 代理的，派发 `mouseenter` 不触发。门禁 lint 0 error（2 warning 均 SafeBox 既有）、vitest **197 passed（14 files）**、`pnpm build` 251.64 kB（+1.3）；**dev server 与 vitest 同跑会让 jsdom worker 抢资源出现「13/168 + 1 error」假失败，停掉 dev server 即 14/197 全绿**。**未做**：安装态 GUI 深色走查（WebView2 崩，归测试轮）；顶部更新 banner 深色仍是浅蓝亮块（在 App.tsx，任务书明确不改）。
