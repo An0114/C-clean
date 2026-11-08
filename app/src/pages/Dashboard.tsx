@@ -44,20 +44,28 @@ const cardStyle: React.CSSProperties = {
   border: "1px solid var(--border)",
   borderRadius: 8,
   padding: "16px 20px",
-  background: "#fff",
-  minHeight: 90,
+  // task-082：原来写死 `#fff`——深色下是一块白底（task-081 漏了这一处）。
+  background: "var(--surface)",
+  minHeight: 100,
+  // 浅色下是柔和投影；深色下 6% 黑叠在 #1e293b 上几乎不可见，
+  // 正好符合「深色不靠阴影分层」的惯例——层次由 border 承担。
+  // 不判主题就能同时满足两档，理由同 task-081 的语义色处理。
+  boxShadow: "0 1px 3px rgba(0, 0, 0, 0.06)",
 };
 
 const labelStyle: React.CSSProperties = {
   fontSize: 12,
   color: "var(--text-muted)",
-  marginBottom: 8,
+  marginBottom: 10,
 };
 
 const valueStyle = (color: string): React.CSSProperties => ({
-  fontSize: 28,
+  // task-082：28 → 32。仪表盘是「一眼看数」的页面，主数字够大才好扫。
+  fontSize: 32,
   fontWeight: 600,
   color,
+  // 32px 的行高默认偏挤，给一点呼吸空间
+  lineHeight: 1.2,
 });
 
 const btnStyle = (disabled: boolean): React.CSSProperties => ({
@@ -317,9 +325,9 @@ export default function Dashboard({ scanSignal = 0 }: { scanSignal?: number }) {
       {status === "error" && (
         <div
           style={{
-            background: "#fee2e2",
-            border: "1px solid #fca5a5",
-            color: "#b91c1c",
+            background: "rgba(220, 38, 38, 0.16)",
+            border: "1px solid rgba(220, 38, 38, 0.45)",
+            color: "#ef4444",
             padding: 12,
             borderRadius: 8,
           }}
@@ -362,11 +370,24 @@ export default function Dashboard({ scanSignal = 0 }: { scanSignal?: number }) {
       {/* task-063：C 盘空间环形图 → task-077：多盘并列 */}
       <DriveRings />
 
-      {/* task-065：WinSxS 组件存储（C 模块） */}
-      <WinsxsCard />
+      {/* task-082：WinSxS 与趋势图并排。
+          `auto-fit + minmax(340px, 1fr)`：宽屏两列、窄屏自动堆叠，
+          不用 JS 判窗口宽度。340px 是「卡片内还有按钮和一行说明」的下限，
+          再窄就会把趋势图的柱子挤成一团。 */}
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(340px, 1fr))",
+          gap: 12,
+          marginTop: 12,
+        }}
+      >
+        {/* task-065：WinSxS 组件存储（C 模块） */}
+        <WinsxsCard />
 
-      {/* task-061：最近 30 天释放量趋势 */}
-      <TrendChart />
+        {/* task-061：最近 30 天释放量趋势 */}
+        <TrendChart />
+      </div>
     </main>
   );
 }
@@ -417,8 +438,10 @@ function DriveRings() {
 
   return (
     <div style={{ ...cardStyle, marginTop: 12 }}>
-      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>磁盘空间</div>
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 20 }}>
+      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 12 }}>磁盘空间</div>
+      {/* task-082：多盘之间的间距 20 → 24，与卡片间距 12 的倍数关系对齐，
+          盘多了也不会挤在一起。 */}
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 24 }}>
         {drives.map((d) => (
           <DriveRingItem key={d.letter} drive={d} />
         ))}
@@ -613,7 +636,9 @@ function TrendChart() {
     setHover(null);
   }, [days]);
 
-  const box: React.CSSProperties = { ...cardStyle, marginTop: 12 };
+  // task-082：不再自带 marginTop——间距由外层并排容器的 gap 统一给，
+  // 否则并排后每张卡片顶部会多出 12px 的错位。
+  const box: React.CSSProperties = cardStyle;
   const title = (
     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
       <span style={labelStyle}>最近 {days} 天释放趋势</span>
@@ -962,7 +987,7 @@ function WinsxsCard() {
   const canClean = hasReclaimable && !cleaning && !analyzing;
 
   return (
-    <div style={{ ...cardStyle, marginTop: 12 }} data-testid="winsxs-card">
+    <div style={cardStyle} data-testid="winsxs-card">
       <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
         <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>
           WinSxS 组件存储
