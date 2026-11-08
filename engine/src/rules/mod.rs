@@ -13,6 +13,9 @@ pub mod remote;
 pub mod rollback;
 /// task-083：matches 匹配 / L3 反向断言 / 路径去重。
 pub mod schema;
+#[cfg(test)]
+#[path = "schema_test.rs"]
+mod schema_test;
 
 pub use env_expand::{expand, ExpandError};
 pub use loader::{external_deny_list, load, LoadError, LoadedRules};
