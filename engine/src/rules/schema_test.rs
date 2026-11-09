@@ -389,6 +389,9 @@ fn system_group_covers_all_builtin_categories() {
         "pip_cache",
         "pnpm_store",
         "update_download",
+        "edge_cache",
+        "chrome_cache",
+        "firefox_cache",
     ] {
         assert!(
             categories.contains(&cat),
@@ -416,6 +419,9 @@ fn system_group_does_not_overflow_user_categories() {
                 "pip_cache",
                 "pnpm_store",
                 "update_download",
+                "edge_cache",
+                "chrome_cache",
+                "firefox_cache",
             ]
             .contains(&cat),
             "system 组混入了非内置模块类别 {cat:?}"
@@ -505,5 +511,38 @@ fn prefetch_and_update_roots_are_system_root_based() {
         normp(&format!(r"{sr}\SoftwareDistribution\Download"))
     );
     assert_eq!(update[0].risk_level, 2, "更新缓存必须 L2");
+}
+
+/// browser_cache 三条类别（edge/chrome/firefox）都基于 `%LOCALAPPDATA%`/`%APPDATA%`
+/// 的锚目录，风险全 L1（A2b 快照）。这里的根是 **profile 锚**（`User Data` /
+/// `Profiles`），多 profile 枚举由 `profiles.rs` 在模块内部展开，规则库只维护一份锚。
+#[test]
+fn browser_cache_anchors_resolve_to_local_or_roaming_l1() {
+    let rules = repository_rules();
+    let lad =
+        std::env::var("LOCALAPPDATA").unwrap_or_else(|_| r"C:\Users\test\AppData\Local".into());
+    let ad =
+        std::env::var("APPDATA").unwrap_or_else(|_| r"C:\Users\test\AppData\Roaming".into());
+
+    let roots = crate::rules::schema::roots_for_categories(
+        &rules,
+        &["edge_cache", "chrome_cache", "firefox_cache"],
+    );
+    let expected = [
+        (format!(r"{lad}\Microsoft\Edge\User Data"), "edge_cache", 1),
+        (format!(r"{lad}\Google\Chrome\User Data"), "chrome_cache", 1),
+        (format!(r"{ad}\Mozilla\Firefox"), "firefox_cache", 1),
+    ];
+    assert_eq!(roots.len(), expected.len(), "三条浏览器锚: {roots:#?}");
+    for (exp_root, exp_cat, exp_risk) in expected {
+        assert!(
+            roots.iter().any(|r| {
+                normp(&r.root) == normp(&exp_root)
+                    && r.category == exp_cat
+                    && r.risk_level == exp_risk
+            }),
+            "缺少 {exp_cat}={exp_root} / risk {exp_risk}，实际 {roots:#?}"
+        );
+    }
 }
 

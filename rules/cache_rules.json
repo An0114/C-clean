@@ -1,5 +1,5 @@
 {
-  "version": "1.2.0",
+  "version": "1.3.0",
   "modules": {
     "system": [
       {
@@ -105,6 +105,45 @@
         "impact_note": "删除会中断正在安装的更新",
         "rebuild_note": "自动重建",
         "elevated": true
+      },
+      {
+        "id": "browser_edge",
+        "category": "edge_cache",
+        "display_name": "Edge 浏览器缓存",
+        "paths": [
+          "%LOCALAPPDATA%\\Microsoft\\Edge\\User Data"
+        ],
+        "risk_level": "L1",
+        "description": "Edge 浏览器各 profile 的 Cache 目录，浏览器自动重建",
+        "impact_note": "删除后网页下次加载稍慢，不影响书签/密码/历史",
+        "rebuild_note": "自动重建",
+        "elevated": false
+      },
+      {
+        "id": "browser_chrome",
+        "category": "chrome_cache",
+        "display_name": "Chrome 浏览器缓存",
+        "paths": [
+          "%LOCALAPPDATA%\\Google\\Chrome\\User Data"
+        ],
+        "risk_level": "L1",
+        "description": "Chrome 浏览器各 profile 的 Cache 目录，浏览器自动重建",
+        "impact_note": "删除后网页下次加载稍慢，不影响书签/密码/历史",
+        "rebuild_note": "自动重建",
+        "elevated": false
+      },
+      {
+        "id": "browser_firefox",
+        "category": "firefox_cache",
+        "display_name": "Firefox 浏览器缓存",
+        "paths": [
+          "%APPDATA%\\Mozilla\\Firefox"
+        ],
+        "risk_level": "L1",
+        "description": "Firefox 各 profile 的 cache2 目录，浏览器自动重建",
+        "impact_note": "删除后网页下次加载稍慢，不影响书签/密码/历史",
+        "rebuild_note": "自动重建",
+        "elevated": false
       }
     ],
     "A": [
