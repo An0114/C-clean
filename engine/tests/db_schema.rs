@@ -73,7 +73,7 @@ fn opens_and_creates_db_file() {
 /// 断言从「数量 == 9」改成「名字集合完全相等」：数量对得上但**换了一张表**
 /// （比如误删一张、多加一张）时，只比数量会假绿。集合比较能同时钉住「不多不少」。
 #[test]
-fn creates_all_10_business_tables() {
+fn creates_all_11_business_tables() {
     let dir = tempfile::tempdir().expect("tempdir");
     let conn = open(dir.path()).expect("open db");
 
@@ -101,6 +101,8 @@ fn creates_all_10_business_tables() {
         "settings",
         // v4（task-078）
         "user_rules",
+        // v5（task-083）
+        "software_inventory",
     ]
     .iter()
     .map(|s| s.to_string())
@@ -132,10 +134,11 @@ fn user_version_bumped_to_latest() {
     // task-056：v2 加了 safe_box.restored_at（版本号 1 → 2）。
     // task-077：v3 加了 cleanup_item.drive_letter 派生列（版本号 2 → 3）。
     // task-078：v4 加了 user_rules 表（版本号 3 → 4）。
+    // task-083：v5 加了 software_inventory 表（版本号 4 → 5）。
     assert_eq!(
         user_version(&conn),
-        4,
-        "首次迁移后 user_version 应为最新版 4"
+        5,
+        "首次迁移后 user_version 应为最新版 5"
     );
 }
 
@@ -147,7 +150,7 @@ fn migration_is_idempotent() {
 
     // 第二次打开同一数据目录：不再执行任何迁移，仍 Ok 且版本不变
     let second = open(dir.path()).expect("second open should succeed (idempotent)");
-    assert_eq!(user_version(&second), 4, "重复打开后 user_version 不应变化");
+    assert_eq!(user_version(&second), 5, "重复打开后 user_version 不应变化");
 }
 
 /// task-056：v1 库（无 `restored_at` 列）升级到 v2 —— 不报错、旧数据保留、新列为 NULL。
@@ -179,9 +182,10 @@ fn migrate_v1_to_v2_preserves_existing_rows() {
 
     // 正常 open 触发 v1 → v2 迁移。
     let conn = open(dir.path()).expect("v1 db should migrate to v2 without error");
-    // task-077/078：v1 库会一路升到最新（v2 补 restored_at、v3 补 drive_letter、
-    // v4 建 user_rules），中间不要求停在某个版本——迁移器按「版本号 > current」连续执行。
-    assert_eq!(user_version(&conn), 4, "迁移后 user_version 应为最新 4");
+    // task-077/078/083：v1 库会一路升到最新（v2 补 restored_at、v3 补 drive_letter、
+    // v4 建 user_rules、v5 建 software_inventory），中间不要求停在某个版本——
+    // 迁移器按「版本号 > current」连续执行。
+    assert_eq!(user_version(&conn), 5, "迁移后 user_version 应为最新 5");
 
     let n: i64 = conn
         .query_row(

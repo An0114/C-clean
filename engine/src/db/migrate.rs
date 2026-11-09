@@ -23,7 +23,8 @@ use crate::db::DbError;
 /// - v1（task-002）：九张表初始 schema；
 /// - v2（task-056）：`safe_box` 加 `restored_at` 审计列（restore 改为 UPDATE 不再 DELETE）；
 /// - v3（task-077）：`cleanup_item` 加 `drive_letter` 派生列（盘符）+ 组合索引；
-/// - v4（task-078）：新增 `user_rules` 表（用户自定义清理规则）。
+/// - v4（task-078）：新增 `user_rules` 表（用户自定义清理规则）；
+/// - v5（task-083）：新增 `software_inventory` 表（软件清单缓存，B1 落地）。
 ///
 /// # 为什么 v3 不是任务书说的 v2
 ///
@@ -35,6 +36,7 @@ static MIGRATIONS: &[(u32, &str)] = &[
     (2, include_str!("migrations/v2__safe_box_restored_at.sql")),
     (3, include_str!("migrations/v3__drive_letter.sql")),
     (4, include_str!("migrations/v4__user_rules.sql")),
+    (5, include_str!("migrations/v5__software_awareness.sql")),
 ];
 
 /// 对连接执行所有「版本号 > 当前 user_version」的迁移，返回迁移后的最新版本号。
@@ -94,8 +96,8 @@ mod tests {
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
         assert_eq!(
-            v, 4,
-            "最新版本应为 v4（v2 是 safe_box、v3 是 drive_letter、v4 是 user_rules）"
+            v, 5,
+            "最新版本应为 v5（v2 safe_box / v3 drive_letter / v4 user_rules / v5 software_inventory）"
         );
     }
 
@@ -190,8 +192,8 @@ mod tests {
     fn migrate_is_idempotent() {
         // 重复打开同一库不该重复执行迁移（ALTER TABLE 第二次会报「列已存在」）
         let conn = migrated();
-        assert_eq!(migrate(&conn).unwrap(), 4);
-        assert_eq!(migrate(&conn).unwrap(), 4);
+        assert_eq!(migrate(&conn).unwrap(), 5);
+        assert_eq!(migrate(&conn).unwrap(), 5);
     }
 
     #[test]
@@ -264,5 +266,66 @@ mod tests {
         };
         assert!(ins("a").is_ok());
         assert!(ins("b").is_err(), "重复 pattern 必须被唯一索引拒绝");
+    }
+
+    // ===== task-083：v5 software_inventory =====
+
+    #[test]
+    fn v5_creates_software_inventory_table() {
+        let conn = migrated();
+        let mut stmt = conn
+            .prepare("PRAGMA table_xinfo(software_inventory)")
+            .unwrap();
+        let cols: Vec<String> = stmt
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        for want in [
+            "id",
+            "name",
+            "version",
+            "publisher",
+            "install_location",
+            "registry_key",
+            "detected_at",
+        ] {
+            assert!(
+                cols.iter().any(|c| c == want),
+                "software_inventory 缺列 {want}: {cols:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn v5_name_index_and_unique_registry_key() {
+        let conn = migrated();
+
+        let mut idx: Vec<String> = conn
+            .prepare("PRAGMA index_list(software_inventory)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        idx.sort();
+        assert_eq!(
+            idx,
+            vec![
+                "idx_software_inventory_name".to_string(),
+                "idx_software_inventory_registry_key".to_string()
+            ]
+        );
+
+        // registry_key 唯一：同一软件（同出处）只允许一条
+        let ins = |k: &str| {
+            conn.execute(
+                "INSERT INTO software_inventory (name, registry_key, detected_at)
+                 VALUES (?1, 'HKLM\\...\\x', 1000)",
+                [k],
+            )
+        };
+        assert!(ins("A").is_ok());
+        assert!(ins("B").is_err(), "重复 registry_key 必须被唯一索引拒绝");
     }
 }
