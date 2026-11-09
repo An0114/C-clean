@@ -325,3 +325,70 @@ pub fn dedup_hits(hits: Vec<RuleHit>) -> Vec<RuleHit> {
     out.sort_by(|a, b| norm_path(&a.path).cmp(&norm_path(&b.path)));
     out
 }
+
+// ===================== 4. system 组根目录提取（A2 双份真值源收敛） =====================
+
+/// 内置模块在规则库 `system` 组里的一条「根目录 + 类别 + 风险」。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuiltinRoot {
+    /// 业务类别键（`user_temp` / `prefetch` / `npm_cache` ...），与模块产出一致。
+    pub category: String,
+    /// 已展开环境变量后的绝对根目录（`%TEMP%` → `C:\Users\...\AppData\Local\Temp`）。
+    pub root: String,
+    /// 风险整数（`L1`→1 / `L2`→2）。
+    pub risk_level: i64,
+}
+
+fn risk_to_i64(level: &str) -> i64 {
+    match level.to_uppercase().as_str() {
+        "L3" => 3,
+        "L2" => 2,
+        "L0" => 0,
+        _ => 1,
+    }
+}
+
+/// 从规则库 `system` 组提取指定类别集合的根目录表（A2）。
+///
+/// # 为什么只读 `system` 组、按 category 匹配
+///
+/// 内置模块的路径真值源统一放在 `cache_rules.json` 的 `system` 组，与 A~F 组
+/// 的「用户可见清理规则」分离。**必须只扫 `system` 组**：同样的 category（如
+/// `npm_cache`）在 A 组也有条目（`~/.npm/_cacache`），若遍历所有组会把 A 组的
+/// 额外路径混进来扫——那正是不该碰的重复真值源。按 category 匹配则让一个模块
+/// （temp）能认领多个 category（`user_temp` + `windows_temp`），与模块语义一致。
+///
+/// # 展开失败的处理
+///
+/// 规则加载流程（`loader::load`）已经校验过所有 paths 可展开，这里失败只可能
+/// 是环境变量在加载后被改掉。跳过这一条（保留其他根）比 panic 好——少扫一个
+/// 根不影响正确性，只影响覆盖范围。
+pub fn roots_for_categories(rules: &CacheRules, categories: &[&str]) -> Vec<BuiltinRoot> {
+    let Some(system) = rules.modules.get("system") else {
+        return Vec::new();
+    };
+    let mut out: Vec<BuiltinRoot> = Vec::new();
+    for entry in system {
+        if !categories.contains(&entry.category.as_str()) {
+            continue;
+        }
+        let risk = risk_to_i64(&entry.risk_level);
+        for raw in &entry.paths {
+            let Ok(root) = env_expand::expand(raw) else {
+                continue;
+            };
+            out.push(BuiltinRoot {
+                category: entry.category.clone(),
+                root,
+                risk_level: risk,
+            });
+        }
+    }
+    // 展开结果去重：同一根目录（大小写 / 分隔符差异视为同一）只留一份。
+    out.sort_by(|a, b| {
+        let k = |r: &BuiltinRoot| norm_path(&r.root);
+        (k(a), &a.category).cmp(&(k(b), &b.category))
+    });
+    out.dedup_by(|a, b| norm_path(&a.root) == norm_path(&b.root));
+    out
+}
