@@ -762,11 +762,11 @@ impl<'conn, 'emitter> ScanOrchestrator<'conn, 'emitter> {
                 crate::scan::modules::prefetch::scan_from_rules,
                 crate::scan::modules::prefetch::scan,
             )),
-            BROWSER_CACHE_SCRIPT if rust_browser_cache_enabled() => {
-                // A2b：browser_cache 依赖规则库 per-category 锚 + 多 profile，
-                // 与 C1 一起迁移，暂保持环境变量兜底入口。
-                Some(crate::scan::modules::browser_cache::scan())
-            }
+            BROWSER_CACHE_SCRIPT if rust_browser_cache_enabled() => Some(Self::builtin_scan(
+                rules,
+                crate::scan::modules::browser_cache::scan_from_rules,
+                crate::scan::modules::browser_cache::scan,
+            )),
             DEV_CACHE_SCRIPT if rust_dev_cache_enabled() => Some(Self::builtin_scan(
                 rules,
                 crate::scan::modules::dev_cache::scan_from_rules,

@@ -42,10 +42,24 @@
 //! `User Data\Default` 下面还有 `Login Data`（保存的密码）、`Bookmarks`、
 //! `History`、`Cookies`。这些**绝对不在扫描范围内**——只进 `Cache` 子目录，
 //! 不做任何通配匹配。这是本项目 L3 红线在模块层的体现。
+//!
+//! # A2b + C1：规则库锚目录 + 多 Profile 展开
+//!
+//! task-083 A2b 把浏览器的根目录真值源迁进 `cache_rules.json` 的 `system` 组：
+//! Edge/Chrome 的锚是 `User Data\...` 目录、Firefox 的锚是 Firefox 安装根目录。
+//! 规则库只维护**一份锚**，实际扫哪些 profile 由 [`crate::scan::profiles`] 在
+//! 模块内部展开（Chrome/Edge 枚举 `Default`/`Profile N`、Firefox 读
+//! `profiles.ini`）——这就是 C1 的多 profile 支持，且不破坏规则库「同一件事
+//! 只有一份实现」的约定。
+//!
+//! 保留 [`scan`] / [`fixed_roots`] / [`firefox_cache_dirs`] 作为**降级兜底**：
+//! 规则库加载失败时退回旧 ps1 等价逻辑，ps1 对比测试不受影响。
 
 use std::path::{Path, PathBuf};
 
 use super::{scan_dir, ScanItem};
+use crate::rules::models::CacheRules;
+use crate::scan::profiles::{chromium_profiles, firefox_profiles};
 
 /// 模块代码。对应 `cleanup_item.module_code`，与 ps1 的 `$moduleCode` 一致。
 pub const MODULE_CODE: &str = "browser_cache";
@@ -59,6 +73,9 @@ pub const CATEGORY_FIREFOX: &str = "firefox_cache";
 
 /// L1：浏览器缓存，删了浏览器会自己重建。
 pub const RISK_L1: i64 = 1;
+
+/// 本模块负责的业务类别集合（A2b：锚目录真值源从规则库取）。
+const OWN_CATEGORIES: &[&str] = &[CATEGORY_EDGE, CATEGORY_CHROME, CATEGORY_FIREFOX];
 
 /// 固定的两个缓存目录（Edge / Chrome 的 `Default\Cache`）。
 ///
@@ -133,10 +150,103 @@ pub fn scan() -> Vec<ScanItem> {
     }
 }
 
+/// A2b + C1：从规则库 `system` 组读锚目录 + 多 profile 展开（生产主入口）。
+///
+/// 每个类别的锚从 `cache_rules.json` 取（Edge/Chrome 的 `User Data`、Firefox
+/// 的安装根），再用 [`chromium_profiles`] / [`firefox_profiles`] 枚举其下全部
+/// profile，逐个扫 profile 的 Cache 目录。这样规则库里只维护一份锚，多 profile
+/// 不漏扫；[`scan`] 仍是规则加载失败时的降级兜底。
+///
+/// # 为什么按 category 分发而不是统一扫锚
+///
+/// Chromium 系（Edge/Chrome）的 profile 是 `User Data` 下的 `Default`/`Profile N`
+/// 目录；Firefox 用 `profiles.ini` 描述，profile 目录带随机前缀。两者结构不同，
+/// 必须走各自的枚举器。绕开 `roots_for_categories` 后 category 也能正确下穿到
+/// ScanItem，保证与 ps1 的类别键一致。
+pub fn scan_from_rules(rules: &CacheRules) -> Vec<ScanItem> {
+    let anchors = crate::rules::schema::roots_for_categories(rules, OWN_CATEGORIES);
+    let mut out = Vec::new();
+    for anchor in anchors {
+        let path = Path::new(&anchor.root);
+        match anchor.category.as_str() {
+            CATEGORY_EDGE | CATEGORY_CHROME => {
+                for profile in chromium_profiles(path) {
+                    for cache in profile.cache_roots {
+                        out.extend(scan_dir(
+                            &cache,
+                            MODULE_CODE,
+                            &anchor.category,
+                            anchor.risk_level,
+                        ));
+                    }
+                }
+            }
+            CATEGORY_FIREFOX => {
+                // profiles.ini 在 Firefox 安装根下，锚目录就是它的父目录。
+                for profile in firefox_profiles_from_root(path) {
+                    for cache in profile.cache_roots {
+                        out.extend(scan_dir(
+                            &cache,
+                            MODULE_CODE,
+                            CATEGORY_FIREFOX,
+                            anchor.risk_level,
+                        ));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// 从 Firefox 安装根目录读取 `profiles.ini` 并展开所有 profile。
+///
+/// `root` 是 `...\Mozilla\Firefox`（不是 `Profiles` 子目录），
+/// `profiles.ini` 就放在这里。锚目录展开成 `root/profiles.ini`，
+/// profile 的相对路径以此为基准解析。
+fn firefox_profiles_from_root(root: &Path) -> Vec<crate::scan::profiles::BrowserProfile> {
+    let ini_path = root.join("profiles.ini");
+    let ini = match std::fs::read_to_string(&ini_path) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(), // 没装 Firefox，不是错误
+    };
+    firefox_profiles(&ini, root)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rules::models::{CacheRules, RuleEntry};
+    use std::collections::HashMap;
     use std::fs;
+
+    /// 构造一条 `system` 组规则（多 profile 测试用，路径直接写临时目录、
+    /// 不进 `%LOCALAPPDATA%`，便于断言展开结果）。
+    fn system_entry(id: &str, category: &str, path: &str) -> RuleEntry {
+        RuleEntry {
+            id: id.to_string(),
+            category: category.to_string(),
+            display_name: id.to_string(),
+            paths: vec![path.to_string()],
+            risk_level: "L1".to_string(),
+            description: String::new(),
+            impact_note: String::new(),
+            rebuild_note: String::new(),
+            elevated: false,
+            matches: Vec::new(),
+        }
+    }
+
+    fn rules_with(system: Vec<RuleEntry>) -> CacheRules {
+        let mut modules = HashMap::new();
+        modules.insert("system".to_string(), system);
+        CacheRules {
+            version: "1.3.0".to_string(),
+            modules,
+            whitelist_deny: Vec::new(),
+        }
+    }
 
     /// 造一个假的 `%LOCALAPPDATA%` 结构。
     fn make_lad() -> tempfile::TempDir {
@@ -266,5 +376,94 @@ mod tests {
             items.iter().filter(|i| i.category == CATEGORY_EDGE).count(),
             2
         );
+    }
+
+    // ===================== A2b + C1：规则库锚 + 多 profile 展开 =====================
+
+    /// Chromium 多 profile：`User Data` 下 Default + Profile 1 各带缓存目录，
+    /// 应收齐两个 profile 的条目，且类别正确下穿到 ScanItem。
+    #[test]
+    fn scan_from_rules_enumerates_all_chromium_profiles() {
+        let tmp = tempfile::tempdir().unwrap();
+        let user_data = tmp.path().join("Chrome User Data");
+        for (prof, files) in [
+            ("Default", 2usize),
+            ("Profile 1", 1usize),
+            ("Profile 2", 3usize),
+        ] {
+            let cache = user_data.join(prof).join("Cache");
+            fs::create_dir_all(&cache).unwrap();
+            for i in 0..files {
+                fs::write(cache.join(format!("f{i}")), vec![b'x'; 10]).unwrap();
+            }
+        }
+        // 非 profile 目录不该被扫（Crashpad 有 Cache 也不能进）
+        fs::create_dir_all(user_data.join("Crashpad").join("Cache")).unwrap();
+        fs::write(user_data.join("Crashpad").join("Cache").join("dump"), vec![b'x'; 5]).unwrap();
+
+        let rules = rules_with(vec![system_entry(
+            "browser_chrome",
+            CATEGORY_CHROME,
+            user_data.to_str().unwrap(),
+        )]);
+        let items = scan_from_rules(&rules);
+
+        let chrome: Vec<_> = items.iter().filter(|i| i.category == CATEGORY_CHROME).collect();
+        assert_eq!(chrome.len(), 6, "Default 2 + Profile 1 的 1 + Profile 2 的 3: {items:#?}");
+        assert!(chrome.iter().all(|i| i.module_code == MODULE_CODE));
+        assert!(chrome.iter().all(|i| i.risk_level == RISK_L1));
+        // Crashpad 绝不能进（不是 profile 目录）
+        assert!(chrome.iter().all(|i| !i.path.contains("Crashpad")));
+    }
+
+    /// Firefox：从安装根目录读 `profiles.ini` 展开多 profile。
+    #[test]
+    fn scan_from_rules_reads_firefox_profiles_ini() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("Mozilla").join("Firefox");
+        fs::create_dir_all(root.join("Profiles")).unwrap();
+        fs::create_dir_all(root.join("Profiles").join("abc.default-release").join("cache2")).unwrap();
+        fs::write(
+            root.join("Profiles").join("abc.default-release").join("cache2").join("E1"),
+            vec![b'x'; 25],
+        )
+        .unwrap();
+        let ini = "[Profile0]\nName=default-release\nIsRelative=1\nPath=Profiles/abc.default-release\nDefault=1\n";
+        fs::write(root.join("profiles.ini"), ini).unwrap();
+
+        let rules = rules_with(vec![system_entry(
+            "browser_firefox",
+            CATEGORY_FIREFOX,
+            root.to_str().unwrap(),
+        )]);
+        let items = scan_from_rules(&rules);
+
+        let ff: Vec<_> = items.iter().filter(|i| i.category == CATEGORY_FIREFOX).collect();
+        assert_eq!(ff.len(), 1, "cache2 里一个文件: {items:#?}");
+        assert!(ff[0].path.to_lowercase().contains("cache2"));
+        assert_eq!(ff[0].size_bytes, 25);
+        assert_eq!(ff[0].module_code, MODULE_CODE);
+        assert_eq!(ff[0].risk_level, RISK_L1);
+    }
+
+    /// Firefox 未安装（无 profiles.ini）时规则驱动路径返回空，不 panic。
+    #[test]
+    fn scan_from_rules_firefox_missing_ini_yields_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("no-firefox");
+        fs::create_dir_all(&root).unwrap();
+        let rules = rules_with(vec![system_entry(
+            "browser_firefox",
+            CATEGORY_FIREFOX,
+            root.to_str().unwrap(),
+        )]);
+        assert!(scan_from_rules(&rules).is_empty());
+    }
+
+    /// Category 未在规则 system 组注册时，scan_from_rules 不产出任何条目。
+    #[test]
+    fn scan_from_rules_without_browser_anchors_yields_empty() {
+        let rules = rules_with(vec![system_entry("other", "some_cat", r"C:\does-not-exist")]);
+        assert!(scan_from_rules(&rules).is_empty());
     }
 }
