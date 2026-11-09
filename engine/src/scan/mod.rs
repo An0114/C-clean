@@ -11,6 +11,11 @@ pub mod drive_enum;
 pub mod modules;
 pub mod orchestrator;
 pub mod parser;
+/// task-083 C1：浏览器多 Profile 枚举。
+pub mod profiles;
+#[cfg(test)]
+#[path = "profiles_test.rs"]
+mod profiles_test;
 pub mod registry_health;
 pub mod residual;
 pub mod runner;

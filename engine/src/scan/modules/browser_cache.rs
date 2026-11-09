@@ -399,7 +399,11 @@ mod tests {
         }
         // 非 profile 目录不该被扫（Crashpad 有 Cache 也不能进）
         fs::create_dir_all(user_data.join("Crashpad").join("Cache")).unwrap();
-        fs::write(user_data.join("Crashpad").join("Cache").join("dump"), vec![b'x'; 5]).unwrap();
+        fs::write(
+            user_data.join("Crashpad").join("Cache").join("dump"),
+            vec![b'x'; 5],
+        )
+        .unwrap();
 
         let rules = rules_with(vec![system_entry(
             "browser_chrome",
@@ -408,8 +412,15 @@ mod tests {
         )]);
         let items = scan_from_rules(&rules);
 
-        let chrome: Vec<_> = items.iter().filter(|i| i.category == CATEGORY_CHROME).collect();
-        assert_eq!(chrome.len(), 6, "Default 2 + Profile 1 的 1 + Profile 2 的 3: {items:#?}");
+        let chrome: Vec<_> = items
+            .iter()
+            .filter(|i| i.category == CATEGORY_CHROME)
+            .collect();
+        assert_eq!(
+            chrome.len(),
+            6,
+            "Default 2 + Profile 1 的 1 + Profile 2 的 3: {items:#?}"
+        );
         assert!(chrome.iter().all(|i| i.module_code == MODULE_CODE));
         assert!(chrome.iter().all(|i| i.risk_level == RISK_L1));
         // Crashpad 绝不能进（不是 profile 目录）
@@ -422,9 +433,17 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("Mozilla").join("Firefox");
         fs::create_dir_all(root.join("Profiles")).unwrap();
-        fs::create_dir_all(root.join("Profiles").join("abc.default-release").join("cache2")).unwrap();
+        fs::create_dir_all(
+            root.join("Profiles")
+                .join("abc.default-release")
+                .join("cache2"),
+        )
+        .unwrap();
         fs::write(
-            root.join("Profiles").join("abc.default-release").join("cache2").join("E1"),
+            root.join("Profiles")
+                .join("abc.default-release")
+                .join("cache2")
+                .join("E1"),
             vec![b'x'; 25],
         )
         .unwrap();
@@ -438,7 +457,10 @@ mod tests {
         )]);
         let items = scan_from_rules(&rules);
 
-        let ff: Vec<_> = items.iter().filter(|i| i.category == CATEGORY_FIREFOX).collect();
+        let ff: Vec<_> = items
+            .iter()
+            .filter(|i| i.category == CATEGORY_FIREFOX)
+            .collect();
         assert_eq!(ff.len(), 1, "cache2 里一个文件: {items:#?}");
         assert!(ff[0].path.to_lowercase().contains("cache2"));
         assert_eq!(ff[0].size_bytes, 25);
@@ -463,7 +485,11 @@ mod tests {
     /// Category 未在规则 system 组注册时，scan_from_rules 不产出任何条目。
     #[test]
     fn scan_from_rules_without_browser_anchors_yields_empty() {
-        let rules = rules_with(vec![system_entry("other", "some_cat", r"C:\does-not-exist")]);
+        let rules = rules_with(vec![system_entry(
+            "other",
+            "some_cat",
+            r"C:\does-not-exist",
+        )]);
         assert!(scan_from_rules(&rules).is_empty());
     }
 }

@@ -86,7 +86,14 @@ pub fn scan() -> Vec<ScanItem> {
 pub fn scan_from_rules(rules: &CacheRules) -> Vec<ScanItem> {
     crate::rules::schema::roots_for_categories(rules, OWN_CATEGORIES)
         .into_iter()
-        .flat_map(|r| scan_dir(std::path::Path::new(&r.root), MODULE_CODE, &r.category, r.risk_level))
+        .flat_map(|r| {
+            scan_dir(
+                std::path::Path::new(&r.root),
+                MODULE_CODE,
+                &r.category,
+                r.risk_level,
+            )
+        })
         .collect()
 }
 

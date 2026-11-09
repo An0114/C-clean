@@ -1,4 +1,4 @@
-﻿//! task-083：matches schema / L3 反向断言 / 路径去重的单元测试。
+//! task-083：matches schema / L3 反向断言 / 路径去重的单元测试。
 //!
 //! 全部是**纯函数测试**，不读注册表、不碰真实规则库、不需要管理员权限——
 //! 这样在 CI 的 windows-latest runner 上也能稳定跑（runner 没有用户的
@@ -358,7 +358,10 @@ fn dedup_tie_breaks_by_rule_id() {
 /// 测试内本地归一：分隔符统一 + 小写，仅用于路径比较（schema 里的 `norm_path`
 /// 是私有的，测试走 `crate::rules::schema::` 路径访问不到）。
 fn normp(s: &str) -> String {
-    s.replace('\\', "/").to_lowercase().trim_end_matches('/').to_string()
+    s.replace('\\', "/")
+        .to_lowercase()
+        .trim_end_matches('/')
+        .to_string()
 }
 
 /// 从仓库真实规则库读 `system` 组。这条顺带钉住：
@@ -436,8 +439,7 @@ fn windows_temp_root_is_system_root_based_and_l2() {
     let roots = crate::rules::schema::roots_for_categories(&rules, &["windows_temp"]);
     assert_eq!(roots.len(), 1, "windows_temp 只有一个根: {roots:#?}");
 
-    let sr =
-        std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_string());
+    let sr = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_string());
     let expect = format!(r"{sr}\Temp");
     assert_eq!(normp(&roots[0].root), normp(&expect));
     assert_eq!(roots[0].risk_level, 2, "windows_temp 必须 L2");
@@ -452,7 +454,9 @@ fn user_temp_resolves_to_env_temp_l1() {
     let rules = repository_rules();
     let roots = crate::rules::schema::roots_for_categories(&rules, &["user_temp"]);
     assert!(
-        roots.iter().any(|r| normp(&r.root) == normp(&t) && r.risk_level == 1),
+        roots
+            .iter()
+            .any(|r| normp(&r.root) == normp(&t) && r.risk_level == 1),
         "user_temp 应解析为 TEMP({t}) / L1，实际 {roots:#?}"
     );
 }
@@ -493,15 +497,11 @@ fn dev_cache_roots_match_env_fallback() {
 #[test]
 fn prefetch_and_update_roots_are_system_root_based() {
     let rules = repository_rules();
-    let sr =
-        std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_string());
+    let sr = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_string());
 
     let prefetch = crate::rules::schema::roots_for_categories(&rules, &["prefetch"]);
     assert_eq!(prefetch.len(), 1, "prefetch 一个根: {prefetch:#?}");
-    assert_eq!(
-        normp(&prefetch[0].root),
-        normp(&format!(r"{sr}\Prefetch"))
-    );
+    assert_eq!(normp(&prefetch[0].root), normp(&format!(r"{sr}\Prefetch")));
     assert_eq!(prefetch[0].risk_level, 1, "prefetch 是 L1（自动重建）");
 
     let update = crate::rules::schema::roots_for_categories(&rules, &["update_download"]);
@@ -521,8 +521,7 @@ fn browser_cache_anchors_resolve_to_local_or_roaming_l1() {
     let rules = repository_rules();
     let lad =
         std::env::var("LOCALAPPDATA").unwrap_or_else(|_| r"C:\Users\test\AppData\Local".into());
-    let ad =
-        std::env::var("APPDATA").unwrap_or_else(|_| r"C:\Users\test\AppData\Roaming".into());
+    let ad = std::env::var("APPDATA").unwrap_or_else(|_| r"C:\Users\test\AppData\Roaming".into());
 
     let roots = crate::rules::schema::roots_for_categories(
         &rules,
@@ -545,4 +544,3 @@ fn browser_cache_anchors_resolve_to_local_or_roaming_l1() {
         );
     }
 }
-

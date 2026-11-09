@@ -88,9 +88,7 @@ impl CompiledSpec {
 
 /// 取路径的最后一段（同时兼容 `\` 与 `/`）。
 pub fn file_name(path: &str) -> &str {
-    path.rsplit(|c| c == '\\' || c == '/')
-        .next()
-        .unwrap_or(path)
+    path.rsplit(['\\', '/']).next().unwrap_or(path)
 }
 
 /// 把 glob 转成正则字符串。
