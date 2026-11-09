@@ -320,7 +320,7 @@ pub fn dedup_hits(hits: Vec<RuleHit>) -> Vec<RuleHit> {
         }
     }
     let mut out: Vec<RuleHit> = best.into_values().collect();
-    out.sort_by(|a, b| norm_path(&a.path).cmp(&norm_path(&b.path)));
+    out.sort_by_key(|a| norm_path(&a.path));
     out
 }
 
