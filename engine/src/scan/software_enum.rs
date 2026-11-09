@@ -27,7 +27,8 @@ const UNINSTALL_PATH: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninsta
 const UNINSTALL_WOW64: &str = r"Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall";
 
 /// 一个已安装软件。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SoftwareEntry {
     /// `DisplayName`。
     pub name: String,
