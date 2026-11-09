@@ -18,6 +18,7 @@ use std::path::Path;
 use rusqlite::Connection;
 
 use crate::ipc::progress::{ProgressEmitter, ScanProgress};
+use crate::rules::models::CacheRules;
 use crate::scan::drive_enum::drive_letter_of_path;
 use crate::scan::modules::software_cache::SoftwareRules;
 use crate::scan::runner::ScanRunner;
@@ -248,6 +249,12 @@ pub struct ScanOrchestrator<'conn, 'emitter> {
     /// 编排层不碰文件系统路径，也就不会在单测里被迫准备一份规则库。
     /// 空表 = 不做抑制（内置规则加载失败时的降级：宁可重复也不误吞用户条目）。
     builtin_prefixes: Vec<String>,
+    /// task-083 A2：注入的完整规则库（含 `system` 组），5 个内置模块据此读路径。
+    ///
+    /// `None` = 规则库加载失败，拒绝注入——5 个模块退回各自的「环境变量硬编码」
+    /// 降级兜底（`xxx::scan()`），宁可多一份路径常量也不让扫描整块失效。
+    /// 主路径（App/CLI 加载成功）一定走这里，实现「同一规则只在 JSON 维护一份」。
+    system_rules: Option<CacheRules>,
 }
 
 impl<'conn, 'emitter> ScanOrchestrator<'conn, 'emitter> {
@@ -264,7 +271,17 @@ impl<'conn, 'emitter> ScanOrchestrator<'conn, 'emitter> {
             cancel: None,
             drives: None,
             builtin_prefixes: Vec::new(),
+            system_rules: None,
         }
+    }
+
+    /// task-083 A2：注入规则库，让 5 个内置模块从 `system` 组读路径。
+    ///
+    /// 不调用 = `None` = 各模块走环境变量硬编码兜底。这是有意的降级方向：
+    /// 规则库读不出来时扫描照常，而不是整块报告「规则缺失」。
+    pub fn with_system_rules(mut self, rules: CacheRules) -> Self {
+        self.system_rules = Some(rules);
+        self
     }
 
     /// task-078：挂上内置规则的目录前缀（「内置优先」判定用）。
@@ -713,23 +730,53 @@ impl<'conn, 'emitter> ScanOrchestrator<'conn, 'emitter> {
     /// 抽成一个方法而不是在 `run_all` 里写五个 `if`：这样「哪些模块已迁移」只有
     /// 一处清单，加第六个模块时不会漏改某个分支。
     ///
+    /// A2：内置模块扫描的分发——注入规则走规则驱动，否则退回环境变量兜底。
+    ///
+    /// 为什么抽成函数指针而非每处 `if let`：五个模块的「规则入口 / 兜底入口」
+    /// 成对出现，抽出来避免每个分支写一遍相同的 `if`。返回类型用完整路径，
+    /// 避免再为这个内部辅助补 `use`。
+    #[allow(clippy::type_complexity)]
+    fn builtin_scan(
+        rules: Option<&CacheRules>,
+        from_rules: fn(&CacheRules) -> Vec<crate::scan::modules::ScanItem>,
+        fallback: fn() -> Vec<crate::scan::modules::ScanItem>,
+    ) -> Vec<crate::scan::modules::ScanItem> {
+        match rules {
+            Some(r) => from_rules(r),
+            None => fallback(),
+        }
+    }
+
     /// **注意这里会真的执行扫描**（可能耗时：Firefox `cache2` 本机有 4569 个文件）。
     /// 调用方在循环开头已经做过取消检查，与 ps1 路径的「脚本粒度取消」语义一致。
     fn rust_module_items(&self, name: &str) -> Option<Vec<crate::scan::modules::ScanItem>> {
+        let rules = self.system_rules.as_ref();
         match name {
-            TEMP_SCRIPT if rust_temp_enabled() => Some(crate::scan::modules::temp::scan()),
-            PREFETCH_SCRIPT if rust_prefetch_enabled() => {
-                Some(crate::scan::modules::prefetch::scan())
-            }
+            TEMP_SCRIPT if rust_temp_enabled() => Some(Self::builtin_scan(
+                rules,
+                crate::scan::modules::temp::scan_from_rules,
+                crate::scan::modules::temp::scan,
+            )),
+            PREFETCH_SCRIPT if rust_prefetch_enabled() => Some(Self::builtin_scan(
+                rules,
+                crate::scan::modules::prefetch::scan_from_rules,
+                crate::scan::modules::prefetch::scan,
+            )),
             BROWSER_CACHE_SCRIPT if rust_browser_cache_enabled() => {
+                // A2b：browser_cache 依赖规则库 per-category 锚 + 多 profile，
+                // 与 C1 一起迁移，暂保持环境变量兜底入口。
                 Some(crate::scan::modules::browser_cache::scan())
             }
-            DEV_CACHE_SCRIPT if rust_dev_cache_enabled() => {
-                Some(crate::scan::modules::dev_cache::scan())
-            }
-            WINDOWS_UPDATE_SCRIPT if rust_windows_update_enabled() => {
-                Some(crate::scan::modules::windows_update::scan())
-            }
+            DEV_CACHE_SCRIPT if rust_dev_cache_enabled() => Some(Self::builtin_scan(
+                rules,
+                crate::scan::modules::dev_cache::scan_from_rules,
+                crate::scan::modules::dev_cache::scan,
+            )),
+            WINDOWS_UPDATE_SCRIPT if rust_windows_update_enabled() => Some(Self::builtin_scan(
+                rules,
+                crate::scan::modules::windows_update::scan_from_rules,
+                crate::scan::modules::windows_update::scan,
+            )),
             _ => None,
         }
     }

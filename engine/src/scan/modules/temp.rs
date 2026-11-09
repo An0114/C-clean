@@ -40,6 +40,10 @@
 use std::path::{Path, PathBuf};
 
 use super::ScanItem;
+use crate::rules::models::CacheRules;
+
+/// 本模块负责的业务类别集合（A2：路径真值源从规则库取）。
+const OWN_CATEGORIES: &[&str] = &[CATEGORY_USER_TEMP, CATEGORY_WINDOWS_TEMP];
 
 /// 模块代码。对应 `cleanup_item.module_code`，与 ps1 的 `$moduleCode` 一致。
 pub const MODULE_CODE: &str = "temp";
@@ -63,6 +67,19 @@ pub fn scan() -> Vec<ScanItem> {
         out.extend(scan_dir(&root, category, risk));
     }
     out
+}
+
+/// A2：从规则库 `system` 组读路径后扫描（生产真值源）。
+///
+/// [`scan`] 仍读环境变量硬编码，是**加载规则失败时的降级兜底**；本函数是
+/// 编排层注入了 `CacheRules` 时走的主入口——路径只维护在 `cache_rules.json`，
+/// Rust 模块只是执行器。
+pub fn scan_from_rules(rules: &CacheRules) -> Vec<ScanItem> {
+    crate::rules::schema::roots_for_categories(rules, OWN_CATEGORIES)
+        .into_iter()
+        // 本模块的薄包装 `scan_dir(root, category, risk)` 已固定 module_code = "temp"
+        .flat_map(|r| scan_dir(Path::new(&r.root), &r.category, r.risk_level))
+        .collect()
 }
 
 /// 目标目录表：`(路径, 类别键, 风险等级)`。

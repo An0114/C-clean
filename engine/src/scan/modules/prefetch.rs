@@ -36,6 +36,10 @@
 use std::path::PathBuf;
 
 use super::{scan_dir, ScanItem};
+use crate::rules::models::CacheRules;
+
+/// 本模块负责的业务类别集合（A2：路径真值源从规则库取）。
+const OWN_CATEGORIES: &[&str] = &[CATEGORY_PREFETCH];
 
 /// 模块代码。对应 `cleanup_item.module_code`，与 ps1 的 `$moduleCode` 一致。
 pub const MODULE_CODE: &str = "prefetch";
@@ -73,6 +77,17 @@ pub fn scan_at(system_root: &std::path::Path) -> Vec<ScanItem> {
 pub fn scan() -> Vec<ScanItem> {
     let root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_string());
     scan_at(std::path::Path::new(&root))
+}
+
+/// A2：从规则库 `system` 组读路径后扫描（生产真值源）。
+///
+/// 与 [`scan`]（环境变量硬编码降级兜底）对应，编排层注入了 `CacheRules` 时走这里：
+/// `%SystemRoot%\Prefetch` 的根只维护在 `cache_rules.json`，本模块只是执行器。
+pub fn scan_from_rules(rules: &CacheRules) -> Vec<ScanItem> {
+    crate::rules::schema::roots_for_categories(rules, OWN_CATEGORIES)
+        .into_iter()
+        .flat_map(|r| scan_dir(std::path::Path::new(&r.root), MODULE_CODE, &r.category, r.risk_level))
+        .collect()
 }
 
 #[cfg(test)]
