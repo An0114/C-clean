@@ -1,16 +1,191 @@
 {
-  "version": "1.0.0",
+  "version": "1.3.0",
   "modules": {
+    "system": [
+      {
+        "id": "user_temp",
+        "category": "user_temp",
+        "display_name": "用户临时目录",
+        "paths": [
+          "%TEMP%"
+        ],
+        "risk_level": "L1",
+        "description": "用户会话临时文件，删除后系统/应用自动重建",
+        "impact_note": "正在使用的临时文件可能被占用",
+        "rebuild_note": "自动重建",
+        "elevated": false
+      },
+      {
+        "id": "windows_temp",
+        "category": "windows_temp",
+        "display_name": "系统临时目录",
+        "paths": [
+          "%SystemRoot%\\Temp"
+        ],
+        "risk_level": "L2",
+        "description": "Windows 系统临时目录，文件多属 SYSTEM",
+        "impact_note": "部分文件被系统或安装程序占用",
+        "rebuild_note": "自动重建",
+        "elevated": true
+      },
+      {
+        "id": "prefetch_cache",
+        "category": "prefetch",
+        "display_name": "Prefetch 预读取缓存",
+        "paths": [
+          "%SystemRoot%\\Prefetch"
+        ],
+        "risk_level": "L1",
+        "description": "Windows 常用程序预读取缓存，系统自动重建",
+        "impact_note": "删除后常用程序下次启动稍慢",
+        "rebuild_note": "自动重建",
+        "elevated": false
+      },
+      {
+        "id": "npm_cache_new",
+        "category": "npm_cache",
+        "display_name": "npm 缓存（新位置）",
+        "paths": [
+          "%LOCALAPPDATA%\\npm-cache"
+        ],
+        "risk_level": "L1",
+        "description": "npm 7+ 包下载缓存",
+        "impact_note": "删除后下次安装依赖重新下载",
+        "rebuild_note": "自动重建",
+        "elevated": false
+      },
+      {
+        "id": "npm_cache_old",
+        "category": "npm_cache",
+        "display_name": "npm 缓存（旧位置）",
+        "paths": [
+          "%APPDATA%\\npm-cache"
+        ],
+        "risk_level": "L1",
+        "description": "npm 6 及更早的包下载缓存",
+        "impact_note": "删除后下次安装依赖重新下载",
+        "rebuild_note": "自动重建",
+        "elevated": false
+      },
+      {
+        "id": "pip_cache",
+        "category": "pip_cache",
+        "display_name": "pip 缓存",
+        "paths": [
+          "%LOCALAPPDATA%\\pip\\cache"
+        ],
+        "risk_level": "L1",
+        "description": "pip 包下载缓存",
+        "impact_note": "删除后下次安装依赖重新下载",
+        "rebuild_note": "自动重建",
+        "elevated": false
+      },
+      {
+        "id": "pnpm_store",
+        "category": "pnpm_store",
+        "display_name": "pnpm store",
+        "paths": [
+          "%LOCALAPPDATA%\\pnpm-store"
+        ],
+        "risk_level": "L1",
+        "description": "pnpm 全局内容寻址存储",
+        "impact_note": "删除后下次安装依赖重新下载",
+        "rebuild_note": "自动重建",
+        "elevated": false
+      },
+      {
+        "id": "update_download",
+        "category": "update_download",
+        "display_name": "Windows 更新下载缓存",
+        "paths": [
+          "%SystemRoot%\\SoftwareDistribution\\Download"
+        ],
+        "risk_level": "L2",
+        "description": "Windows Update 下载暂存目录，文件多属 SYSTEM，更新安装中删除会中断安装",
+        "impact_note": "删除会中断正在安装的更新",
+        "rebuild_note": "自动重建",
+        "elevated": true
+      },
+      {
+        "id": "browser_edge",
+        "category": "edge_cache",
+        "display_name": "Edge 浏览器缓存",
+        "paths": [
+          "%LOCALAPPDATA%\\Microsoft\\Edge\\User Data"
+        ],
+        "risk_level": "L1",
+        "description": "Edge 浏览器各 profile 的 Cache 目录，浏览器自动重建",
+        "impact_note": "删除后网页下次加载稍慢，不影响书签/密码/历史",
+        "rebuild_note": "自动重建",
+        "elevated": false
+      },
+      {
+        "id": "browser_chrome",
+        "category": "chrome_cache",
+        "display_name": "Chrome 浏览器缓存",
+        "paths": [
+          "%LOCALAPPDATA%\\Google\\Chrome\\User Data"
+        ],
+        "risk_level": "L1",
+        "description": "Chrome 浏览器各 profile 的 Cache 目录，浏览器自动重建",
+        "impact_note": "删除后网页下次加载稍慢，不影响书签/密码/历史",
+        "rebuild_note": "自动重建",
+        "elevated": false
+      },
+      {
+        "id": "browser_firefox",
+        "category": "firefox_cache",
+        "display_name": "Firefox 浏览器缓存",
+        "paths": [
+          "%APPDATA%\\Mozilla\\Firefox"
+        ],
+        "risk_level": "L1",
+        "description": "Firefox 各 profile 的 cache2 目录，浏览器自动重建",
+        "impact_note": "删除后网页下次加载稍慢，不影响书签/密码/历史",
+        "rebuild_note": "自动重建",
+        "elevated": false
+      }
+    ],
     "A": [
       {
         "id": "npm_cache",
         "category": "npm_cache",
         "display_name": "npm 缓存",
-        "paths": ["%LOCALAPPDATA%\\npm-cache", "~/.npm/_cacache"],
+        "paths": [
+          "%LOCALAPPDATA%\\npm-cache",
+          "~/.npm/_cacache"
+        ],
         "risk_level": "L1",
         "description": "npm 包下载缓存",
         "impact_note": "删除后下次安装依赖重新下载",
         "rebuild_note": "自动重建",
+        "elevated": false
+      },
+      {
+        "id": "download_transient",
+        "category": "download_transient",
+        "display_name": "下载目录临时文件",
+        "paths": [
+          "%USERPROFILE%\\Downloads"
+        ],
+        "matches": [
+          {
+            "type": "glob",
+            "pattern": "*.tmp"
+          },
+          {
+            "type": "suffix",
+            "pattern": ".part"
+          },
+          {
+            "type": "regex",
+            "pattern": "^~\\$.*"
+          }
+        ],
+        "risk_level": "L1",
+        "description": "下载过程中残留的临时文件 / 未完成的下载分片 / Office 锁文件",
+        "impact_note": "删除后不影响已下载完成的文件；正在进行的下载需重新拉取",
+        "rebuild_note": "不会自动重建，由下次下载产生",
         "elevated": false
       }
     ]

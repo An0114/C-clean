@@ -6,6 +6,8 @@
 use serde::Deserialize;
 use std::collections::HashMap;
 
+use crate::rules::schema::MatchSpec;
+
 /// 初始规则库顶层结构：版本号 + 六大模块（A~F）条目表 + 外部红线表。
 #[derive(Debug, Clone, Deserialize)]
 pub struct CacheRules {
@@ -38,6 +40,14 @@ pub struct RuleEntry {
     pub rebuild_note: String,
     /// 删除是否需要管理员提权。
     pub elevated: bool,
+    /// task-083：文件级精筛（glob / regex / suffix）。
+    ///
+    /// **`#[serde(default)]` 是必须的**：现有规则（以及用户自定义规则、
+    /// 远程下发的旧版规则库）都没有这个字段。没有 default，加字段的那一刻
+    /// 所有存量规则都会反序列化失败，应用直接起不来。
+    /// 空数组 = 不做文件名过滤，仍走 `paths` 的目录前缀匹配。
+    #[serde(default)]
+    pub matches: Vec<MatchSpec>,
 }
 
 /// `rules_meta.json` 元数据（与 `rules_meta` 表字段一一对应）。

@@ -28,6 +28,15 @@ pub struct PendingItem {
     /// 之前没返回这个字段，前端只能「所有项一视同仁」——无法做「全选 L1」，
     /// 也无法告诉用户「这条删了会怎样」。
     pub risk_level: String,
+    /// task-083：规则类别键。软件缓存条目的 category 形如
+    /// `software_cache_<slug>`，前端据此显示「属于哪个软件」并分组折叠。
+    pub category: String,
+    /// task-083：删了会怎样 / 怎么重建。这两列**早在 v1__init.sql 就有**，
+    /// 只是 `list_pending` 一直没往外带——087 想要的「数据落规则库、不硬编码
+    /// 前端」其实后端早就做完了，缺的只是这一层透传。空值返回 `None`，
+    /// 前端退回通用的 L1/L2/L3 文案。
+    pub impact_note: Option<String>,
+    pub rebuild_note: Option<String>,
 }
 
 /// 分页响应（task-052 G2，对齐 task-045 的 `SafeBoxPage` 模式）。
@@ -122,7 +131,8 @@ fn list_pending_filtered(
         )
         .map_err(|e| format!("list_pending count: {e}"))?;
 
-    let sql = "SELECT id, path, size_bytes, module_code, session_id, risk_level \
+    let sql = "SELECT id, path, size_bytes, module_code, session_id, risk_level, \
+                      category, impact_note, rebuild_note \
                FROM cleanup_item \
                WHERE (?1 IS NULL OR session_id = ?1) \
                  AND (?2 IS NULL OR drive_letter = ?2) \
@@ -143,6 +153,9 @@ fn list_pending_filtered(
                     module_code: r.get(3)?,
                     session_id: r.get(4)?,
                     risk_level: r.get(5)?,
+                    category: r.get(6)?,
+                    impact_note: r.get(7)?,
+                    rebuild_note: r.get(8)?,
                 })
             },
         )

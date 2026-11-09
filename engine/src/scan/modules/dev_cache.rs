@@ -58,6 +58,12 @@
 use std::path::{Path, PathBuf};
 
 use super::{scan_dir, ScanItem};
+use crate::rules::models::CacheRules;
+
+/// 本模块负责的业务类别集合（A2：路径真值源从规则库取）。
+/// 注意 `npm_cache` 在 A 组与 `system` 组都出现——`roots_for_categories` 会按
+/// 展开后的根目录去重，重复的那份不会重复扫。
+const OWN_CATEGORIES: &[&str] = &[CATEGORY_NPM, CATEGORY_PIP, CATEGORY_PNPM];
 
 /// 模块代码。对应 `cleanup_item.module_code`，与 ps1 的 `$moduleCode` 一致。
 pub const MODULE_CODE: &str = "dev_cache";
@@ -136,6 +142,17 @@ pub fn scan() -> Vec<ScanItem> {
         ));
     }
     out
+}
+
+/// A2：从规则库 `system` 组读路径后扫描（生产真值源）。
+///
+/// 与 [`scan`]（环境变量硬编码降级兜底）对应，编排层注入了 `CacheRules` 时走这里：
+/// npm / pip / pnpm 的缓存根只维护在 `cache_rules.json`。
+pub fn scan_from_rules(rules: &CacheRules) -> Vec<ScanItem> {
+    crate::rules::schema::roots_for_categories(rules, OWN_CATEGORIES)
+        .into_iter()
+        .flat_map(|r| scan_dir(Path::new(&r.root), MODULE_CODE, &r.category, r.risk_level))
+        .collect()
 }
 
 /// 读一个环境变量并转成路径；缺失或空白返回 `None`。

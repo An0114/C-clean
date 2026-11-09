@@ -728,3 +728,89 @@ describe("路径列横向滚动（task-082）", () => {
     expect(td?.getAttribute("title")).toBe("C:\\Temp\\locked.txt");
   });
 });
+
+// ===== task-083：软件列 + 折叠分组 =====
+//
+// 软件缓存条目（moduleCode === "software_cache"）按 category slug 反推成可读的
+// 软件名；其余条目显示「—」。同软件的多个待清理项在 UI 上合成一组，可折叠。
+
+describe("软件列与折叠分组（task-083）", () => {
+  const SW = [
+    {
+      id: 1,
+      path: "C:\\Users\\me\\AppData\\Code\\Cache\\a",
+      sizeBytes: 100,
+      moduleCode: "software_cache",
+      sessionId: 1,
+      riskLevel: "L1",
+      category: "software_cache_visual_studio_code",
+      impactNote: "删了会怎样：下次启动 VSCode 自动重建",
+      rebuildNote: "重建方式：打开 VSCode 即恢复",
+    },
+    {
+      id: 2,
+      path: "C:\\Users\\me\\AppData\\Code\\Cache\\b",
+      sizeBytes: 200,
+      moduleCode: "software_cache",
+      sessionId: 1,
+      riskLevel: "L1",
+      category: "software_cache_visual_studio_code",
+    },
+    {
+      id: 3,
+      path: "C:\\Temp\\x.tmp",
+      sizeBytes: 300,
+      moduleCode: "temp",
+      sessionId: 1,
+      riskLevel: "L2",
+    },
+  ];
+
+  it("软件缓存条目显示软件名，其余显示「—」", async () => {
+    mockInvoke({ cleanup_list_pending: () => Promise.resolve(pageOf(SW, 3)) });
+    render(<Items />);
+    await waitFor(() => expect(screen.getByText(/Cache\\a/)).toBeInTheDocument());
+
+    // slug `visual_studio_code` → "Visual Studio Code"，每条 VSCode 行各一个单元格
+    expect(screen.getAllByText("Visual Studio Code").length).toBe(2);
+
+    // 非软件条目（temp 模块）的软件列显示「—」。
+    const tempRow = screen.getByText(/x\.tmp/).closest("tr")!;
+    const softwareCell = tempRow.querySelectorAll("td")[2];
+    expect(softwareCell.textContent).toBe("—");
+  });
+
+  it("同软件多项合成一组，组头显示数量并可折叠", async () => {
+    mockInvoke({ cleanup_list_pending: () => Promise.resolve(pageOf(SW, 3)) });
+    render(<Items />);
+    await waitFor(() => expect(screen.getByText(/Cache\\a/)).toBeInTheDocument());
+
+    // 组头：Visual Studio Code（2 项）
+    const header = screen.getByText(/Visual Studio Code（2 项）/);
+    expect(header).toBeInTheDocument();
+
+    // 初始展开：两条 VSCode 路径都在
+    expect(screen.getByText(/Cache\\a/)).toBeInTheDocument();
+    expect(screen.getByText(/Cache\\b/)).toBeInTheDocument();
+
+    // 点组头折叠 → 第二条隐藏，首行仍在
+    fireEvent.click(header);
+    await waitFor(() => expect(screen.queryByText(/Cache\\b/)).toBeNull());
+    expect(screen.getByText(/Cache\\a/)).toBeInTheDocument();
+
+    // 再次点展开 → 第二条回来
+    fireEvent.click(screen.getByText(/Visual Studio Code（2 项）/));
+    await waitFor(() => expect(screen.getByText(/Cache\\b/)).toBeInTheDocument());
+  });
+
+  it("hover 优先用规则库逐项说明（impact + rebuild note）", async () => {
+    mockInvoke({ cleanup_list_pending: () => Promise.resolve(pageOf(SW, 3)) });
+    render(<Items />);
+    await waitFor(() => expect(screen.getByText(/Cache\\a/)).toBeInTheDocument());
+
+    const badge = screen.getAllByText("L1")[0];
+    const title = badge.getAttribute("title") ?? "";
+    expect(title).toContain("删了会怎样");
+    expect(title).toContain("重建方式");
+  });
+});

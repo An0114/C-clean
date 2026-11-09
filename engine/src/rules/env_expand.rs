@@ -1,18 +1,26 @@
 //! 路径变量白名单展开（task-005 §D）。
 //!
-//! 仅放行 5 个环境变量 + `~` 前缀，其余一律拒绝：
+//! 仅放行 6 个环境变量 + `~` 前缀，其余一律拒绝：
 //! - `%LOCALAPPDATA%` / `%APPDATA%` / `%TEMP%` / `%PROGRAMDATA%` / `%USERPROFILE%`（大小写不敏感）；
+//! - `%SystemRoot%`（task-083 A2 加入）：内置模块的 `windows_temp` / `prefetch` /
+//!   `windows_update` 都要 `%SystemRoot%\...` 才能在 cache_rules.json 里表达，
+//!   不加入则这三个模块的路径真值源永远无法收敛进规则库——正是不放行它才导致
+//!   内置模块用「SystemRoot 读环境变量」硬编码（双份真值源）。加入后 L3 反向断言
+//!   与 `whitelist_deny` 照常兜底（System32 等在红线清单里）；
 //! - `~` 仅作为路径开头，且后必须跟 `\` / `/` 或结尾，展开为 `%USERPROFILE%`；
 //! - 正斜杠统一归一为反斜杠；
 //! - **不做** `..` 规范化（那是 task-003 `normalize` 的职责）。
 
-/// 白名单环境变量名（大写归一后比较）。
-const WHITELIST_VARS: [&str; 5] = [
+/// 白名单环境变量名（大写归一后比较，**必须全大写**——`expand` 会把变量名先
+/// `to_uppercase()` 再查表，混进 `SystemRoot` 这种大小写形式会匹配不上、
+/// 恒报 `UnknownVar`）。
+const WHITELIST_VARS: [&str; 6] = [
     "LOCALAPPDATA",
     "APPDATA",
     "TEMP",
     "PROGRAMDATA",
     "USERPROFILE",
+    "SYSTEMROOT",
 ];
 
 /// 路径变量展开失败原因。

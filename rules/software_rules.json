@@ -1,0 +1,78 @@
+{
+  "version": "1.0.0",
+  "software": [
+    {
+      "software_name": "Visual Studio Code",
+      "match_names": ["Visual Studio Code", "VS Code", "Code - Insiders", "VSCodium"],
+      "cache_paths": [
+        "%APPDATA%\\Code\\Cache",
+        "%APPDATA%\\Code\\Code Cache",
+        "%APPDATA%\\Code\\CachedData",
+        "%APPDATA%\\Code\\GPUCache",
+        "%APPDATA%\\Code\\logs"
+      ],
+      "risk_level": "L1",
+      "impact_note": "只清缓存与日志；扩展、设置、工作区记录都不在列。下次启动自动重建",
+      "rebuild_note": "自动重建（可能需要重新登录扩展市场）"
+    },
+    {
+      "software_name": "Slack",
+      "match_names": ["Slack"],
+      "cache_paths": [
+        "%APPDATA%\\Slack\\Cache",
+        "%APPDATA%\\Slack\\Code Cache",
+        "%APPDATA%\\Slack\\GPUCache"
+      ],
+      "risk_level": "L1",
+      "impact_note": "删除后首次启动会重新拉取工作区内容，可能短暂变慢",
+      "rebuild_note": "自动重建"
+    },
+    {
+      "software_name": "Discord",
+      "match_names": ["Discord"],
+      "cache_paths": [
+        "%APPDATA%\\discord\\Cache",
+        "%APPDATA%\\discord\\Code Cache",
+        "%APPDATA%\\discord\\GPUCache"
+      ],
+      "risk_level": "L1",
+      "impact_note": "删除后首次启动重新拉取头像与图片资源",
+      "rebuild_note": "自动重建"
+    },
+    {
+      "software_name": "Microsoft Teams",
+      "match_names": ["Microsoft Teams", "Teams"],
+      "cache_paths": [
+        "%APPDATA%\\Microsoft\\Teams\\Cache",
+        "%APPDATA%\\Microsoft\\Teams\\Code Cache",
+        "%APPDATA%\\Microsoft\\Teams\\GPUCache",
+        "%APPDATA%\\Microsoft\\Teams\\tmp"
+      ],
+      "risk_level": "L1",
+      "impact_note": "删除后首次登录会重新下载聊天图片；不影响消息记录（存在云端）",
+      "rebuild_note": "自动重建"
+    },
+    {
+      "software_name": "WeChat",
+      "match_names": ["WeChat", "微信"],
+      "cache_paths": [
+        "%APPDATA%\\Tencent\\WeChat\\Cache",
+        "%APPDATA%\\Tencent\\WeChat\\XPlugin\\Plugins\\RadiumWMPF\\Cache"
+      ],
+      "risk_level": "L2",
+      "impact_note": "仅清图片/小程序缓存。**聊天记录（Msg / FileStorage）不在列且绝不能清**，删除后需重新加载图片",
+      "rebuild_note": "自动重建；聊天记录不受影响"
+    },
+    {
+      "software_name": "QQ",
+      "match_names": ["QQ", "腾讯QQ"],
+      "cache_paths": [
+        "%APPDATA%\\Tencent\\QQ\\Cache",
+        "%LOCALAPPDATA%\\Tencent\\QQ\\Cache"
+      ],
+      "risk_level": "L2",
+      "impact_note": "仅清图片缓存。**聊天记录与接收文件不在列**，删除后需重新加载头像与图片",
+      "rebuild_note": "自动重建；聊天记录不受影响"
+    }
+  ]
+}

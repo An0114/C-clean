@@ -43,6 +43,41 @@ interface PendingItem {
   sessionId: number;
   /** task-064：L0/L1/L2/L3，用于风险徽标与「全选 L1」。 */
   riskLevel: string;
+  /** task-083：规则类别键；软件缓存条目形如 `software_cache_<slug>`。 */
+  category: string;
+  /** task-083：来自规则库的「删了会怎样 / 怎么重建」，可能为空。 */
+  impactNote: string | null;
+  rebuildNote: string | null;
+}
+
+/** task-083：软件缓存模块的代码，与 `engine::scan::modules::software_cache::MODULE_CODE` 一致。 */
+const SOFTWARE_CACHE_MODULE = "software_cache";
+
+/**
+ * 从 category 推导 UI 上的软件名。
+ *
+ * **为什么是推导而不是后端直接给 `softwareName`**：`cleanup_item.category` 早就
+ * 存在且已经透传到前端，加一个字段要动 DB 迁移 / runner / IPC 三层；而软件
+ * 归属本来就是「这条规则属于哪个软件」，用 category 表达最自然。
+ *
+ * slug 是 `visual_studio_code` 这种 ASCII 形式（`software_cache.rs::category_slug`
+ * 为了清理方案的稳定性只保留字母数字），这里反推成可读的标题形式。
+ */
+export function softwareLabel(item: Pick<PendingItem, "moduleCode" | "category">): string {
+  if (item.moduleCode !== SOFTWARE_CACHE_MODULE) return "—";
+  const slug = (item.category || "").replace(/^software_cache_/, "");
+  if (!slug || slug === "unknown") return "其他软件";
+  return slug
+    .split("_")
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(" ");
+}
+
+/** task-083：hover 说明优先用规则库的逐项文案，没有才退回通用等级文案。 */
+export function impactHint(item: Pick<PendingItem, "impactNote" | "rebuildNote">, fallback: string): string {
+  const parts = [item.impactNote, item.rebuildNote].filter((x): x is string => !!x && x.trim() !== "");
+  return parts.length > 0 ? parts.join("；") : fallback;
 }
 
 /** task-064：风险等级的展示元数据（颜色走 CSS 变量，深色主题自动适配）。 */
@@ -297,6 +332,20 @@ export default function Items({
   // 两者同为 #0f172a，肉眼完全看不出）。`--surface` 比页面背景亮一档：
   // 深色 #0f172a → #1e293b（明显）、浅色 #f9fafb → #ffffff（轻微但可辨）。
   const [hoverRowId, setHoverRowId] = useState<number | null>(null);
+
+  // task-083：同软件多项可折叠。
+  // 折的是「显示」，不是数据——隐藏的行仍在 selected / 分页里，用户勾选过的
+  // 不会因为折叠而丢掉，展开后原样回来。
+  const [collapsedSoftware, setCollapsedSoftware] = useState<Set<string>>(new Set());
+
+  const toggleSoftware = (label: string) => {
+    setCollapsedSoftware((prev) => {
+      const next = new Set(prev);
+      if (next.has(label)) next.delete(label);
+      else next.add(label);
+      return next;
+    });
+  };
 
   // task-077：盘筛选。空串 = 全部盘。
   //
@@ -656,6 +705,109 @@ export default function Items({
     }
   }, [selected, busy]);
 
+  // task-083：把一行渲染成 <tr>。抽到函数里是因为分组渲染时每组要复用同一套
+  // checkbox / hover / 风险徽标逻辑，避免重复。
+  const renderRow = (r: PendingItem) => (
+    <tr
+      key={r.id}
+      onMouseEnter={() => setHoverRowId(r.id)}
+      onMouseLeave={() => setHoverRowId(null)}
+      style={{ background: hoverRowId === r.id ? "var(--surface)" : "transparent" }}
+    >
+      <td style={tdStyle}>
+        <input type="checkbox" checked={selected.has(r.id)} onChange={() => toggle(r.id)} />
+      </td>
+      <td style={tdStyle}>
+        {/* task-083：hover 文案优先用规则库逐项说明（impact/rebuild note），
+            没有才退回通用等级说明——数据驱动的 hover。 */}
+        <span
+          title={impactHint(r, riskMeta(r.riskLevel).hint)}
+          style={{
+            display: "inline-block",
+            padding: "1px 6px",
+            borderRadius: 4,
+            fontSize: 11,
+            fontWeight: 600,
+            color: riskMeta(r.riskLevel).fg,
+            background: riskMeta(r.riskLevel).bg,
+            border: `1px solid ${riskMeta(r.riskLevel).fg}`,
+            cursor: "help",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {riskMeta(r.riskLevel).label}
+        </span>
+      </td>
+      {/* task-083：软件列。软件缓存条目显示软件名；其余显示「—」。 */}
+      <td style={tdStyle}>{softwareLabel(r)}</td>
+      <td style={tdStyle} title={r.path}>
+        <div
+          style={{
+            maxWidth: 400,
+            overflowX: "auto",
+            whiteSpace: "nowrap",
+            fontFamily: "monospace",
+            fontSize: 12,
+            // 滚动条跟随主题（标准属性，可写进 inline style）
+            scrollbarWidth: "thin",
+            scrollbarColor: "var(--border) transparent",
+          } as React.CSSProperties}
+        >
+          {r.path}
+        </div>
+      </td>
+      <td style={tdStyle}>{formatBytes(r.sizeBytes)}</td>
+      <td style={tdStyle}>{r.moduleCode}</td>
+      <td style={tdStyle}>#{r.sessionId}</td>
+    </tr>
+  );
+
+  // task-083：按软件分组渲染。同一软件的多个待清理项合成一组，组头带折叠按钮；
+  // 折叠时只显示首行，其余隐藏（数据仍在 selected / 分页里，不丢勾选）。
+  // 非软件条目（label === "—"）逐行渲染，不参与分组。
+  const renderRows = () => {
+    const groups: { label: string; items: PendingItem[] }[] = [];
+    for (const r of rows) {
+      const label = softwareLabel(r);
+      const last = groups[groups.length - 1];
+      if (last && last.label === label) last.items.push(r);
+      else groups.push({ label, items: [r] });
+    }
+    const out: React.ReactNode[] = [];
+    groups.forEach((g) => {
+      const isSoftware = g.label !== "—";
+      const collapsed = isSoftware && collapsedSoftware.has(g.label);
+      if (isSoftware && g.items.length > 1) {
+        out.push(
+          <tr key={`grp-${g.label}`} style={{ background: "var(--bg)" }}>
+            <td colSpan={7} style={{ ...tdStyle, paddingLeft: 8 }}>
+              <button
+                type="button"
+                onClick={() => toggleSoftware(g.label)}
+                style={{
+                  background: "transparent",
+                  border: "none",
+                  color: "var(--text)",
+                  cursor: "pointer",
+                  fontSize: 13,
+                  fontWeight: 600,
+                  padding: "2px 4px",
+                }}
+              >
+                {collapsed ? "▶" : "▼"} {g.label}（{g.items.length} 项）
+              </button>
+            </td>
+          </tr>,
+        );
+        const visible = collapsed ? g.items.slice(0, 1) : g.items;
+        visible.forEach((r) => out.push(renderRow(r)));
+      } else {
+        g.items.forEach((r) => out.push(renderRow(r)));
+      }
+    });
+    return out;
+  };
+
   return (
     <div>
       {/* task-072：应用方案后的提示条。可关掉——它只是「刚才发生了什么」，
@@ -1000,6 +1152,9 @@ export default function Items({
                 />
               </th>
               <th style={{ ...thStyle, width: 56 }}>风险</th>
+              {/* task-083：软件列。放在路径之前——用户先确认「这是哪个软件的缓存」，
+                  再看具体路径，比反过来更符合阅读顺序。 */}
+              <th style={{ ...thStyle, width: 150 }}>软件</th>
               <th style={thStyle}>路径</th>
               <th style={{ ...thStyle, width: 100 }}>大小</th>
               <th style={{ ...thStyle, width: 80 }}>模块</th>
@@ -1009,72 +1164,12 @@ export default function Items({
           <tbody>
             {rows.length === 0 && (
               <tr>
-                <td colSpan={5} style={{ ...tdStyle, color: "var(--text-muted)", textAlign: "center" }}>
+                <td colSpan={7} style={{ ...tdStyle, color: "var(--text-muted)", textAlign: "center" }}>
                   暂无待清理项
                 </td>
               </tr>
             )}
-            {rows.map((r) => (
-              <tr
-                key={r.id}
-                onMouseEnter={() => setHoverRowId(r.id)}
-                onMouseLeave={() => setHoverRowId(null)}
-                style={{ background: hoverRowId === r.id ? "var(--surface)" : "transparent" }}
-              >
-                <td style={tdStyle}>
-                  <input
-                    type="checkbox"
-                    checked={selected.has(r.id)}
-                    onChange={() => toggle(r.id)}
-                  />
-                </td>
-                <td style={tdStyle}>
-                  {/* task-064：风险徽标。title 提供原生 tooltip（hover 显示影响说明），
-                      比自绘 tooltip 省事且不会被表格 overflow 裁掉。 */}
-                  <span
-                    title={riskMeta(r.riskLevel).hint}
-                    style={{
-                      display: "inline-block",
-                      padding: "1px 6px",
-                      borderRadius: 4,
-                      fontSize: 11,
-                      fontWeight: 600,
-                      color: riskMeta(r.riskLevel).fg,
-                      background: riskMeta(r.riskLevel).bg,
-                      border: `1px solid ${riskMeta(r.riskLevel).fg}`,
-                      cursor: "help",
-                      whiteSpace: "nowrap",
-                    }}
-                  >
-                    {riskMeta(r.riskLevel).label}
-                  </span>
-                </td>
-                {/* task-082：路径列横向滚动。
-                    **必须包一层 div**——`overflow-x` 写在 `<td>` 上不生效
-                    （table-cell 的 overflow 会作用到整个表格，浏览器直接忽略）。
-                    路径常常长到几百字符，折行会把每行撑成三五行、整张表失去可读性，
-                    所以选 `nowrap + 横向滚动`，`title` 兜底给完整路径。 */}
-                <td style={tdStyle} title={r.path}>
-                  <div
-                    style={{
-                      maxWidth: 400,
-                      overflowX: "auto",
-                      whiteSpace: "nowrap",
-                      fontFamily: "monospace",
-                      fontSize: 12,
-                      // 滚动条跟随主题（标准属性，可写进 inline style）
-                      scrollbarWidth: "thin",
-                      scrollbarColor: "var(--border) transparent",
-                    } as React.CSSProperties}
-                  >
-                    {r.path}
-                  </div>
-                </td>
-                <td style={tdStyle}>{formatBytes(r.sizeBytes)}</td>
-                <td style={tdStyle}>{r.moduleCode}</td>
-                <td style={tdStyle}>#{r.sessionId}</td>
-              </tr>
-            ))}
+            {rows.length > 0 && renderRows()}
           </tbody>
         </table>
       )}

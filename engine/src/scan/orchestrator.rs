@@ -18,7 +18,37 @@ use std::path::Path;
 use rusqlite::Connection;
 
 use crate::ipc::progress::{ProgressEmitter, ScanProgress};
+use crate::rules::models::CacheRules;
+use crate::scan::drive_enum::drive_letter_of_path;
+use crate::scan::modules::software_cache::SoftwareRules;
 use crate::scan::runner::ScanRunner;
+
+/// task-083：软件感知扫描开关（`CCLEAN_SOFTWARE_AWARE=1` 启用）。
+///
+/// 与项目既有的 `CCLEAN_RUST_*` / `CCLEAN_ENUM_WMI` 同一套路，便于真机排查时
+/// 单独关掉这一步对比结果。
+pub fn software_awareness_enabled() -> bool {
+    std::env::var("CCLEAN_SOFTWARE_AWARE").as_deref() == Ok("1")
+}
+
+/// 编译期内嵌的软件规则（打包安装时的兜底）。
+const EMBEDDED_SOFTWARE_RULES: &str = include_str!("../../../rules/software_rules.json");
+
+/// 加载软件规则：外部文件优先，缺失/损坏则回退到内嵌副本。
+fn load_software_rules(scripts_dir: &Path) -> SoftwareRules {
+    if let Some(external) = scripts_dir
+        .parent()
+        .map(|p| p.join("rules").join("software_rules.json"))
+        .filter(|p| p.is_file())
+    {
+        match crate::scan::modules::software_cache::load(&external) {
+            Ok(r) => return r,
+            Err(e) => eprintln!("[orchestrator] 外部软件规则不可用，改用内嵌副本: {e}"),
+        }
+    }
+    serde_json::from_str::<SoftwareRules>(EMBEDDED_SOFTWARE_RULES)
+        .expect("内嵌 software_rules.json 必须能被解析")
+}
 
 /// 扫描顺序表（task-011 产出，task-076 起 5 个模块全部 Rust 优先）。
 ///
@@ -219,6 +249,12 @@ pub struct ScanOrchestrator<'conn, 'emitter> {
     /// 编排层不碰文件系统路径，也就不会在单测里被迫准备一份规则库。
     /// 空表 = 不做抑制（内置规则加载失败时的降级：宁可重复也不误吞用户条目）。
     builtin_prefixes: Vec<String>,
+    /// task-083 A2：注入的完整规则库（含 `system` 组），5 个内置模块据此读路径。
+    ///
+    /// `None` = 规则库加载失败，拒绝注入——5 个模块退回各自的「环境变量硬编码」
+    /// 降级兜底（`xxx::scan()`），宁可多一份路径常量也不让扫描整块失效。
+    /// 主路径（App/CLI 加载成功）一定走这里，实现「同一规则只在 JSON 维护一份」。
+    system_rules: Option<CacheRules>,
 }
 
 impl<'conn, 'emitter> ScanOrchestrator<'conn, 'emitter> {
@@ -235,7 +271,17 @@ impl<'conn, 'emitter> ScanOrchestrator<'conn, 'emitter> {
             cancel: None,
             drives: None,
             builtin_prefixes: Vec::new(),
+            system_rules: None,
         }
+    }
+
+    /// task-083 A2：注入规则库，让 5 个内置模块从 `system` 组读路径。
+    ///
+    /// 不调用 = `None` = 各模块走环境变量硬编码兜底。这是有意的降级方向：
+    /// 规则库读不出来时扫描照常，而不是整块报告「规则缺失」。
+    pub fn with_system_rules(mut self, rules: CacheRules) -> Self {
+        self.system_rules = Some(rules);
+        self
     }
 
     /// task-078：挂上内置规则的目录前缀（「内置优先」判定用）。
@@ -385,6 +431,19 @@ impl<'conn, 'emitter> ScanOrchestrator<'conn, 'emitter> {
             self.run_user_rules(&mut summary);
         }
 
+        // task-083：软件感知扫描（数据驱动，同 user_rules，不走 SCRIPTS 循环）。
+        // 放在用户规则之后：两者都是「追加的一步」，顺序不影响结果，但日志上
+        // 先用户规则再软件缓存，排查时更直观。
+        //
+        // **进程级开关**：engine 的编排集成测试用的是隔离的临时 DB + 假脚本，
+        // 只想测编排逻辑；若这里无条件跑真实注册表枚举，会往那些 DB 里
+        // 塞进上百条本机缓存条目，把「2 条 / 3 条」这类断言全部冲掉。
+        // 由 Tauri 应用层在 setup 里置 `CCLEAN_SOFTWARE_AWARE=1` 启用
+        // （后台自动扫描是同一进程，天然一起生效）。
+        if !self.is_cancelled() && software_awareness_enabled() {
+            self.run_software_cache(scripts_dir, &mut summary);
+        }
+
         // task-077：全部被跳过 = 用户选了没有扫描目标的盘，这是**合法结果**（0 项），
         // 不是失败。只有「计划内有模块、且一个都没成功」才算全失败。
         if !plan.is_empty() && summary.scripts_succeeded.is_empty() {
@@ -398,6 +457,67 @@ impl<'conn, 'emitter> ScanOrchestrator<'conn, 'emitter> {
         // 必须 force——普通 emit 会被节流吞（task-053 G7.2）。
         self.emit_force_progress(100, "done", summary.total_items as u64);
         Ok(summary)
+    }
+
+    /// task-083：软件感知扫描（枚举已装软件 → 扫其缓存 → 入库）。
+    ///
+    /// # 规则文件从哪来
+    ///
+    /// 优先读 `scripts_dir` 的兄弟 `rules/software_rules.json`（dev 与打包安装
+    /// 都指向 resource_dir，可被外部覆盖）；**找不到就 fallback 到编译期内嵌的
+    /// 同一份 JSON**（`include_str!`）。这样即使安装包漏带规则文件、或用户
+    /// 把它删了，软件感知也不会整块失效——只读资源不该只有一个来源。
+    ///
+    /// # 为什么不算「脚本」
+    ///
+    /// 与 `run_user_rules` 同理：它是数据驱动追加步骤，不在 [`SCRIPTS`] 里，
+    /// 因此不占进度槽位、不影响 ps1/Rust 回退开关、也不会让 `module_runs`
+    /// 多一个特例。
+    fn run_software_cache(&self, scripts_dir: &Path, summary: &mut OrchestratorSummary) {
+        let rules = load_software_rules(scripts_dir);
+        let inventory = crate::scan::software_enum::enumerate_installed();
+        let items =
+            crate::scan::modules::software_cache::scan(&inventory, &rules, &self.builtin_prefixes);
+
+        // 条目级盘过滤：与内置模块同一口径，不依赖脚本名（本步骤没有脚本名）
+        let items: Vec<_> = items
+            .into_iter()
+            .filter(
+                |it| match (&self.drives, drive_letter_of_path(Path::new(&it.path))) {
+                    (Some(ds), Some(c)) => ds.iter().any(|x| x.eq_ignore_ascii_case(&c)),
+                    _ => true,
+                },
+            )
+            .collect();
+
+        eprintln!(
+            "[orchestrator] software_cache: {} 个已装软件 / {} 条规则 → {} 项",
+            inventory.len(),
+            rules.software.len(),
+            items.len()
+        );
+        if items.is_empty() {
+            return;
+        }
+
+        let runner =
+            ScanRunner::new(self.session_id, self.conn, self.emitter).with_percent_span(95, 100);
+        match runner.insert_batch(&items) {
+            Ok(s) => {
+                summary.total_items += s.items_inserted;
+                summary.total_bytes += s.total_bytes;
+                // **故意不 push 到 scripts_succeeded / scripts_failed**：
+                // 那两个字段是「脚本」的成败清单，`run_all` 末尾还用它判
+                // 「是否全失败」。软件缓存是数据驱动的附加步骤，不是脚本——
+                // 把它算进去会让「5 个模块」的既有契约变成 6 个，也会让
+                // 附加能力失败时整次扫描被误判为失败。这里只累加数量 + 记日志。
+                self.emit_progress(100, "software_cache", summary.total_items as u64);
+            }
+            Err(e) => {
+                // 附加能力失败不该拖垮整次扫描（与 user_rules 读失败的处理同口径）
+                eprintln!("[orchestrator] software_cache 入库失败，已跳过: {e}");
+            }
+        }
     }
 
     /// task-078：跑用户自定义规则（从 DB 读启用规则 → 扫描 → 入库）。
@@ -610,23 +730,53 @@ impl<'conn, 'emitter> ScanOrchestrator<'conn, 'emitter> {
     /// 抽成一个方法而不是在 `run_all` 里写五个 `if`：这样「哪些模块已迁移」只有
     /// 一处清单，加第六个模块时不会漏改某个分支。
     ///
+    /// A2：内置模块扫描的分发——注入规则走规则驱动，否则退回环境变量兜底。
+    ///
+    /// 为什么抽成函数指针而非每处 `if let`：五个模块的「规则入口 / 兜底入口」
+    /// 成对出现，抽出来避免每个分支写一遍相同的 `if`。返回类型用完整路径，
+    /// 避免再为这个内部辅助补 `use`。
+    #[allow(clippy::type_complexity)]
+    fn builtin_scan(
+        rules: Option<&CacheRules>,
+        from_rules: fn(&CacheRules) -> Vec<crate::scan::modules::ScanItem>,
+        fallback: fn() -> Vec<crate::scan::modules::ScanItem>,
+    ) -> Vec<crate::scan::modules::ScanItem> {
+        match rules {
+            Some(r) => from_rules(r),
+            None => fallback(),
+        }
+    }
+
     /// **注意这里会真的执行扫描**（可能耗时：Firefox `cache2` 本机有 4569 个文件）。
     /// 调用方在循环开头已经做过取消检查，与 ps1 路径的「脚本粒度取消」语义一致。
     fn rust_module_items(&self, name: &str) -> Option<Vec<crate::scan::modules::ScanItem>> {
+        let rules = self.system_rules.as_ref();
         match name {
-            TEMP_SCRIPT if rust_temp_enabled() => Some(crate::scan::modules::temp::scan()),
-            PREFETCH_SCRIPT if rust_prefetch_enabled() => {
-                Some(crate::scan::modules::prefetch::scan())
-            }
-            BROWSER_CACHE_SCRIPT if rust_browser_cache_enabled() => {
-                Some(crate::scan::modules::browser_cache::scan())
-            }
-            DEV_CACHE_SCRIPT if rust_dev_cache_enabled() => {
-                Some(crate::scan::modules::dev_cache::scan())
-            }
-            WINDOWS_UPDATE_SCRIPT if rust_windows_update_enabled() => {
-                Some(crate::scan::modules::windows_update::scan())
-            }
+            TEMP_SCRIPT if rust_temp_enabled() => Some(Self::builtin_scan(
+                rules,
+                crate::scan::modules::temp::scan_from_rules,
+                crate::scan::modules::temp::scan,
+            )),
+            PREFETCH_SCRIPT if rust_prefetch_enabled() => Some(Self::builtin_scan(
+                rules,
+                crate::scan::modules::prefetch::scan_from_rules,
+                crate::scan::modules::prefetch::scan,
+            )),
+            BROWSER_CACHE_SCRIPT if rust_browser_cache_enabled() => Some(Self::builtin_scan(
+                rules,
+                crate::scan::modules::browser_cache::scan_from_rules,
+                crate::scan::modules::browser_cache::scan,
+            )),
+            DEV_CACHE_SCRIPT if rust_dev_cache_enabled() => Some(Self::builtin_scan(
+                rules,
+                crate::scan::modules::dev_cache::scan_from_rules,
+                crate::scan::modules::dev_cache::scan,
+            )),
+            WINDOWS_UPDATE_SCRIPT if rust_windows_update_enabled() => Some(Self::builtin_scan(
+                rules,
+                crate::scan::modules::windows_update::scan_from_rules,
+                crate::scan::modules::windows_update::scan,
+            )),
             _ => None,
         }
     }

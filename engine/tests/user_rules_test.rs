@@ -77,7 +77,7 @@ fn v4_creates_user_rules_table_with_expected_columns() {
     let v: i64 = conn
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(v, 4, "迁移应到 v4");
+    assert!(v >= 4, "迁移应至少到 v4（user_rules）；当前 v{v}");
 
     let mut stmt = conn.prepare("PRAGMA table_xinfo(user_rules)").unwrap();
     let cols: Vec<String> = stmt

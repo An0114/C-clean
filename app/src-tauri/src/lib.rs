@@ -53,6 +53,15 @@ pub fn run() {
             // task-063：扫描取消标志（scan_cancel 置位，scan_start 每轮复位）。
             app.manage(commands::ScanCancelState::default());
 
+            // task-083：启用软件感知扫描（进程级开关）。
+            //
+            // 为什么放在应用层而不是让 engine 默认开启：engine 的编排集成测试用
+            // 隔离的临时 DB + 假脚本，无条件枚举真实注册表会把上百条本机缓存
+            // 条目灌进去，把那批断言全部冲掉。由应用进程显式启用，后台自动
+            // 扫描（`auto_scan::spawn` 在同一进程）也天然一起生效。
+            // 置位在 `--auto-scan` 分支之前，两种启动模式行为一致。
+            std::env::set_var("CCLEAN_SOFTWARE_AWARE", "1");
+
             if auto_scan_mode {
                 // ===== 计划任务模式 =====
                 // 只做「扫一遍 + 通知 + 退出」。**不建托盘**（否则托盘图标会闪
@@ -140,6 +149,8 @@ pub fn run() {
             commands::drive_usage,
             // task-077：多盘扫描——固定磁盘枚举（Dashboard 多环形图数据源）
             commands::drive_list,
+            // task-083：已安装软件清单（Items 页软件列的数据来源）
+            commands::software_inventory,
             // task-078：用户自定义规则 CRUD
             commands::user_rules_list,
             commands::user_rules_add,

@@ -118,22 +118,26 @@ pub async fn scan_start(
     }
 
     // task-078：内置规则的目录前缀，用于「内置优先于用户规则」的重复抑制。
+    // task-083 A2：同一规则只在 `cache_rules.json` 维护一份——加载成功时把完整
+    // 规则库注入编排器，5 个内置模块从 `system` 组读路径；失败时不注入，各模块
+    // 退回环境变量硬编码兜底（宁可多一份路径常量也不让扫描整块失效）。
     //
     // 读失败**不影响扫描**：传空表等于不抑制（用户规则照常生效，可能产生重复条目），
     // 比「规则库坏了就整块不扫」合理——规则库校验失败时 task-005 的既定策略是
     // 沿用旧版，但这里连旧版都拿不到，只能降级。
-    let builtin_prefixes = match load_rules(&paths.rules_dir) {
-        Ok(loaded) => engine::rules::loader::builtin_dir_prefixes(&loaded),
-        Err(e) => {
-            eprintln!("[scan_start] 内置规则加载失败，用户规则不做内置优先抑制: {e}");
-            Vec::new()
+    match load_rules(&paths.rules_dir) {
+        Ok(loaded) => {
+            let prefixes = engine::rules::loader::builtin_dir_prefixes(&loaded);
+            eprintln!("[scan_start] 内置规则目录前缀 {} 个", prefixes.len());
+            orch = orch.with_builtin_prefixes(prefixes);
+            orch = orch.with_system_rules(loaded.rules);
         }
-    };
-    eprintln!(
-        "[scan_start] 内置规则目录前缀 {} 个",
-        builtin_prefixes.len()
-    );
-    orch = orch.with_builtin_prefixes(builtin_prefixes);
+        Err(e) => {
+            eprintln!(
+                "[scan_start] 内置规则加载失败，用户规则不做内置优先抑制，内置模块走环境变量兜底: {e}"
+            );
+        }
+    }
 
     let outcome = orch.run_all(&paths.scripts_dir);
     drop(emitter_guard);
@@ -948,6 +952,20 @@ pub async fn drive_list() -> Result<Envelope<Vec<engine::scan::drive_enum::Drive
         eprintln!("[drive_list] 未枚举到任何固定盘");
     }
     Ok(Envelope::ok(drives))
+}
+
+// ===================== task-083：软件感知 =====================
+
+/// 列出本机已安装软件（注册表 Uninstall 键，HKLM 优先去重）。
+///
+/// **只读、不写 DB、不依赖 AppPaths**：软件清单是纯「看一眼系统现状」，
+/// 不需要会话、不需要事务，也不需要用户数据目录可写。
+/// 空清单不是错误——精简系统 / CI runner 上确实可能一条都没有。
+#[tauri::command]
+pub async fn software_inventory(
+) -> Result<Envelope<Vec<engine::scan::software_enum::SoftwareEntry>>, String> {
+    let entries = engine::scan::software_enum::enumerate_installed();
+    Ok(engine::ipc::commands::software_inventory::inventory_envelope(entries))
 }
 
 // ===================== task-078：用户自定义规则 =====================
