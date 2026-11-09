@@ -56,6 +56,11 @@ pub const RESTOREPOINT_FAILED: ErrorCode = ErrorCode {
     code: 2007,
     message: "系统还原点创建失败",
 };
+/// 定位的目标路径不存在（task-084 A4 残留定位）。
+pub const RESIDUAL_LOCATE_NOT_FOUND: ErrorCode = ErrorCode {
+    code: 2008,
+    message: "要定位的路径已不存在",
+};
 /// DISM 组件存储错误。
 pub const DISM_ERROR: ErrorCode = ErrorCode {
     code: 3001,
@@ -77,8 +82,8 @@ pub const INTERNAL: ErrorCode = ErrorCode {
     message: "内部错误（附日志 ID）",
 };
 
-/// 全部 13 个错误码（供遍历测试）。
-pub const ALL: [ErrorCode; 13] = [
+/// 全部 14 个错误码（供遍历测试）。
+pub const ALL: [ErrorCode; 14] = [
     OK,
     SCAN_CANCELLED,
     DRYRUN_EMPTY,
@@ -88,6 +93,7 @@ pub const ALL: [ErrorCode; 13] = [
     SAFEBOX_FULL,
     REG_BACKUP_FAILED,
     RESTOREPOINT_FAILED,
+    RESIDUAL_LOCATE_NOT_FOUND,
     DISM_ERROR,
     RULE_CHECKSUM_MISMATCH,
     RULE_NETWORK_ERROR,

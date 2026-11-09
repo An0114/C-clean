@@ -174,6 +174,8 @@ pub fn run() {
             // task-067：残留增强（D 模块）
             commands::residual_scan,
             commands::residual_delete,
+            // task-084 A4：残留一键定位（explorer /select）
+            commands::residual_locate,
             // task-068：注册表健康中心（F 模块）
             commands::registry_health_scan,
             commands::registry_health_delete,

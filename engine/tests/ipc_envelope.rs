@@ -30,5 +30,9 @@ fn all_error_codes_have_message() {
     for c in error_codes::ALL.iter() {
         assert!(!c.message.is_empty(), "错误码 {} 文案为空", c.code);
     }
-    assert_eq!(error_codes::ALL.len(), 13, "TRD §5.3 共 13 个错误码");
+    assert_eq!(
+        error_codes::ALL.len(),
+        14,
+        "TRD §5.3 共 14 个错误码（task-084 加 2008 残留定位）"
+    );
 }

@@ -306,6 +306,19 @@ pub fn install_roots() -> Vec<PathBuf> {
             }
         }
     }
+
+    // task-084 B3（残留部分，task-077 多盘基建）：非系统盘的 Program Files 也要查。
+    // 程序可能装在 D:\Program Files / E:\Program Files(x86)，只扫 C 盘会漏掉。
+    // `fixed_drive_letters` 已按盘符升序返回固定盘；C 盘那份与上面 env 派生路径
+    // 同名，`contains` 天然去重，不会重复扫。
+    for letter in crate::scan::drive_enum::fixed_drive_letters() {
+        for pf in ["Program Files", "Program Files (x86)"] {
+            let root = PathBuf::from(format!(r"{letter}:\{pf}"));
+            if root.is_dir() && !roots.contains(&root) {
+                roots.push(root);
+            }
+        }
+    }
     roots
 }
 

@@ -7,7 +7,7 @@
 use std::path::Path;
 
 use super::super::envelope::Envelope;
-use crate::ipc::error_codes::{INTERNAL, WHITELIST_DENIED};
+use crate::ipc::error_codes::{INTERNAL, RESIDUAL_LOCATE_NOT_FOUND, WHITELIST_DENIED};
 use crate::scan::residual::{delete_residuals, scan_all, ResidualDeleteResult, ResidualReport};
 
 /// 处理 `residual.scan`：读注册表 + 扫安装目录 + 交叉比对。
@@ -60,4 +60,25 @@ pub fn handle_residual_delete(
     }
 
     Envelope::ok(result)
+}
+
+/// 处理 `residual.locate`（task-084 A4）：**只做路径存在性校验**，不真的调 explorer。
+///
+/// # 为什么把「调 explorer」留在 Tauri command 层
+///
+/// engine 是纯逻辑库，不持有 `AppHandle` / 窗口句柄；真实 `explorer.exe /select,<path>`
+/// 由 `app/src-tauri/src/commands.rs` 里对应 `#[tauri::command]` 触发。本函数只回答
+/// 一个问题：**这个路径还在吗**？
+///
+/// - 路径存在（是文件或目录）→ `Envelope::ok(path)`，Tauri 层据此放心调 explorer；
+/// - 路径不存在 → **2008**（`RESIDUAL_LOCATE_NOT_FOUND`），前端提示「已不存在」，
+///   并顺带刷新列表（残留可能已在上一个操作被清掉）。
+pub fn handle_residual_locate(path: &str) -> Envelope<String> {
+    let p = Path::new(path);
+    if !p.exists() {
+        eprintln!("[residual_locate] 路径不存在: {path}");
+        return Envelope::err(RESIDUAL_LOCATE_NOT_FOUND);
+    }
+    // 路径存在（文件或目录都允许 select）。
+    Envelope::ok(path.to_string())
 }

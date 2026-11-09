@@ -1332,6 +1332,32 @@ pub async fn residual_delete(
     Ok(env)
 }
 
+/// `residual_locate`（task-084 A4）：调起资源管理器并**选中**目标路径。
+///
+/// 先用 engine 的 `handle_residual_locate` 做路径存在性校验：
+/// - 路径已不存在 → 返回 **2008**（`RESIDUAL_LOCATE_NOT_FOUND`），前端提示并刷新列表；
+/// - 路径存在 → `explorer.exe /select,<path>` 打开并选中该文件/目录。
+///
+/// `explorer` 是异步 UI 程序，`Command::spawn()` 不阻塞等待它退出（阻塞会卡住
+/// 调用它的 JS）。spawn 失败（例如路径处理不当）记日志，仍返回 ok——此时
+/// `handle_residual_locate` 已确认路径存在，val 承载的是待定位路径。
+#[tauri::command]
+pub async fn residual_locate(path: String) -> Result<Envelope<String>, String> {
+    let env = engine::ipc::commands::residual::handle_residual_locate(&path);
+    if env.code == engine::ipc::error_codes::RESIDUAL_LOCATE_NOT_FOUND.code {
+        return Ok(env);
+    }
+
+    // 路径校验已过（exists），真正调 explorer 打开并选中。
+    if let Err(e) = std::process::Command::new("explorer.exe")
+        .arg(format!("/select,{}", path))
+        .spawn()
+    {
+        eprintln!("[residual_locate] explorer 启动失败: {e}");
+    }
+    Ok(env)
+}
+
 // ===================== task-068：注册表健康中心（F 模块） =====================
 
 /// 计划任务目录（`%SystemRoot%\System32\Tasks`）。

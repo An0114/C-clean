@@ -233,6 +233,44 @@ fn list_install_dirs_on_missing_root_returns_empty() {
     assert!(dirs.is_empty(), "根不存在不是错误，返回空即可");
 }
 
+#[test]
+fn install_roots_no_duplicate_and_all_exist() {
+    use engine::scan::residual::install_roots;
+
+    let roots = install_roots();
+    // 系统盘 Program Files 一定存在，根列表必然非空
+    assert!(!roots.is_empty(), "系统盘 Program Files 应被枚举出来");
+    // 去重：同一条路径不能出现两次（未被 env 与固定盘枚举互相重复）
+    let mut seen = std::collections::HashSet::new();
+    for r in &roots {
+        assert!(
+            r.is_dir(),
+            "install_roots 只应收存在的目录: {}",
+            r.display()
+        );
+        assert!(seen.insert(r.clone()), "存在重复根: {}", r.display());
+    }
+}
+
+#[test]
+fn install_roots_only_contains_program_files_like() {
+    use engine::scan::residual::install_roots;
+
+    // 每条根要么叫 Program Files，要么 Program Files (x86)。
+    // 防止多盘扩展时误把别的目录当安装根扫进去。
+    for r in install_roots() {
+        let name = r
+            .file_name()
+            .map(|n| n.to_string_lossy().to_ascii_lowercase())
+            .unwrap_or_default();
+        assert!(
+            name == "program files" || name == "program files (x86)",
+            "意外的安装根: {}",
+            r.display()
+        );
+    }
+}
+
 // ===================== 删除（移入保险箱） =====================
 
 #[test]
@@ -500,4 +538,36 @@ fn residual_empty_batch_creates_no_task_row() {
         .query_row("SELECT COUNT(*) FROM cleanup_task", [], |r| r.get(0))
         .unwrap();
     assert_eq!(n, 0, "空批次不该建 cleanup_task 行");
+}
+
+// ===================== task-084 A4：残留一键定位 =====================
+
+#[test]
+fn handler_locate_existing_path_returns_ok() {
+    use engine::ipc::commands::residual::handle_residual_locate;
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let file = tmp.path().join("some_file.tmp");
+    std::fs::write(&file, b"x").expect("create file");
+
+    let env = handle_residual_locate(&file.to_string_lossy());
+    assert_eq!(env.code, 0, "存在的路径定位应成功");
+    assert_eq!(env.data.as_deref(), Some(file.to_string_lossy().as_ref()));
+}
+
+#[test]
+fn handler_locate_missing_path_returns_2008() {
+    use engine::ipc::commands::residual::handle_residual_locate;
+    use engine::ipc::error_codes::RESIDUAL_LOCATE_NOT_FOUND;
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let missing = tmp.path().join("gone.tmp");
+    // 不创建文件，直接定位不存在的路径
+
+    let env = handle_residual_locate(&missing.to_string_lossy());
+    assert_eq!(
+        env.code, RESIDUAL_LOCATE_NOT_FOUND.code,
+        "路径不存在应返回 2008"
+    );
+    assert!(env.data.is_none(), "失败信封不该带 data");
 }

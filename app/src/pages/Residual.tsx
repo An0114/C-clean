@@ -61,6 +61,9 @@ const TYPE_FILES = "files";
 /** 还原点创建失败同款的「安全红线拒绝」错误码（engine::ipc::error_codes）。 */
 const CODE_WHITELIST_DENIED = 2002;
 
+/** 残留定位失败（task-084 A4）：目标路径已不存在。 */
+const CODE_LOCATE_NOT_FOUND = 2008;
+
 type InnerTab = "files" | "registry";
 
 const cardStyle: React.CSSProperties = {
@@ -156,6 +159,11 @@ export default function Residual() {
   const [deleteResult, setDeleteResult] = useState<ResidualDeleteResult | null>(null);
   const [deleteError, setDeleteError] = useState("");
 
+  // task-084 A4：一键定位。locatingPath 是「当前正在定位的那条」，
+  // 同一时刻只放行一次 explorer 调起，避免连点轰炸。
+  const [locatingPath, setLocatingPath] = useState<string | null>(null);
+  const [locateError, setLocateError] = useState("");
+
   const scan = useCallback(async () => {
     setLoading(true);
     setError("");
@@ -219,6 +227,33 @@ export default function Residual() {
       setDeleting(false);
     }
   }, [selected, scan]);
+
+  // task-084 A4：调起资源管理器并选中该路径。
+  // 后端（residual_locate）会先校验路径是否存在：
+  //   - 存在 → explorer.exe /select 打开并选中；
+  //   - 已不存在 → 2008，提示并刷新列表（残留可能已在别处被清掉）。
+  // 因为要区分「正常」和「2008」，这里用 apiRaw 而非 api（api 会在非 0 时抛错）。
+  const locate = useCallback(
+    async (path: string) => {
+      setLocatingPath(path);
+      setLocateError("");
+      try {
+        const env = await apiRaw<unknown>("residual_locate", { path });
+        if (env.code === CODE_LOCATE_NOT_FOUND) {
+          setLocateError(`「${path}」已不存在（可能已被清理），列表已刷新。`);
+          // 刷新会让这条从列表里消失，顺便把定位状态复位
+          await scan();
+        } else if (env.code !== 0) {
+          setLocateError(env.message);
+        }
+      } catch (e) {
+        setLocateError(String(e));
+      } finally {
+        setLocatingPath(null);
+      }
+    },
+    [scan]
+  );
 
   const selectedBytes = report
     ? report.fileItems
@@ -322,10 +357,29 @@ export default function Residual() {
               selected={selected}
               onToggle={toggle}
               totalBytes={report.totalBytes}
+              onLocate={locate}
+              locatingPath={locatingPath}
             />
           )}
 
           {tab === "registry" && <RegistryTab items={report.registryItems} />}
+
+          {locateError && (
+            <div
+              style={{
+                marginTop: 12,
+                background: "#fee2e2",
+                border: "1px solid #fca5a5",
+                color: "#b91c1c",
+                padding: 12,
+                borderRadius: 8,
+                fontSize: 13,
+              }}
+            >
+              <div style={{ fontWeight: 600, marginBottom: 4 }}>未能定位</div>
+              <div style={{ wordBreak: "break-all" }}>{locateError}</div>
+            </div>
+          )}
 
           {/* 操作条：只有文件残留 tab 且勾了东西才出现 */}
           {tab === "files" && selected.size > 0 && (
@@ -441,17 +495,21 @@ function TabButton({
   );
 }
 
-/** 文件残留：可勾选 → 移入保险箱。 */
+/** 文件残留：可勾选 → 移入保险箱；每条可一键定位到资源管理器。 */
 function FileTab({
   items,
   selected,
   onToggle,
   totalBytes,
+  onLocate,
+  locatingPath,
 }: {
   items: ResidualItem[];
   selected: Set<string>;
   onToggle: (path: string) => void;
   totalBytes: number;
+  onLocate: (path: string) => void;
+  locatingPath: string | null;
 }) {
   if (items.length === 0) {
     return (
@@ -487,6 +545,7 @@ function FileTab({
             <th style={thStyle}>路径</th>
             <th style={{ ...thStyle, width: 90, textAlign: "right" }}>大小</th>
             <th style={{ ...thStyle, width: 150 }}>类型 / 置信</th>
+            <th style={{ ...thStyle, width: 64 }}>定位</th>
           </tr>
         </thead>
         <tbody>
@@ -516,6 +575,26 @@ function FileTab({
                   <RiskBadge level={i.riskLevel} />
                 </div>
               </td>
+              <td style={tdStyle}>
+                <button
+                  onClick={() => onLocate(i.path)}
+                  disabled={locatingPath !== null}
+                  aria-label={`定位 ${i.name}`}
+                  title="在资源管理器中打开并选中该目录"
+                  style={{
+                    padding: "3px 10px",
+                    fontSize: 12,
+                    borderRadius: 5,
+                    border: "1px solid var(--border)",
+                    background: "var(--bg)",
+                    color: "var(--text)",
+                    cursor: locatingPath !== null ? "not-allowed" : "pointer",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {locatingPath === i.path ? "…" : "定位"}
+                </button>
+              </td>
             </tr>
           ))}
         </tbody>
@@ -525,6 +604,8 @@ function FileTab({
 }
 
 /** 注册表残留：只展示 + 引导手动处理，**没有勾选框也没有删除按钮**。 */
+// 也没有「定位」按钮：类型 A 的失效路径**按定义已不存在**，点了必然 2008。
+// 放一个「每次点都报错」的按钮比不放大得多，所以只给文件残留 tab 提供定位。
 function RegistryTab({ items }: { items: ResidualItem[] }) {
   if (items.length === 0) {
     return (
