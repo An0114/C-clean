@@ -1,4 +1,4 @@
-//! task-083：matches schema / L3 反向断言 / 路径去重的单元测试。
+﻿//! task-083：matches schema / L3 反向断言 / 路径去重的单元测试。
 //!
 //! 全部是**纯函数测试**，不读注册表、不碰真实规则库、不需要管理员权限——
 //! 这样在 CI 的 windows-latest runner 上也能稳定跑（runner 没有用户的
@@ -352,3 +352,158 @@ fn dedup_tie_breaks_by_rule_id() {
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].rule_id, "a_rule");
 }
+
+// ===================== 4. system 组根目录提取（A2a 快照） =====================
+
+/// 测试内本地归一：分隔符统一 + 小写，仅用于路径比较（schema 里的 `norm_path`
+/// 是私有的，测试走 `crate::rules::schema::` 路径访问不到）。
+fn normp(s: &str) -> String {
+    s.replace('\\', "/").to_lowercase().trim_end_matches('/').to_string()
+}
+
+/// 从仓库真实规则库读 `system` 组。这条顺带钉住：
+/// ① `rules_meta.json` 的 SHA-256 与 `cache_rules.json` 同步（忘改就启动失败）；
+/// ② 新增的 `system` 组能被 serde 读出来、通过 L3 反向断言与变量展开校验。
+fn repository_rules() -> CacheRules {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../rules");
+    crate::rules::loader::load(&dir)
+        .expect("真实规则库必须能加载（检查 rules_meta.json 的 checksum 是否同步）")
+        .rules
+}
+
+/// system 组必须覆盖 5 个内置模块的全部业务类别（A2a 快照）。
+#[test]
+fn system_group_covers_all_builtin_categories() {
+    let rules = repository_rules();
+    let sys = &rules.modules["system"];
+
+    let mut categories: Vec<&str> = sys.iter().map(|e| e.category.as_str()).collect();
+    categories.sort_unstable();
+    categories.dedup();
+
+    for cat in [
+        "user_temp",
+        "windows_temp",
+        "prefetch",
+        "npm_cache",
+        "pip_cache",
+        "pnpm_store",
+        "update_download",
+    ] {
+        assert!(
+            categories.contains(&cat),
+            "system 组缺少内置模块的 category={cat:?}，实际 {categories:?}"
+        );
+    }
+}
+
+/// system 组里不该有 A~F 组用户可见规则的 category（`npm_cache` 是唯一的合法
+/// 跨组重复——A 组是用户可见清理规则，system 组是内置模块路径真值源，
+/// 靠 `roots_for_categories` 按展开根去重兜住，不会重复扫）。
+#[test]
+fn system_group_does_not_overflow_user_categories() {
+    let rules = repository_rules();
+    let sys = &rules.modules["system"];
+    let cats: Vec<&str> = sys.iter().map(|e| e.category.as_str()).collect();
+    // 允许集合 = 5 个内置模块的类别
+    for cat in cats {
+        assert!(
+            [
+                "user_temp",
+                "windows_temp",
+                "prefetch",
+                "npm_cache",
+                "pip_cache",
+                "pnpm_store",
+                "update_download",
+            ]
+            .contains(&cat),
+            "system 组混入了非内置模块类别 {cat:?}"
+        );
+    }
+}
+
+/// windows_temp 永远是 `%SystemRoot%\Temp` + L2，不依赖 TEMP 是否设置（A2a 快照）。
+#[test]
+fn windows_temp_root_is_system_root_based_and_l2() {
+    let rules = repository_rules();
+    let roots = crate::rules::schema::roots_for_categories(&rules, &["windows_temp"]);
+    assert_eq!(roots.len(), 1, "windows_temp 只有一个根: {roots:#?}");
+
+    let sr =
+        std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_string());
+    let expect = format!(r"{sr}\Temp");
+    assert_eq!(normp(&roots[0].root), normp(&expect));
+    assert_eq!(roots[0].risk_level, 2, "windows_temp 必须 L2");
+}
+
+/// user_temp 解析出 `%TEMP%` 本身，且风险为 L1（A2a 快照）。
+#[test]
+fn user_temp_resolves_to_env_temp_l1() {
+    let Ok(t) = std::env::var("TEMP") else {
+        return; // 环境剥掉 TEMP 时跳过（兜底本来就不产生该类别）
+    };
+    let rules = repository_rules();
+    let roots = crate::rules::schema::roots_for_categories(&rules, &["user_temp"]);
+    assert!(
+        roots.iter().any(|r| normp(&r.root) == normp(&t) && r.risk_level == 1),
+        "user_temp 应解析为 TEMP({t}) / L1，实际 {roots:#?}"
+    );
+}
+
+/// dev_cache 的 npm 新旧两个位置 + pip + pnpm 都能从 `system` 组取到（A2a 快照）。
+#[test]
+fn dev_cache_roots_match_env_fallback() {
+    let rules = repository_rules();
+    let roots = crate::rules::schema::roots_for_categories(
+        &rules,
+        &["npm_cache", "pip_cache", "pnpm_store"],
+    );
+    assert_eq!(roots.len(), 4, "npm 新+旧、pip、pnpm 共 4 个根: {roots:#?}");
+
+    let lad =
+        std::env::var("LOCALAPPDATA").unwrap_or_else(|_| r"C:\Users\test\AppData\Local".into());
+    let ad = std::env::var("APPDATA").unwrap_or_else(|_| r"C:\Users\test\AppData\Roaming".into());
+
+    let expected = [
+        (format!(r"{lad}\npm-cache"), "npm_cache", 1),
+        (format!(r"{ad}\npm-cache"), "npm_cache", 1),
+        (format!(r"{lad}\pip\cache"), "pip_cache", 1),
+        (format!(r"{lad}\pnpm-store"), "pnpm_store", 1),
+    ];
+    for (exp_root, exp_cat, exp_risk) in expected {
+        assert!(
+            roots.iter().any(|r| {
+                normp(&r.root) == normp(&exp_root)
+                    && r.category == exp_cat
+                    && r.risk_level == exp_risk
+            }),
+            "缺少 {exp_cat}={exp_root} / risk {exp_risk}，实际 {roots:#?}"
+        );
+    }
+}
+
+/// prefetch / windows_update 各自只暴露一个根，且基于 `%SystemRoot%`（A2a 快照）。
+#[test]
+fn prefetch_and_update_roots_are_system_root_based() {
+    let rules = repository_rules();
+    let sr =
+        std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_string());
+
+    let prefetch = crate::rules::schema::roots_for_categories(&rules, &["prefetch"]);
+    assert_eq!(prefetch.len(), 1, "prefetch 一个根: {prefetch:#?}");
+    assert_eq!(
+        normp(&prefetch[0].root),
+        normp(&format!(r"{sr}\Prefetch"))
+    );
+    assert_eq!(prefetch[0].risk_level, 1, "prefetch 是 L1（自动重建）");
+
+    let update = crate::rules::schema::roots_for_categories(&rules, &["update_download"]);
+    assert_eq!(update.len(), 1, "update_download 一个根: {update:#?}");
+    assert_eq!(
+        normp(&update[0].root),
+        normp(&format!(r"{sr}\SoftwareDistribution\Download"))
+    );
+    assert_eq!(update[0].risk_level, 2, "更新缓存必须 L2");
+}
+
