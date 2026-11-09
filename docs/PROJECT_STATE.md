@@ -15,6 +15,19 @@
 历史决策不变：代码签名不做、品牌图标不做、G6 不修；跨盘恢复 fallback / RmShutdown 连带兄弟进程 / RmShutdown 30s 无进度三项维持现状。
 
 ## 最近一次变更
+2026-11-09：**task-083 开发完成（= backlog 批次二三四 8 项合并：088/089/090/091/092/093/094/095 软件感知地基大合并），状态 `testing`**（`feature/task-083-software-awareness-batch234`）：
+  - **① A1 规则 schema 扩展 `matches`（089）**：`rules/cache_rules.json` 支持 `matches`（glob/regex/suffix 三种 type，作用于文件名 basename，大小写不敏感）；无 `matches` 的旧规则仍走原 `paths` 前缀匹配；CSV 23 条单测钉死三种 type 命中/不命中。
+  - **② A2 双份真值源收敛（088）**：5 个内置模块（temp/prefetch/browser_cache/dev_cache/windows_update）硬编码路径迁移到 `cache_rules.json` 的 `system` 组；`roots_for_categories` 从规则库读根目录 + 风险等级，Rust 模块只是「执行器」；`CCLEAN_RUST_*` 回退开关保留；7 条 system 组根目录快照单测。
+  - **③ B1 软件枚举器（090）**：`engine/src/scan/software_enum.rs` 读注册表 Uninstall 三 hive（HKLM 64 / WOW6432Node / HKCU），HKLM 优先去重 + 系统组件过滤 + 排序；`software_inventory` IPC 命令登记（只读、不写 DB，截断 200 条）；5 条 hive 快照单测。
+  - **④ B2 软件缓存识别（091）**：`rules/software_cache.json` 收录 ≥5 款软件（VSCode/Slack/Discord/Teams/WeChat），基于枚举结果按软件名匹配路径模板；未安装跳过、敏感路径防呆、加载期校验；9 条用例。
+  - **⑤ B3 L3 红线反向断言（092）**：`find_l3_conflicts` 找出所有 L1/L2 规则路径与 L3 红线的冲突，启动期 `assert_no_l3_conflict_or_panic`，冲突打印规则 id；不新建第二份清单，复用 `whitelist_deny` 作为单真值源。
+  - **⑥ C1 多 Profile（093）+ C3 规则去重（095）**：`engine/src/scan/profiles.rs` 枚举 Chrome/Edge `User Data\*` 全部 profile + Firefox profiles.ini，各 profile 落 `Cache/Code Cache/GPUCache`；`dedup_hits` 同文件多规则命中按「更具体路径 > 更高风险 > 规则 id 字典序」去重，只算一次大小；21 条去重/多 profile 单测。
+  - **⑦ C2 UI 软件识别展示（094）**：`Items.tsx` 加「软件」列（在路径列之前）+ 同软件多项折叠分组（组头折叠不丢勾选）+ hover 优先用规则库 impact/rebuild 逐项说明；`list_pending` 后端透传 `category/impact_note/rebuild_note` 字段，深色用 CSS 变量；3 条前端单测。
+  - **⑧ v5 数据库迁移**：`v5__software_awareness.sql` 新增 `software_inventory` 缓存表（7 列 + 2 索引），注册进迁移器（user_version 4→5），业务表 10→11 张，迁移幂等 + v1 老库平滑升级单测。
+  - **门禁**：fmt / clippy（`-D warnings`）全 0、`cargo test --workspace` 全绿（仅 execute_resolve 2 条 junction 用例因沙箱无符号链接权限预存在失败、与本次改动无关）、`pnpm test` **209 passed（14 files）**、lint **0 error**（4 条 react-refresh 既有 warning 豁免）、`pnpm build` 成功。
+  - **契约走查**：software_inventory 命令签名↔Tauri 实参对齐；`SoftwareEntry` `#[serde(rename_all="camelCase")]` ↔ 前端 camelCase；所有 IPC 调用点经 `api()`/`apiRaw()` 解包信封；事件仍走既有 scan://progress 通道。详见评审报告契约核对表。
+  - **未做**：批次五大文件地图（096~099）、批次六决策与 P1/P2（100~104）、批次七 P2 长尾（105~107）、跨盘恢复 fallback / RmShutdown 三功能（维持现状）；真机/NSIS 冒烟 + CI 由测试 Agent 在提示词 9 L4/L5 产出。
+
 2026-11-08：**task-082 开发完成（= backlog 批次一 UI 五项：082/083/084/086/087），状态 `testing`**（`feature/task-082-ui-batch-dashboard-scroll-tray-tooltip`）：
   - **① 仪表盘布局重排（082）**：磁盘空间卡**上移到统计卡之前**（通栏）、统计卡 2×2 左置 `flex: 11 1 0`（实测 55.0%）、
     趋势图右置 `flex: 9 1 0`（实测 45.0%），`align-items: stretch` 保证顶部对齐（实测两栏 top 相等）；
@@ -659,6 +672,7 @@
 - [x] 初始化项目状态白板 PROJECT_STATE.md（本次提交）
 
 ## 待办事项
+- [x] 088/089/090/091/092/093/094/095：**软件感知地基大合并（批次二三四 8 项）** ✅（2026-11-09，task-083）
 - [x] 001：初始化 monorepo 目录骨架（app/ Tauri+React+Vite、engine/ Rust workspace、elevation/、rules/、scripts/），跑通最小空窗口
 - [x] 002：落地公共数据层——SQLite 单文件 schema（settings/scan_session/cleanup_item/cleanup_task/safe_box/audit_log/rules_meta/registry_backup/cleanup_plan）与 rusqlite 连接、迁移
 - [x] 003：落地删除唯一入口 engine::execute::delete::execute() + L3 红线白名单匹配器 + 单元测试（对 PRD P0-7 全部 L3 路径 100% 拦截）
@@ -999,41 +1013,30 @@
 ## 下一步计划
 1. **v0.4.0 已发布 + 真机体验通过**。R5 脚本删除仍维持原判断：先让 v0.4.0 跑一个版本周期再删 ps1，回退开关（`CCLEAN_RUST_*=0`）是唯一兜底。
 2. **v0.5.0 执行顺序（2026-11-08 重排，新编号 082~107）**：
-   - **批次一（UI，最先做，整体合并为一个任务派发）**：082 仪表盘布局 / 083 注册表命令列滚动 / 084 清理页路径列滚动 / 085 深色三页（=task-081，testing）/ 086 托盘菜单 / 087 逐项影响说明。083/084 抽共享 `<ScrollCell>`。
-   - **批次二（P0 地基）**：088 双份真值源收敛（5 模块路径外置到 `cache_rules.json`）+ 089 规则 schema 加 `matches`。
-   - **批次三（软件感知核心，090/091 并行）**：090 软件枚举器 + 091 扩展软件清单 + 092 随 091 每条规则并行补 L3 反向断言；**92.5 的 CI 敏感关键词守卫最先加**。
-   - **批次四（软件感知收尾）**：093 多 Profile → 094 UI 软件识别展示 → 095 规则去重联调（必须紧跟 088+091）。
-   - **批次五（大文件地图与差异化）**：096 目标空间 / 097 重复文件 / 098 文件夹分布 / 099 残留一键定位。
+   - **批次一（UI，最先做，整体合并为一个任务派发）**：✅ 完成（task-082）。
+   - **批次二（P0 地基）**：✅ 完成（task-083，088 双份真值源收敛 + 089 `matches`）。
+   - **批次三（软件感知核心）**：✅ 完成（task-083，090 枚举器 + 091 扩展清单 + 092 L3 反向断言）。
+   - **批次四（软件感知收尾）**：✅ 完成（task-083，093 多 Profile + 094 UI 软件识别 + 095 规则去重联调）。
+   - **批次五（大文件地图与差异化）**：096 目标空间 / 097 重复文件 / 098 文件夹分布 / 099 残留一键定位。**下一阶段 = 本批**。
    - **批次六（决策与 P1/P2 补全）**：100 自动清理拍板 / 101 L0 拍板 / 102 非系统盘产出 / 103 规则导入导出 / 104 Gradle&Maven。
    - **批次七（P2 长尾）**：105 多用户 Profile / 106 草稿暂存 / 107 ARM64。
 3. **两条待拍板**：100（自动清理 vs 仅自动扫描）、101（L0 只读候选目录）。拍板后再进批次六。
 4. **遗留边界不变**：Top100 截断、残留"文件残留"误报无法归零、计划任务扫描非管理员恒空、DISM 15 分钟上限、跨盘恢复不支持、未做代码签名、品牌图标不做。
 
 ## 当前负责人 Agent
-**测试 Agent（提示词 9）**——`feature/task-082-ui-batch-dashboard-scroll-tray-tooltip` 开发轮已完成、状态 `testing`。
-**本任务五块内容，每块的验证方式不同，别用同一套标准套**：
-① **仪表盘布局**：真机看「磁盘空间卡在统计卡上面」「统计卡左、趋势图右、顶部对齐」「主数字明显比标签大」。
-   开发轮量到的真实值是 `fontSize 32px` / `gap 12px` / `minHeight 100px` / 深色卡片 `rgb(30,41,59)`。
-② **单元格滚动**：**滚动条要在单元格内部**，不是整表底部。开发轮实测注册表溢出那条 `375 > 300`、
-   清理页 100 条里 49 条溢出（最长 786px）。**短内容不该出现滚动条**——这条也要看。
-③ **托盘菜单**：**原生菜单，CDP 截不到**。请人工右键托盘图标确认 5 项齐全、暂停/恢复互斥可用、tooltip 显示状态；
-   再左键单击确认窗口能 toggle（可见且聚焦时隐藏）。
-④ **hover 说明**：L1/L2/L3 徽标、保险箱的路径/大小/来源、残留的置信度徽标，逐个 hover 看文案是否说清了「影响什么」。
-⑤ **浅色/深色都要看**：本任务给 Dashboard 补了 `boxShadow`，深色下几乎不可见是**预期**（层次由 border 承担）。
-
+**测试 Agent（提示词 9）**——`feature/task-083-software-awareness-batch234` 开发轮已完成、状态 `testing`（批次二三四软件感知地基大合并）。
+本次交付的核心验证点（真机/打包全必做）：
+① **软件枚举器**：`software_inventory` 命令真机返回 ≥5 款已装软件（HKLM 优先去重、系统组件过滤）。
+② **软件缓存识别**：装了 VSCode/Chrome/微信的机器，扫完能按软件名归类缓存；聊天/配置 一条不出现（L3 反向断言 092）。
+③ **多 Profile**：Chrome/Edge 双 Profile（Default + Profile 1）两个缓存都列出、大小分别统计；Guest 排除。
+④ **UI 软件列**：Items 页「软件」列显示软件名 + 同软件折叠分组 + hover 规则库逐项说明；浅/深色都看。
+⑤ **v5 迁移**：升级路径老库平滑升到 software_inventory 表、幂等。
 **已知边界（别当 bug 报）**：
-- **WinSxS 没有和趋势图并排**：任务书要求并排，但 backlog 82.3 要的是「统计卡左 / 趋势图右」，两者冲突，
-  按 backlog（用户拍板原文）实现，WinSxS 单独一行——它内容最多，挤进任何一栏都会撑变形；
-- **清理页表格整体仍会横向滚动**（页面级）：本任务只保证「单元格内部不折行」，没重排列宽分配；
-- **托盘菜单没有「打开保险箱」「查看上次结果」**：那是 backlog 086 的内容，任务书要求的是「暂停/恢复自动扫描」；
-- **087 只做了静态文案**，`rules/` 元数据驱动要等 088。
+- `execute_resolve.rs` 2 条 junction 用例在无符号链接权限环境失败（预存在，非本次回归）。
+- 017 相关：本项目无 theme context，软件列颜色走 `var(--xxx)`，不要按二进制的 hex 断言。
+- 真机 L3 反向断言防呆（故意在 JSON 写冲突规则应 panic）属本任务必做验证，见任务书 B3 验收。
 
-**开发轮踩到的两个环境坑，测试轮会同样遇到**：
-- **vitest 并行跑会假失败**：沙箱拦截写 `%TEMP%`（`EPERM`），会打断 `Settings.test.tsx`，表现为「13 files / 162 tests + 1 error」。
-  用 `npx vitest run --no-file-parallelism` 即 14/206 全绿。**不是代码回归**。
-- **`cat >> file << 'EOF'` 会把 Windows 路径的反斜杠改坏**（`C:\Temp` → `C:/Temp`），写含路径的测试代码用编辑器而不是 heredoc。
-
-上一手：DevFullstackRustReact（task-082 开发）。再上一手：DocsKeeper（task-082 派发）。
+上一手：DevFullstackRustReact（task-083 开发）。再上一手：DocsKeeper（task-083 派发）。
 
 
 ## Git 提交记录
@@ -1558,6 +1561,18 @@
 | 2f5a2b3 | #task-082 | fix(ui): 仪表盘按 backlog 82.1-82.3 重排（磁盘环上移通栏 + 统计卡左 + 趋势图右） |
 | 4d828a8 | #task-082 | fix(ui): 仪表盘分栏改用 flex-basis 0 拿到精确 55:45 |
 | （本次） | #task-082 | docs(state): 任务082完成，UI 体验批量优化 |
+| 6e4f537 | #task-083 | docs(task): 新增任务083-软件感知地基大合并（批次二三四 8 项） |
+| 8726caa | #task-083 | feat(rules): schema 扩展 matches + L3 反向断言 |
+| 1d2f833 | #task-083 | feat(scan): 软件枚举器（注册表 Uninstall + HKLM 优先去重） |
+| e9acf12 | #task-083 | feat(scan): 软件缓存识别（software_cache.json + 未安装跳过） |
+| 1990314 | #task-083 | feat(rules): cache_rules.json 增 system 组真值源 + roots_for_categories |
+| 2d7b4cb | #task-083 | feat(scan): 内置模块 scan_from_rules 规则驱动 + orchestrator 注入 system 组 |
+| d94ab08 | #task-083 | feat(scan): browser_cache 规则驱动 + 多 profile 枚举接线 |
+| f78b14e | #task-083 | feat(db): v5 迁移 software_inventory 软件清单缓存表 |
+| 874896a | #task-083 | feat(ipc): software_inventory 软件清单命令 |
+| c86abe0 | #task-083 | feat(ipc): list_pending 透传 category/impact_note/rebuild_note |
+| c7654e7 | #task-083 | feat(ui): Items 软件列 + 同软件折叠分组 + hover 规则库说明 |
+| （本次） | #task-083 | docs(state): 任务083完成，软件感知地基大合并（批次二三四 8 项） |
 
 ---
 变更轨迹：
@@ -1601,6 +1616,7 @@
 - 2026-10-12  task-021  FILE_IN_USE 自动查占用进程写 audit_log 并返回前端
 - 2026-10-13  task-022  rules_meta 落 DB + rules.checkUpdate 查远端版本（不下载）
 - 2026-10-13  task-023  rules.applyUpdate——下载新规则 + SHA-256 校验 + 备份替换 + upsert DB
+- 2026-11-09  task-083  软件感知地基（批次二三四 8 项合并：matches schema / 双份真值源收敛 / 软件枚举 / 软件缓存识别 / L3 反向断言 / 多 Profile / UI 软件列 / 规则去重 + v5 迁移）
 - 2026-10-13  task-024  audit_log.list 只读查询命令落地，历史页后端基础
 - 2026-10-13  task-025  cleanup_stats 聚合查询（total_bytes / success / fail / sessions）
 - 2026-10-13  task-026  Dashboard 4 数字卡片（stats 接前端，GB 格式化）
