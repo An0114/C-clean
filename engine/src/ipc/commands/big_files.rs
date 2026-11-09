@@ -8,6 +8,8 @@ use std::path::Path;
 
 use super::super::envelope::Envelope;
 use crate::scan::big_files::{scan_all, BigFilesReport, TopFilesOptions};
+use crate::scan::modules::dup_files::{scan_duplicates, DupGroup};
+use crate::scan::modules::folder_stats::{folder_stats, FolderStat};
 
 /// 处理 `big_files.scan`：在 `root`（形如 `C:\`）下跑一次只读扫描。
 ///
@@ -27,4 +29,19 @@ pub fn handle_big_files_scan(root: &Path) -> Envelope<BigFilesReport> {
     }
     let report = scan_all(root, TopFilesOptions::default());
     Envelope::ok(report)
+}
+
+/// 处理 `big_files.folder_stats`：用户目录 Top20 文件夹分布（task-084 A3）。
+///
+/// 纯只读、扫描用户 `Downloads/Documents/Desktop/AppData`，可失败项内部跳过，
+/// 同样「没有失败态」，永远 `Envelope::ok`。
+pub fn handle_big_files_folder_stats() -> Envelope<Vec<FolderStat>> {
+    Envelope::ok(folder_stats())
+}
+
+/// 处理 `big_files.duplicates`：>10MB 文件的 SHA-256 重复检测（task-084 A2）。
+///
+/// 纯只读、只报告不出删除，永远 `Envelope::ok`。
+pub fn handle_big_files_duplicates() -> Envelope<Vec<DupGroup>> {
+    Envelope::ok(scan_duplicates())
 }

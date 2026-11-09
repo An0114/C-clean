@@ -1249,6 +1249,27 @@ pub async fn big_files_scan() -> Result<Envelope<engine::scan::big_files::BigFil
     Ok(env)
 }
 
+// ===================== task-066：大文件地图（E 模块） =====================
+
+/// `big_files_folder_stats`：用户目录 Top20 文件夹分布（task-084 A3）。
+///
+/// 纯只读扫描 `Downloads/Documents/Desktop/AppData`，按子树总大小倒序输出 Top20。
+/// 页面改造后作为「文件夹分布」tab 的数据源。
+#[tauri::command]
+pub async fn big_files_folder_stats(
+) -> Result<Envelope<Vec<engine::scan::modules::folder_stats::FolderStat>>, String> {
+    Ok(engine::ipc::commands::big_files::handle_big_files_folder_stats())
+}
+
+/// `big_files_duplicates`：>10MB 文件的 SHA-256 重复检测（task-084 A2）。
+///
+/// 纯只读报告，不删除；每组保留最新修改时间那份（`isKeep=true`）。
+#[tauri::command]
+pub async fn big_files_duplicates(
+) -> Result<Envelope<Vec<engine::scan::modules::dup_files::DupGroup>>, String> {
+    Ok(engine::ipc::commands::big_files::handle_big_files_duplicates())
+}
+
 // ===================== task-067：残留增强（D 模块） =====================
 
 /// `residual_scan`：注册表卸载列表 ↔ 文件目录交叉比对。

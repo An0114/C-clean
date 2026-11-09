@@ -36,6 +36,31 @@ pub const CATEGORY_WINDOWS_OLD: &str = "windows_old";
 pub const CATEGORY_RECYCLE_BIN: &str = "recycle_bin";
 /// 分类标识：Top100 大文件。
 pub const CATEGORY_TOP_FILES: &str = "top_files";
+/// task-084 A1：目标空间分类 —— 用户下载目录（`%USERPROFILE%\Downloads`）。
+pub const CATEGORY_TARGET_DOWNLOADS: &str = "target_downloads";
+/// task-084 A1：目标空间分类 —— 文档目录大文件（`%USERPROFILE%\Documents`，>100MB）。
+pub const CATEGORY_TARGET_DOCUMENTS: &str = "target_documents";
+/// task-084 A1：目标空间分类 —— 桌面大文件（`%USERPROFILE%\Desktop`，>100MB）。
+pub const CATEGORY_TARGET_DESKTOP: &str = "target_desktop";
+/// task-084 A1：目标空间分类 —— 本地临时目录大文件（`%LOCALAPPDATA%\Temp`，>50MB）。
+pub const CATEGORY_TARGET_TEMP: &str = "target_temp";
+
+/// 目标空间各类别的阈值/条数约定（与 [`scan_target_spaces`] 一致）。
+/// Downloads 按大小倒序取最新 20 个（不设大小门槛，只列最大的若干）；Documents/Desktop
+/// >100MB；Temp >50MB。
+pub mod target_space_cfg {
+    use std::time::Duration;
+    /// Downloads：取前多少条。
+    pub const DOWNLOADS_TOP: usize = 20;
+    /// Documents / Desktop 的门槛（100 MiB，与 Top100 默认一致）。
+    pub const DOC_DESKTOP_MIN: u64 = 100 * 1024 * 1024;
+    /// Temp 的门槛（50 MiB）。
+    pub const TEMP_MIN: u64 = 50 * 1024 * 1024;
+    /// 单目录遍历条目上限。
+    pub const MAX_ENTRIES: u64 = 50_000;
+    /// 单目录遍历时间预算。
+    pub const BUDGET: Duration = Duration::from_secs(8);
+}
 
 /// Top 列表默认取多少条。
 pub const TOP_N: usize = 100;
@@ -80,6 +105,12 @@ pub struct BigFilesReport {
     pub categories: Vec<BigFileItem>,
     /// Top100 明细（按大小降序，已跳过系统目录）。
     pub top_files: Vec<BigFileItem>,
+    /// task-084 A1：目标空间大文件（Downloads/Documents/Desktop/Temp）。
+    ///
+    /// 各文件带 `category`（`target_downloads` 等），供前端按类别分组展示。
+    /// 注意：目标空间可能与 Top100 重叠（同一个大文件两处都列），**不计入
+    /// `total_bytes`**，避免双重计数。前端对目标空间单独求和。
+    pub target_spaces: Vec<BigFileItem>,
     /// 合计字节数 = 三个分类之和 + Top100 之和。
     ///
     /// 不会重复计算：Top100 遍历时跳过了 `hiberfil.sys` / `pagefile.sys` 等根目录
@@ -133,6 +164,11 @@ pub fn scan_all(root: &Path, opts: TopFilesOptions) -> BigFilesReport {
 
     let (top_files, scanned_entries, truncated) = scan_top_files(root, opts);
 
+    // task-084 A1：目标空间另行扫描，独立 category 分组返回前端。
+    // 目标空间**不计入** total_bytes（可能和 Top100 重复，见字段注释），
+    // 元组第二项是全目标空间合计，供前端 / 后续跨盘扩展使用。
+    let (target_spaces, _target_total) = scan_target_spaces();
+
     let mut total_bytes: u64 = categories.iter().map(|c| c.size_bytes).sum();
     for f in &top_files {
         total_bytes = total_bytes.saturating_add(f.size_bytes);
@@ -141,11 +177,157 @@ pub fn scan_all(root: &Path, opts: TopFilesOptions) -> BigFilesReport {
     BigFilesReport {
         categories,
         top_files,
+        target_spaces,
         total_bytes,
         scanned_entries,
         truncated,
         elapsed_ms: started.elapsed().as_millis() as u64,
     }
+}
+
+/// task-084 A1：目标空间大文件扫描（**只读**，沿用 E 模块定位）。
+///
+/// 扫四类用户目录，命中文件按类别打 `CATEGORY_TARGET_*` 标签返回：
+/// - `%USERPROFILE%\Downloads`：按大小倒序取前 [`target_space_cfg::DOWNLOADS_TOP`] 个；
+/// - `%USERPROFILE%\Documents`：>100MB；
+/// - `%USERPROFILE%\Desktop`：>100MB；
+/// - `%LOCALAPPDATA%\Temp`：>50MB。
+///
+/// **只读不删**——目标空间里的可能是用户正在用的文件（下载一半的安装包、正在写的文档），
+/// 任何自动删除都是事故。返回 `(Vec<BigFileItem>, 各类别子树合计)` 两组，前端按类别分组。
+pub fn scan_target_spaces() -> (Vec<BigFileItem>, u64) {
+    let mut out: Vec<BigFileItem> = Vec::new();
+    let mut total: u64 = 0;
+
+    let profile = std::env::var("USERPROFILE").unwrap_or_default();
+    let local = std::env::var("LOCALAPPDATA").unwrap_or_default();
+
+    // Downloads：不设大小门槛，取最大的 20 个。
+    if !profile.is_empty() {
+        let d = Path::new(&profile).join("Downloads");
+        let (items, sum) = scan_target_dir(
+            &d,
+            0,
+            target_space_cfg::DOWNLOADS_TOP,
+            CATEGORY_TARGET_DOWNLOADS,
+            "你的下载文件，确认不需要后手动删除；本工具不代删",
+        );
+        out.extend(items);
+        total = total.saturating_add(sum);
+    }
+
+    for (root_str, min, cat, rec) in [
+        (
+            format!("{profile}\\Documents"),
+            target_space_cfg::DOC_DESKTOP_MIN,
+            CATEGORY_TARGET_DOCUMENTS,
+            "文档目录大文件（>100MB），多为本地项目/文档，确认后手动管理",
+        ),
+        (
+            format!("{profile}\\Desktop"),
+            target_space_cfg::DOC_DESKTOP_MIN,
+            CATEGORY_TARGET_DESKTOP,
+            "桌面大文件（>100MB），整理到别处可释放系统盘空间",
+        ),
+    ] {
+        let (items, sum) = scan_target_dir(
+            Path::new(&root_str),
+            min,
+            TopFilesOptions::default().limit,
+            cat,
+            rec,
+        );
+        out.extend(items);
+        total = total.saturating_add(sum);
+    }
+
+    // Temp 大文件：>50MB，属于可安全清理的临时生成物。
+    if !local.is_empty() {
+        let d = Path::new(&local).join("Temp");
+        let (items, sum) = scan_target_dir(
+            &d,
+            target_space_cfg::TEMP_MIN,
+            TopFilesOptions::default().limit,
+            CATEGORY_TARGET_TEMP,
+            "临时目录大文件（>50MB），可安全删除，程序会用时会重建",
+        );
+        out.extend(items);
+        total = total.saturating_add(sum);
+    }
+
+    (out, total)
+}
+
+/// 遍历单个目标空间目录，收集最大的 `top_n` 个文件（`>= min_size`）。
+///
+/// 遍历策略与 [`walk_collect`] 一致：显式栈 BFS + 最小堆维护 TopN + 不跟随 reparse point +
+/// 读盘错误跳过。返回 `(TopN 文件列表, 该目录子树总字节)`。
+fn scan_target_dir(
+    root: &Path,
+    min_size_bytes: u64,
+    top_n: usize,
+    category: &str,
+    recommendation: &str,
+) -> (Vec<BigFileItem>, u64) {
+    let mut total: u64 = 0;
+    let mut heap: BinaryHeap<Reverse<(u64, PathBuf)>> = BinaryHeap::new();
+    let mut queue: VecDeque<PathBuf> = VecDeque::new();
+    if root.is_dir() {
+        queue.push_back(root.to_path_buf());
+    }
+
+    let mut scanned: u64 = 0;
+    while let Some(dir) = queue.pop_front() {
+        if scanned >= target_space_cfg::MAX_ENTRIES {
+            break;
+        }
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            scanned += 1;
+            let path = entry.path();
+            let Ok(ft) = entry.file_type() else { continue };
+            if ft.is_symlink() {
+                continue;
+            }
+            if ft.is_dir() {
+                queue.push_back(path);
+                continue;
+            }
+            if !ft.is_file() {
+                continue;
+            }
+            let Ok(meta) = entry.metadata() else { continue };
+            let size = meta.len();
+            total = total.saturating_add(size);
+            if size < min_size_bytes || top_n == 0 {
+                continue;
+            }
+            if heap.len() < top_n {
+                heap.push(Reverse((size, path)));
+            } else if let Some(Reverse((min_size, _))) = heap.peek() {
+                if size > *min_size {
+                    heap.pop();
+                    heap.push(Reverse((size, path)));
+                }
+            }
+        }
+    }
+
+    let mut pairs: Vec<(u64, PathBuf)> = heap.into_iter().map(|Reverse(p)| p).collect();
+    pairs.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    let items = pairs
+        .into_iter()
+        .map(|(size, path)| BigFileItem {
+            path: path.to_string_lossy().to_string(),
+            size_bytes: size,
+            category: category.to_string(),
+            recommendation: recommendation.to_string(),
+        })
+        .collect();
+    (items, total)
 }
 
 /// `C:\hiberfil.sys`：休眠文件。

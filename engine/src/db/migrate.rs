@@ -25,6 +25,7 @@ use crate::db::DbError;
 /// - v3（task-077）：`cleanup_item` 加 `drive_letter` 派生列（盘符）+ 组合索引；
 /// - v4（task-078）：新增 `user_rules` 表（用户自定义清理规则）；
 /// - v5（task-083）：新增 `software_inventory` 表（软件清单缓存，B1 落地）。
+/// - v6（task-084）：新增 `bigfiles_target_space` + `duplicate_files` 表（大文件地图 v2 缓存）。
 ///
 /// # 为什么 v3 不是任务书说的 v2
 ///
@@ -37,6 +38,7 @@ static MIGRATIONS: &[(u32, &str)] = &[
     (3, include_str!("migrations/v3__drive_letter.sql")),
     (4, include_str!("migrations/v4__user_rules.sql")),
     (5, include_str!("migrations/v5__software_awareness.sql")),
+    (6, include_str!("migrations/v6__bigfiles_v2.sql")),
 ];
 
 /// 对连接执行所有「版本号 > 当前 user_version」的迁移，返回迁移后的最新版本号。
@@ -96,8 +98,8 @@ mod tests {
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
         assert_eq!(
-            v, 5,
-            "最新版本应为 v5（v2 safe_box / v3 drive_letter / v4 user_rules / v5 software_inventory）"
+            v, 6,
+            "最新版本应为 v6（v5 software_inventory / v6 bigfiles_v2）"
         );
     }
 
@@ -115,6 +117,44 @@ mod tests {
         assert!(
             cols.iter().any(|c| c == "drive_letter"),
             "cleanup_item 应有 drive_letter 列，实际: {cols:?}"
+        );
+    }
+
+    #[test]
+    fn v6_adds_bigfiles_tables() {
+        let conn = migrated();
+        let names: Vec<String> = conn
+            .prepare(
+                "SELECT name FROM sqlite_master WHERE type='table' \
+                 AND name IN ('bigfiles_target_space','duplicate_files') ORDER BY name",
+            )
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "bigfiles_target_space".to_string(),
+                "duplicate_files".to_string()
+            ],
+            "v6 应建 bigfiles_target_space + duplicate_files 两张表"
+        );
+
+        // duplicate_files 的 is_keep 默认 0（保守策略，不自动删）。
+        // pragma_table_info.dflt_value 以字符串形式返回默认值（如 "0" / "1"）。
+        let dflt: Option<String> = conn
+            .query_row(
+                "SELECT dflt_value FROM pragma_table_info('duplicate_files') WHERE name='is_keep'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            dflt.as_deref(),
+            Some("0"),
+            "duplicate_files.is_keep 默认值应为 0"
         );
     }
 
@@ -190,10 +230,11 @@ mod tests {
 
     #[test]
     fn migrate_is_idempotent() {
-        // 重复打开同一库不该重复执行迁移（ALTER TABLE 第二次会报「列已存在」）
+        // 重复打开同一库不该重复执行迁移（ALTER TABLE 第二次会报「列已存在」）。
+        // task-084：v6 已加入（bigfiles_v2），最新版本从 5 升到 6。
         let conn = migrated();
-        assert_eq!(migrate(&conn).unwrap(), 5);
-        assert_eq!(migrate(&conn).unwrap(), 5);
+        assert_eq!(migrate(&conn).unwrap(), 6);
+        assert_eq!(migrate(&conn).unwrap(), 6);
     }
 
     #[test]

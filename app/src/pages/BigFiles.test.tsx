@@ -50,15 +50,54 @@ const REPORT = {
       recommendation: "确认不再需要后手动删除",
     },
   ],
+  // task-084 A1：目标空间（Downloads / Documents / Desktop / Temp）
+  targetSpaces: [
+    {
+      path: "C:\\Users\\me\\Downloads\\big_installer.exe",
+      sizeBytes: 700 * 1024 * 1024,
+      category: "target_downloads",
+      recommendation: "你的下载文件，确认不需要后手动删除",
+    },
+  ],
   totalBytes: 6.4 * GB + 12.5 * GB + 2.1 * GB + 8 * GB + 4 * GB,
   scannedEntries: 12345,
   truncated: false,
   elapsedMs: 3210,
 };
 
+const DUP_GROUPS = [
+  {
+    groupId: "abc1234567890000",
+    sizeBytes: 15 * 1024 * 1024,
+    files: [
+      { path: "C:\\Users\\me\\Downloads\\a.bin", sizeBytes: 15 * 1024 * 1024, modifiedMs: 1000, isKeep: true },
+      { path: "C:\\Users\\me\\Desktop\\copy.bin", sizeBytes: 15 * 1024 * 1024, modifiedMs: 500, isKeep: false },
+    ],
+  },
+];
+
+const FOLDER_STATS = [
+  {
+    path: "C:\\Users\\me\\AppData\\Local",
+    sizeBytes: 10 * 1024 * 1024 * 1024,
+    fileCount: 500,
+    category: "AppData",
+    driveLetter: "C",
+  },
+  {
+    path: "C:\\Users\\me\\Downloads",
+    sizeBytes: 2 * 1024 * 1024 * 1024,
+    fileCount: 200,
+    category: "Downloads",
+    driveLetter: "C",
+  },
+];
+
 function mockScan(data: unknown = REPORT) {
   mockedInvoke.mockImplementation(((cmd: string) => {
     if (cmd === "big_files_scan") return Promise.resolve(ok(data));
+    if (cmd === "big_files_duplicates") return Promise.resolve(ok(DUP_GROUPS));
+    if (cmd === "big_files_folder_stats") return Promise.resolve(ok(FOLDER_STATS));
     return Promise.resolve(ok(null));
   }) as unknown as typeof invoke);
 }
@@ -112,14 +151,17 @@ describe("大文件地图", () => {
     expect(screen.getByText("12.0 GB")).toBeTruthy();
   });
 
-  it("只读：整页只有「重新扫描」一个按钮，没有任何删除入口", async () => {
+  it("只读：没有删除/清理/一键释放入口", async () => {
     mockScan();
     render(<BigFiles />);
     await screen.findByTestId("category-hiberfil");
 
     const buttons = screen.getAllByRole("button");
-    // 强断言：按钮文案白名单。多一个「删除 / 清理 / 一键释放」都会在这里红。
-    expect(buttons.map((b) => b.textContent)).toEqual(["重新扫描"]);
+    // 按钮白名单：重新扫描 + 四个 tab。多一个「删除 / 清理 / 一键释放」都会在这里红。
+    const labels = buttons.map((b) => b.textContent);
+    for (const forbidden of [/一键清理/, /删除/, /释放/]) {
+      expect(labels.some((t) => forbidden.test(t ?? ""))).toBe(false);
+    }
     expect(screen.queryByText(/一键清理/)).toBeNull();
   });
 
@@ -178,5 +220,47 @@ describe("大文件地图", () => {
 
     // 兜底用 category 原值当标题，不白屏
     expect(await screen.findByText("brand_new")).toBeTruthy();
+  });
+
+  describe("task-084 新 tab", () => {
+    it("目标空间 tab 按 category 分组展示 Downloads 大文件", async () => {
+      mockScan();
+      render(<BigFiles />);
+      await screen.findByTestId("category-hiberfil");
+
+      fireEvent.click(screen.getByRole("tab", { name: "目标空间" }));
+
+      expect(await screen.findByTestId("target-target_downloads")).toBeTruthy();
+      expect(screen.getByText(/big_installer\.exe/)).toBeTruthy();
+      // 只读：目标空间也没有删除入口
+      expect(screen.queryByText(/一键清理/)).toBeNull();
+    });
+
+    it("重复文件 tab 懒加载并展示重复组 + 保留标记", async () => {
+      mockScan();
+      render(<BigFiles />);
+      await screen.findByTestId("category-hiberfil");
+
+      fireEvent.click(screen.getByRole("tab", { name: "重复文件" }));
+
+      expect(await screen.findByTestId("dup-group")).toBeTruthy();
+      // 「保留 / 可清理」标记在重复组表格里
+      expect(screen.getByText(/✅ 保留/)).toBeTruthy();
+      expect(screen.getByText(/可清理/)).toBeTruthy();
+      // 首次切到该 tab 才调后端
+      await waitFor(() => expect(mockedInvoke).toHaveBeenCalledWith("big_files_duplicates", {}));
+    });
+
+    it("文件夹分布 tab 懒加载并展示 Top 文件夹表", async () => {
+      mockScan();
+      render(<BigFiles />);
+      await screen.findByTestId("category-hiberfil");
+
+      fireEvent.click(screen.getByRole("tab", { name: "文件夹分布" }));
+
+      expect(await screen.findByText(/占用最多的 2 个文件夹/)).toBeTruthy();
+      expect(screen.getByText(/AppData.Loc/)).toBeTruthy();
+      await waitFor(() => expect(mockedInvoke).toHaveBeenCalledWith("big_files_folder_stats", {}));
+    });
   });
 });

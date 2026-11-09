@@ -168,6 +168,9 @@ pub fn run() {
             commands::winsxs_cleanup,
             // task-066：大文件地图（E 模块，只读）
             commands::big_files_scan,
+            // task-084 A2/A3：大文件地图扩展（重复文件 / 文件夹分布，只读）
+            commands::big_files_duplicates,
+            commands::big_files_folder_stats,
             // task-067：残留增强（D 模块）
             commands::residual_scan,
             commands::residual_delete,

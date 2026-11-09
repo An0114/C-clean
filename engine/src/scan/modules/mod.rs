@@ -22,6 +22,10 @@
 
 pub mod browser_cache;
 pub mod dev_cache;
+/// task-084 A2：重复文件检测（只读）。
+pub mod dup_files;
+/// task-084 A3：文件夹分布统计（只读）。
+pub mod folder_stats;
 pub mod prefetch;
 /// task-083 B2：基于已安装软件清单的缓存识别。
 pub mod software_cache;
