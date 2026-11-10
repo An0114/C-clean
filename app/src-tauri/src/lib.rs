@@ -157,6 +157,8 @@ pub fn run() {
             commands::user_rules_update,
             commands::user_rules_set_enabled,
             commands::user_rules_delete,
+            commands::user_rules_export,
+            commands::user_rules_import,
             commands::get_prefs,
             commands::set_prefs,
             // task-062：托盘 / 自启

@@ -872,6 +872,11 @@ pub async fn set_prefs(
         eprintln!("[set_prefs] write auto_clean_l1_threshold: {e}");
         return Ok(Envelope::err(INTERNAL));
     }
+    // task-084 B5：dev_cache 是否识别 Gradle/Maven 依赖缓存。bool，默认 false。
+    if let Err(e) = engine::prefs::set_dev_cache_gradle_maven(&conn, prefs.dev_cache_gradle_maven) {
+        eprintln!("[set_prefs] write dev_cache_gradle_maven: {e}");
+        return Ok(Envelope::err(INTERNAL));
+    }
     Ok(Envelope::ok(engine::prefs::Prefs::load(&conn)))
 }
 
@@ -1062,6 +1067,72 @@ pub async fn user_rules_delete(
         engine::ipc::commands::user_rules::delete(&conn, id).map_err(|e| e.to_string())?;
     eprintln!("[user_rules_delete] id={id} removed={removed}");
     Ok(Envelope::ok(removed))
+}
+
+/// 用户规则导出目录：`<data_root>/user_rules/exports/`。
+///
+/// 与 [`plans_export_dir`] 同样的固定目录模式：本项目没引 `tauri-plugin-dialog`，
+/// 没有系统文件选择框，导出写固定目录、把完整路径返回给界面，导入时让用户把
+/// 路径粘回来。
+fn user_rules_exports_dir(paths: &AppPaths) -> std::path::PathBuf {
+    paths.data_root.join("user_rules").join("exports")
+}
+
+/// `user_rules_export`：把全部用户规则导成一个 JSON 文件，返回落盘绝对路径。
+///
+/// 导出的文件带格式标记 `cclean-user-rules` + 版本号，导入侧据此校验，防止把
+/// 方案或其他 JSON 当规则导进来。空规则库也照常导出（前端用「N 条」提示）——
+/// 空的导出文件在下一次导入时是合法的（0 条新增，不算错误）。
+#[tauri::command]
+pub async fn user_rules_export(
+    paths: tauri::State<'_, AppPaths>,
+) -> Result<Envelope<String>, String> {
+    let conn = engine::db::conn::open(&paths.data_root).map_err(|e| e.to_string())?;
+    let json = engine::ipc::commands::user_rules::export_to_json(
+        &conn,
+        engine::ipc::commands::plan::now_secs(),
+    )
+    .map_err(|e| e.to_string())?;
+
+    let dir = user_rules_exports_dir(&paths);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("创建导出目录失败: {e}"))?;
+    let filename = format!(
+        "user-rules-{}.json",
+        engine::ipc::commands::plan::now_secs()
+    );
+    let path = dir.join(filename);
+    std::fs::write(&path, json).map_err(|e| format!("写导出文件失败: {e}"))?;
+
+    let p = path.display().to_string();
+    eprintln!("[user_rules_export] 已导出 → {p}");
+    Ok(Envelope::ok(p))
+}
+
+/// `user_rules_import`：从用户给出的 JSON 文件路径导入规则，返回合并结果。
+///
+/// `policy` 控制撞车（库里已有同 pattern）时的行为：`"overwrite"` 用文件里的
+/// 新值覆盖，其余（含缺省）一律 `"skip"`——保守，永不覆盖用户已有数据。
+/// 新增的规则仍走完整校验（L1/L2、静态根、红线），不因导入而绕过。
+#[tauri::command]
+pub async fn user_rules_import(
+    file_path: String,
+    policy: String,
+    paths: tauri::State<'_, AppPaths>,
+) -> Result<Envelope<engine::ipc::commands::user_rules::ImportResult>, String> {
+    let policy = match policy.to_ascii_lowercase().as_str() {
+        "overwrite" => engine::ipc::commands::user_rules::ConflictPolicy::Overwrite,
+        _ => engine::ipc::commands::user_rules::ConflictPolicy::Skip,
+    };
+    let conn = engine::db::conn::open(&paths.data_root).map_err(|e| e.to_string())?;
+    let raw =
+        std::fs::read_to_string(&file_path).map_err(|e| format!("读文件 {file_path} 失败: {e}"))?;
+    let result = engine::ipc::commands::user_rules::import_from_json(&conn, &raw, policy)
+        .map_err(|e| e.to_string())?;
+    eprintln!(
+        "[user_rules_import] added={} skipped={} overwritten={} rejected={}",
+        result.added, result.skipped, result.overwritten, result.rejected
+    );
+    Ok(Envelope::ok(result))
 }
 
 // ===================== task-062：托盘 / 开机自启 =====================

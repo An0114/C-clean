@@ -444,6 +444,13 @@ impl<'conn, 'emitter> ScanOrchestrator<'conn, 'emitter> {
             self.run_software_cache(scripts_dir, &mut summary);
         }
 
+        // task-084 B5：Gradle / Maven 依赖缓存（独立开关的追加步骤，同 user_rules /
+        // software_cache 不算脚本）。开关默认关闭（fail-closed）——删错要重下几百 MB
+        // 依赖，绝不默认纳入扫描。
+        if !self.is_cancelled() && crate::prefs::get_dev_cache_gradle_maven(self.conn) {
+            self.run_gradle_maven_cache(&mut summary);
+        }
+
         // task-077：全部被跳过 = 用户选了没有扫描目标的盘，这是**合法结果**（0 项），
         // 不是失败。只有「计划内有模块、且一个都没成功」才算全失败。
         if !plan.is_empty() && summary.scripts_succeeded.is_empty() {
@@ -590,6 +597,47 @@ impl<'conn, 'emitter> ScanOrchestrator<'conn, 'emitter> {
             Err(e) => {
                 eprintln!("[orchestrator] user_rules 入库失败: {e}");
                 summary.scripts_failed.push("user_rules".to_string());
+            }
+        }
+    }
+
+    /// task-084 B5：跑 Gradle/Maven 依赖缓存扫描（独立开关，由 `run_all` 里读
+    /// `prefs.dev_cache_gradle_maven` 决定是否调用）。
+    ///
+    /// # 为什么与 software_cache 同款「不算脚本」语义
+    ///
+    /// 它是数据驱动 / 独立开关的追加步骤，不在 [`SCRIPTS`] 循环里，因此不占进度
+    /// 槽位、不 push 到 `scripts_succeeded` / `scripts_failed`——这样附加能力失败时
+    /// 不会让「5 个模块」的全失败判定被多一个来源误伤。只累加数量并记日志。
+    fn run_gradle_maven_cache(&self, summary: &mut OrchestratorSummary) {
+        let items = crate::scan::modules::dev_cache::scan_gradle_maven();
+
+        // 条目级盘过滤：与内置模块 / software_cache 同一口径。
+        let items: Vec<_> = items
+            .into_iter()
+            .filter(
+                |it| match (&self.drives, drive_letter_of_path(Path::new(&it.path))) {
+                    (Some(ds), Some(c)) => ds.iter().any(|x| x.eq_ignore_ascii_case(&c)),
+                    _ => true,
+                },
+            )
+            .collect();
+
+        eprintln!("[orchestrator] gradle_maven: {} 项", items.len());
+        if items.is_empty() {
+            return;
+        }
+
+        let runner =
+            ScanRunner::new(self.session_id, self.conn, self.emitter).with_percent_span(95, 100);
+        match runner.insert_batch(&items) {
+            Ok(s) => {
+                summary.total_items += s.items_inserted;
+                summary.total_bytes += s.total_bytes;
+                self.emit_progress(100, "gradle_maven", summary.total_items as u64);
+            }
+            Err(e) => {
+                eprintln!("[orchestrator] gradle_maven 入库失败，已跳过: {e}");
             }
         }
     }

@@ -27,6 +27,10 @@ const KEY_AUTO_CLEAN_L1: &str = "prefs.auto_clean_l1";
 const KEY_AUTO_CLEAN_L1_THRESHOLD: &str = "prefs.auto_clean_l1_threshold";
 /// 阈值默认 500 MB：正好是「值得为它弹一次 UAC 建还原点」的心理下限。
 pub const DEFAULT_AUTO_CLEAN_L1_THRESHOLD: i64 = 500 * 1024 * 1024;
+/// task-084 B5：dev_cache 模块是否同时识别 Gradle / Maven 缓存。**默认 false**——
+/// Gradle/Maven 依赖缓存动辄几百 MB，扫错会触发用户重下全部依赖，代价远超
+/// 普通 npm/pip 缓存，所以必须是用户显式拍板的独立开关（fail-closed）。
+const KEY_DEV_CACHE_GRADLE_MAVEN: &str = "prefs.dev_cache_gradle_maven";
 /// 上次自动扫描的时间戳（unix 秒）。**不暴露给前端**，只用于「是否到期」判断。
 const KEY_LAST_AUTO_SCAN_AT: &str = "prefs.last_auto_scan_at";
 
@@ -119,6 +123,23 @@ pub fn get_auto_clean_l1_threshold(conn: &Connection) -> i64 {
 
 pub fn set_auto_clean_l1_threshold(conn: &Connection, bytes: i64) -> Result<(), String> {
     write_setting(conn, KEY_AUTO_CLEAN_L1_THRESHOLD, &bytes.to_string())
+}
+
+// ===================== task-084 B5：dev_cache Gradle/Maven 独立开关 =====================
+//
+// 单独独立开关而不是并入 dev_cache 的总开关，原因是「删错的代价不对称」：
+// npm/pip 缓存清错了重下几分种就回来，Gradle/Maven 依赖缓存清错要重下几百 MB。
+// 所以即便 dev_cache 是开着的，Gradle/Maven 也要用户单独再确认一次。
+
+/// 读「dev_cache 是否同时识别 Gradle/Maven 缓存」。缺行 / 非法值 → false（保守）。
+pub fn get_dev_cache_gradle_maven(conn: &Connection) -> bool {
+    read_setting(conn, KEY_DEV_CACHE_GRADLE_MAVEN)
+        .map(|v| v == "1")
+        .unwrap_or(false)
+}
+
+pub fn set_dev_cache_gradle_maven(conn: &Connection, on: bool) -> Result<(), String> {
+    write_setting(conn, KEY_DEV_CACHE_GRADLE_MAVEN, if on { "1" } else { "0" })
 }
 
 /// 判断「现在是否该跑自动扫描」。
@@ -269,6 +290,10 @@ pub struct Prefs {
     /// 默认 500 MB。`serde(default)`：旧前端不传该字段时按默认，避免 `set_prefs` 崩。
     #[serde(default = "default_auto_clean_l1_threshold")]
     pub auto_clean_l1_threshold: i64,
+    /// task-084 B5：dev_cache 是否同时识别 Gradle/Maven 缓存。默认 false（fail-closed）——
+    /// 删错会触发重下几百 MB 依赖，必须显式开启。
+    #[serde(default)]
+    pub dev_cache_gradle_maven: bool,
 }
 
 /// `serde(default)` 的默认值：跟随系统。
@@ -294,6 +319,7 @@ impl Prefs {
             auto_scan_interval: get_auto_scan_interval(conn),
             auto_clean_l1: get_auto_clean_l1(conn),
             auto_clean_l1_threshold: get_auto_clean_l1_threshold(conn),
+            dev_cache_gradle_maven: get_dev_cache_gradle_maven(conn),
         }
     }
 }
@@ -855,5 +881,44 @@ mod tests {
             get_auto_clean_l1_threshold(&conn),
             DEFAULT_AUTO_CLEAN_L1_THRESHOLD
         );
+    }
+
+    // ============ task-084 B5：dev_cache Gradle/Maven 独立开关 ============
+
+    #[test]
+    fn dev_cache_gradle_maven_defaults_off() {
+        let (_dir, conn) = open_temp();
+        assert!(
+            !get_dev_cache_gradle_maven(&conn),
+            "缺行必须默认 false（绝不默认清 Gradle/Maven，删错要重下几百 MB）"
+        );
+        assert!(!Prefs::load(&conn).dev_cache_gradle_maven);
+    }
+
+    #[test]
+    fn dev_cache_gradle_maven_roundtrip_persists() {
+        let (_dir, conn) = open_temp();
+        set_dev_cache_gradle_maven(&conn, true).unwrap();
+        assert!(get_dev_cache_gradle_maven(&conn));
+        assert!(Prefs::load(&conn).dev_cache_gradle_maven);
+        // 重开应用（再读一次）
+        assert!(get_dev_cache_gradle_maven(&conn), "重开应用后开关必须保留");
+        set_dev_cache_gradle_maven(&conn, false).unwrap();
+        assert!(!get_dev_cache_gradle_maven(&conn));
+    }
+
+    #[test]
+    fn dev_cache_gradle_maven_illegal_value_falls_back_off() {
+        let (_dir, conn) = open_temp();
+        conn.execute(
+            "INSERT INTO settings (key, value, updated_at) VALUES ('prefs.dev_cache_gradle_maven', 'yes', 1)",
+            [],
+        )
+        .unwrap();
+        assert!(
+            !get_dev_cache_gradle_maven(&conn),
+            "脏数据必须 fail-closed 到 false"
+        );
+        assert!(!Prefs::load(&conn).dev_cache_gradle_maven);
     }
 }
