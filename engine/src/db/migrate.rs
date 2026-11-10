@@ -26,6 +26,7 @@ use crate::db::DbError;
 /// - v4（task-078）：新增 `user_rules` 表（用户自定义清理规则）；
 /// - v5（task-083）：新增 `software_inventory` 表（软件清单缓存，B1 落地）。
 /// - v6（task-084）：新增 `bigfiles_target_space` + `duplicate_files` 表（大文件地图 v2 缓存）。
+/// - v7（task-084）：新增 `draft_selections` 表（草稿暂存，用户勾选跨会话恢复）。
 ///
 /// # 为什么 v3 不是任务书说的 v2
 ///
@@ -39,6 +40,7 @@ static MIGRATIONS: &[(u32, &str)] = &[
     (4, include_str!("migrations/v4__user_rules.sql")),
     (5, include_str!("migrations/v5__software_awareness.sql")),
     (6, include_str!("migrations/v6__bigfiles_v2.sql")),
+    (7, include_str!("migrations/v7__draft.sql")),
 ];
 
 /// 对连接执行所有「版本号 > 当前 user_version」的迁移，返回迁移后的最新版本号。
@@ -98,8 +100,8 @@ mod tests {
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
         assert_eq!(
-            v, 6,
-            "最新版本应为 v6（v5 software_inventory / v6 bigfiles_v2）"
+            v, 7,
+            "最新版本应为 v7（v5 software_inventory / v6 bigfiles_v2 / v7 draft_selections）"
         );
     }
 
@@ -231,10 +233,10 @@ mod tests {
     #[test]
     fn migrate_is_idempotent() {
         // 重复打开同一库不该重复执行迁移（ALTER TABLE 第二次会报「列已存在」）。
-        // task-084：v6 已加入（bigfiles_v2），最新版本从 5 升到 6。
+        // task-084：v7 已加入（draft_selections），最新版本从 6 升到 7。
         let conn = migrated();
-        assert_eq!(migrate(&conn).unwrap(), 6);
-        assert_eq!(migrate(&conn).unwrap(), 6);
+        assert_eq!(migrate(&conn).unwrap(), 7);
+        assert_eq!(migrate(&conn).unwrap(), 7);
     }
 
     #[test]
@@ -368,5 +370,43 @@ mod tests {
         };
         assert!(ins("A").is_ok());
         assert!(ins("B").is_err(), "重复 registry_key 必须被唯一索引拒绝");
+    }
+
+    // ===== task-084 C2：v7 draft_selections =====
+
+    #[test]
+    fn v7_creates_draft_selections_table() {
+        let conn = migrated();
+        let mut stmt = conn
+            .prepare("PRAGMA table_xinfo(draft_selections)")
+            .unwrap();
+        let cols: Vec<String> = stmt
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        for want in ["id", "scan_id", "item_path", "selected_at"] {
+            assert!(
+                cols.iter().any(|c| c == want),
+                "draft_selections 缺列 {want}: {cols:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn v7_item_path_is_unique() {
+        // 同一路径只允许一行（upsert 语义），重复插入必须被唯一索引拒绝
+        let conn = migrated();
+        let ins = |p: &str| {
+            conn.execute(
+                "INSERT INTO draft_selections (item_path, selected_at) VALUES (?1, 1000)",
+                [p],
+            )
+        };
+        assert!(ins(r"C:\Users\A\Temp\x.tmp").is_ok());
+        assert!(
+            ins(r"C:\Users\A\Temp\x.tmp").is_err(),
+            "重复 item_path 必须被唯一索引拒绝"
+        );
     }
 }

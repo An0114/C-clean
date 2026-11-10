@@ -22,7 +22,7 @@
 // %TEMP% 里被锁住的小文件）在 UI 上根本找不到 —— 走查 G2 缺陷。现在改为
 // `{ page, pageSize }` 分页入参 + 底部翻页栏，翻页时清空勾选（避免跨页误删）。
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { formatBytes } from "../utils/formatBytes";
 import { api, apiRaw } from "../utils/invoke";
@@ -448,6 +448,7 @@ export default function Items({
   // 提示文案留在本地 state：载荷被清掉之后用户还得看得到「勾选了几项、几条没找到」。
   useEffect(() => {
     if (!planApply || planApply.itemIds.length === 0) return;
+    planApplied.current = true;
     setSelected(new Set(planApply.itemIds));
     setPlanNotice(planApply.notice);
     setPreview(null); // 勾选变了，旧预览失效（与 C8 的处理一致）
@@ -458,6 +459,62 @@ export default function Items({
   useEffect(() => {
     onSelectionChange?.(Array.from(selected));
   }, [selected, onSelectionChange]);
+
+  // task-084 C2：草稿暂存。三件事在一个开关（draftHydrated）下串起来：
+  //   1. 挂载首拉完成后读回上次勾选（draft_load），按路径回当前页 rows 恢复勾选；
+  //   2. 恢复完成之后，任何 selected 变更都即时覆写草稿（draft_save）；
+  //   3. 清理成功后清空草稿（draft_clear，在 runCleanup 里）。
+  // 为什么必须这套开关：首拉完成前 selected 是空的，若不 gate，那一次「空勾选」变更
+  // 会在恢复拖着回写之前先把草稿覆写成空——用户重开的勾选就丢了。
+  //
+  // 恢复范围说明（受分页约束的取舍）：草稿存的是**路径**，而本页只拉第一页，
+  // 恢复只匹配当前 rows（第一页）里存在、且路径在草稿中的项。第一页之外的历史勾选
+  // 页面上本来就看不到（用户需翻页手动复核），不强行跨页恢复，避免「勾了却看不见」
+  // 的隐性状态。
+  const draftHydrated = useRef(false);
+  // task-084 C2：本会话是否已应用过「方案」。应用方案的勾选是用户**当下**的选择，
+  // 优先级高于旧草稿——若直接按旧草稿恢复，会把刚套好的方案勾选覆盖掉。
+  const planApplied = useRef(false);
+
+  useEffect(() => {
+    if (draftHydrated.current) return;
+    // 等首拉真正落地（status 变 ok 且 rows 非空）再做恢复。
+    if (status !== "ok" || rows.length === 0) return;
+    // 已应用方案的会话不再恢复旧草稿（方案勾选优先），但标记已化，后续变更照常写草稿。
+    if (planApplied.current) {
+      draftHydrated.current = true;
+      return;
+    }
+    (async () => {
+      try {
+        const list = await api<Array<{ itemPath: string }> | null>("draft_load", {});
+        if (!Array.isArray(list)) return;
+        const draftPaths = new Set(list.map((d) => d.itemPath));
+        const restored = new Set(
+          rows.filter((r) => draftPaths.has(r.path)).map((r) => r.id),
+        );
+        if (restored.size > 0) {
+          setSelected(restored);
+          setMsg(`已恢复上次会话的 ${restored.size} 项勾选`);
+        }
+      } catch {
+        // 读失败 fail-closed：不恢复、也不打扰用户（草稿是低价值状态）。
+      } finally {
+        draftHydrated.current = true;
+      }
+    })();
+  }, [status, rows]);
+
+  // task-084 C2：恢复完成后，勾选一变就即时覆写整张草稿。
+  useEffect(() => {
+    if (!draftHydrated.current) return;
+    const paths = rows.filter((r) => selected.has(r.id)).map((r) => r.path);
+    // 后端是「清空 + 重写」，空 paths = 清草稿（用户手动取消全部勾选）。
+    void api<null>("draft_save", { itemPaths: paths }).catch((e) => {
+      // 写失败 fail-closed：丢一次草稿不阻塞页面，下次勾选仍会重写。
+      console.error("draft_save failed", e);
+    });
+  }, [rows, selected]);
 
   /**
    * 翻页：越界直接忽略；翻页时清空勾选。
@@ -581,6 +638,8 @@ export default function Items({
           summary,
         });
         setSelected(new Set());
+        // task-084 C2：清理落地后草稿作废，清掉（避免下次重开又恢复出已删路径）。
+        void api<null>("draft_clear", {}).catch(() => {});
         await load();
       } catch (e) {
         setResult({

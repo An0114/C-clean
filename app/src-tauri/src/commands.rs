@@ -1707,3 +1707,44 @@ pub async fn auto_scan_status(
         }
     }
 }
+
+// ===================== task-084 C2：草稿暂存 =====================
+//
+// 三条命令对应草稿的三条核心语义：
+//   - `draft_save`：勾选变更时**即时**覆盖写整张快照（重开 app 恢复的依据）；
+//   - `draft_load`：重开 app 时读回上次勾选（前端据此恢复勾选态）；
+//   - `draft_clear`：清理完成 / 用户手动取消勾选后清空。
+//
+// 出错一律走 `Err(String)`（信封的 code 会是 5001），草稿是用户低价值状态，
+// 读写失败不该让前端崩溃——前端会 fail-closed 丢一次勾选。
+
+/// `draft_save`：覆盖保存当前勾选快照。`item_paths` = 本轮选中的所有路径。
+#[tauri::command(rename_all = "camelCase")]
+pub async fn draft_save(
+    item_paths: Vec<String>,
+    scan_id: Option<i64>,
+    paths: tauri::State<'_, AppPaths>,
+) -> Result<Envelope<()>, String> {
+    let conn = engine::db::conn::open(&paths.data_root).map_err(|e| e.to_string())?;
+    engine::ipc::commands::draft::replace_selections(&conn, scan_id, &item_paths)
+        .map_err(|e| e.to_string())?;
+    Ok(Envelope::ok(()))
+}
+
+/// `draft_load`：读回全部草稿勾选（按勾选时间升序）。
+#[tauri::command]
+pub async fn draft_load(
+    paths: tauri::State<'_, AppPaths>,
+) -> Result<Envelope<Vec<engine::ipc::commands::draft::DraftSelection>>, String> {
+    let conn = engine::db::conn::open(&paths.data_root).map_err(|e| e.to_string())?;
+    let list = engine::ipc::commands::draft::load_selections(&conn).map_err(|e| e.to_string())?;
+    Ok(Envelope::ok(list))
+}
+
+/// `draft_clear`：清空草稿（清理完成 / 手动取消后调用）。
+#[tauri::command]
+pub async fn draft_clear(paths: tauri::State<'_, AppPaths>) -> Result<Envelope<()>, String> {
+    let conn = engine::db::conn::open(&paths.data_root).map_err(|e| e.to_string())?;
+    engine::ipc::commands::draft::clear_selections(&conn).map_err(|e| e.to_string())?;
+    Ok(Envelope::ok(()))
+}

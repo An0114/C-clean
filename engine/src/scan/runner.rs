@@ -146,9 +146,14 @@ impl<'conn, 'emitter> ScanRunner<'conn, 'emitter> {
                     size_bytes,
                     risk_level,
                 }) => {
-                    if let Err(e) =
-                        self.insert_item(&module_code, &category, &path, size_bytes, risk_level)
-                    {
+                    if let Err(e) = self.insert_item(
+                        &module_code,
+                        &category,
+                        &path,
+                        size_bytes,
+                        risk_level,
+                        None,
+                    ) {
                         // DB 错视为致命：不继续往表里灌半份数据。
                         return Err(RunError::Db(e));
                     }
@@ -226,6 +231,7 @@ impl<'conn, 'emitter> ScanRunner<'conn, 'emitter> {
                 &it.path,
                 it.size_bytes,
                 it.risk_level,
+                it.username.as_deref(),
             )?;
             items_inserted += 1;
             // 饱和加法：文件大小之和理论上不会溢出，但扫描结果来自外部文件系统，
@@ -265,6 +271,7 @@ impl<'conn, 'emitter> ScanRunner<'conn, 'emitter> {
         path: &str,
         size_bytes: i64,
         risk_level: i64,
+        username: Option<&str>,
     ) -> Result<(), rusqlite::Error> {
         let risk_text = match risk_level {
             0 => "L0",
@@ -275,12 +282,46 @@ impl<'conn, 'emitter> ScanRunner<'conn, 'emitter> {
                 "L2"
             }
         };
+        // task-084 C1：用户名写进 extra JSON 列（`cleanup_item` 的既有扩展槽位）。
+        // 有用户名 → `{"username":"Bob"}`；没有 → 写 `'null'` 与「没扫跨用户」区分，
+        // 但避免 `{"username":null}` 这种半吊子 JSON，直接 NULL。
+        let extra =
+            username.map(|u| format!(r#"{{"username":{u_json}}}"#, u_json = Self::json_escape(u)));
         self.conn.execute(
-            "INSERT INTO cleanup_item (session_id, module_code, category, path, size_bytes, risk_level, description)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, '')",
-            rusqlite::params![self.session_id, module_code, category, path, size_bytes, risk_text],
+            "INSERT INTO cleanup_item (session_id, module_code, category, path, size_bytes, risk_level, description, extra)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, '', ?7)",
+            rusqlite::params![
+                self.session_id,
+                module_code,
+                category,
+                path,
+                size_bytes,
+                risk_text,
+                extra
+            ],
         )?;
         Ok(())
+    }
+
+    /// 把用户名转义后嵌进 JSON 字符串字面量（`extra` 列存的是一段 JSON）。
+    ///
+    /// Windows 用户名可以含 `"` / `\` / 控制字符，直接 `format!` 会拼坏 JSON。
+    fn json_escape(s: &str) -> String {
+        s.chars()
+            .fold(String::with_capacity(s.len() + 8), |mut acc, c| {
+                match c {
+                    '"' => acc.push_str("\\\""),
+                    '\\' => acc.push_str("\\\\"),
+                    '\n' => acc.push_str("\\n"),
+                    '\r' => acc.push_str("\\r"),
+                    '\t' => acc.push_str("\\t"),
+                    c if (c as u32) < 0x20 => {
+                        acc.push_str(&format!("\\u{:04x}", c as u32));
+                    }
+                    c => acc.push(c),
+                }
+                acc
+            })
     }
 }
 

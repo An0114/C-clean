@@ -451,6 +451,17 @@ impl<'conn, 'emitter> ScanOrchestrator<'conn, 'emitter> {
             self.run_gradle_maven_cache(&mut summary);
         }
 
+        // task-084 C1：跨用户缓存扫描（枚举 C:\Users\*，逐个可读用户跑 Temp 缓存）。
+        //
+        // 与 user_rules / software_cache 同款「不算脚本」语义：附加能力，不在
+        // [`SCRIPTS`] 循环里，不占进度槽位，失败/跳过不影响整次扫描的成败判定。
+        // 完全对齐任务书 §C1 的安全护栏：只扫 `cache_readable == true` 的用户
+        // （其他用户默认被 Windows DACL 挡在 AppData 之外），权限不足的那部分
+        // 在枚举阶段就跳过并记了日志。
+        if !self.is_cancelled() {
+            self.run_multi_user_cache(&mut summary);
+        }
+
         // task-077：全部被跳过 = 用户选了没有扫描目标的盘，这是**合法结果**（0 项），
         // 不是失败。只有「计划内有模块、且一个都没成功」才算全失败。
         if !plan.is_empty() && summary.scripts_succeeded.is_empty() {
@@ -638,6 +649,87 @@ impl<'conn, 'emitter> ScanOrchestrator<'conn, 'emitter> {
             }
             Err(e) => {
                 eprintln!("[orchestrator] gradle_maven 入库失败，已跳过: {e}");
+            }
+        }
+    }
+
+    /// task-084 C1：跨用户 Temp 缓存扫描。
+    ///
+    /// # 为什么「不算脚本」
+    ///
+    /// 与 [`Self::run_user_rules`] / [`Self::run_software_cache`] 同一口径：数据驱动
+    /// 的附加步骤，不占进度槽位、不 push 到 `scripts_succeeded` / `scripts_failed`，
+    /// 失败也不影响「5 个模块」的全失败判定。
+    ///
+    /// # 安全模型（对齐任务书 §C1）
+    ///
+    /// [`enumerate_user_profiles`] 已经帮我们把每个用户按 `cache_readable` 分好类：
+    ///
+    /// - 当前用户 + 能读的用户（同组/管理员）：`cache_readable == true`，扫；
+    /// - 其他用户（默认被 DACL 挡）：`cache_readable == false`，**跳过**并记日志。
+    ///
+    /// 只扫 Windows 兜底存在的 `AppData\Local\Temp`：这是「用户级缓存」里权限最
+    /// 宽松、风险最低的一类，跨用户时即使能读，也只碰它——不读其他用户的私有
+    /// 浏览器 Profile / AppData 深层，那是任务书明确禁止的「私有 AppData」。
+    /// 产出的条目统一带 `username`，落进 `cleanup_item.extra` 供前端分组展示。
+    fn run_multi_user_cache(&self, summary: &mut OrchestratorSummary) {
+        let profiles = enumerate_user_profiles();
+        if profiles.is_empty() {
+            return;
+        }
+        // 当前用户的 Temp 已经被 scan_temp 模块扫过，跨用户步骤跳过自己，避免重复。
+        let current = std::env::var("USERNAME").unwrap_or_default();
+
+        let mut items: Vec<crate::scan::modules::ScanItem> = Vec::new();
+        let mut skipped: Vec<&str> = Vec::new();
+        for p in &profiles {
+            if p.username == current {
+                continue;
+            }
+            let temp = std::path::Path::new(&p.root)
+                .join("AppData")
+                .join("Local")
+                .join("Temp");
+            // 枚举已判定 cache_readable，这里只是路径兜底。列目录失败的直接跳过。
+            let found = match std::fs::read_dir(&temp) {
+                Ok(_) => crate::scan::modules::scan_dir(
+                    &temp,
+                    "temp",
+                    "user_temp",
+                    1, // L1：Temp 目录下的缓存，可安全清理
+                ),
+                Err(_) => {
+                    skipped.push(&p.username);
+                    Vec::new()
+                }
+            };
+            items.extend(
+                found
+                    .into_iter()
+                    // 标注用户名：前端据此把条目归到对应 Profile 下
+                    .map(|it| it.with_username(p.username.clone())),
+            );
+        }
+
+        eprintln!(
+            "[orchestrator] multi_user: {} 个用户 / 当前跳过自己 / 权限不足跳过 {:?} → {} 项",
+            profiles.len(),
+            skipped,
+            items.len()
+        );
+        if items.is_empty() {
+            return;
+        }
+        let runner =
+            ScanRunner::new(self.session_id, self.conn, self.emitter).with_percent_span(95, 100);
+        match runner.insert_batch(&items) {
+            Ok(s) => {
+                summary.total_items += s.items_inserted;
+                summary.total_bytes += s.total_bytes;
+                self.emit_progress(100, "multi_user", summary.total_items as u64);
+            }
+            Err(e) => {
+                eprintln!("[orchestrator] multi_user 入库失败，已跳过: {e}");
             }
         }
     }
@@ -935,6 +1027,103 @@ fn cancel_requested(flag: &Option<std::sync::Arc<std::sync::atomic::AtomicBool>>
     flag.as_ref()
         .map(|c| c.load(std::sync::atomic::Ordering::Relaxed))
         .unwrap_or(false)
+}
+
+// ===================== task-084 C1：多用户 Profile =====================
+//
+// 跨用户扫描的正确语义（对齐任务书 §C1）：
+//
+// 1. **枚举**：列出 `C:\Users\*` 下所有「有 Desktop 子目录」的用户目录；
+// 2. **跳过系统保留目录**（Public / Default / Default User / All Users 等）：它们
+//    不是真实用户，扫了只会灌噪音；
+// 3. **安全护栏**：只扫「当前用户 + 其他用户的公开部分」。Windows 的 `AppData`
+//    （尤其是 `AppData\Local`）默认带 DACL 拒绝其他用户读取，跨用户扫缓存时要
+//    逐个判断可读性——读不了的**跳过并在汇总里记录**，而不是报错或假装扫了；
+// 4. **结果带 username**：跨用户扫出的条目在 `ScanItem.username` 里标注，最终
+//    落进 `cleanup_item.extra` 的 `{"username":"..."}`。
+
+/// 一个可扫描的用户 Profile（task-084 C1）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UserProfile {
+    /// 用户名（`C:\Users\<username>` 里的 `<username>`）。
+    pub username: String,
+    /// 用户目录绝对路径（如 `C:\Users\Bob`）。
+    pub root: String,
+    /// 该用户目录下是否有 `Desktop` 子目录（枚举的硬性过滤条件）。
+    ///
+    /// 为什么用它当「是不是真实用户」的依据：Windows 每个真实用户默认都有桌面；
+    /// 系统保留目录（Public / Default）要么没有、要么是模板。有桌面 → 大概率是
+    /// 还在用（或曾登录）的真实用户，值得尝试扫。
+    pub has_desktop: bool,
+    /// 该用户缓存目录**是否可读**（`AppData\Local` 存在且当前进程能列目录）。
+    ///
+    /// - `true`：可以扫（通常是当前用户自己，或管理员/同一组的其他用户）；
+    /// - `false`：权限不足，跨用户扫**跳过**并记录（安全护栏 §C1）。
+    ///   单独提成字段而不是靠外层 `read_dir` 返回错误，是为了让「枚举」和
+    ///   「可扫性」双双可单测断言，而不是只靠日志。
+    pub cache_readable: bool,
+}
+
+/// 「系统保留目录」黑名单：这些 `C:\Users\*` 下的目录不是真实用户，扫了只是
+/// 噪音（而且 `Default User` / `All Users` 还常是 junction，`read_dir` 会绕圈）。
+const SYSTEM_RESERVED_PROFILES: &[&str] = &[
+    "Public",
+    "Default",
+    "Default User",
+    "All Users",
+    "LocalService",
+    "NetworkService",
+];
+
+/// 枚举 `C:\Users\*` 下所有用户 Profile（task-084 C1）。
+///
+/// 返回**全部**有 Desktop 的目录（含当前用户），并按用户名排序保持确定性。
+/// 是否真的去扫由调用方按 `cache_readable` 决定。真正 `read_dir` C:\Users 失败
+/// （几乎不可能）时返回空表——多用户扫描是附加能力，失败不该让主扫描报错。
+pub fn enumerate_user_profiles() -> Vec<UserProfile> {
+    let users_root = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".to_string());
+    let root_str = format!(r"{users_root}\Users");
+    let root = std::path::Path::new(&root_str);
+    if !root.is_dir() {
+        // 系统不在预期位置（例如装了多个系统盘扫描别的盘），跳过而非报错。
+        eprintln!("[profiles] {root:?} 不是目录，跳过跨用户扫描");
+        return Vec::new();
+    }
+    collect_profiles_from(root)
+}
+
+/// task-084 C1：从指定根目录枚举「有 Desktop 的真实用户目录」（纯函数，可单测）。
+///
+/// 从 [`enumerate_user_profiles`] 抽出来并把根目录做成参数，就是为了能拿临时目录
+/// 直接测枚举/过滤/排序逻辑——真正的 `C:\Users` 在 CI 上不存在，没法断言。
+fn collect_profiles_from(root: &std::path::Path) -> Vec<UserProfile> {
+    let mut out: Vec<UserProfile> = std::fs::read_dir(root)
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter_map(|e| e.file_type().ok().filter(|t| t.is_dir()).map(|_| e))
+                .map(|e| {
+                    let username = e.file_name().to_string_lossy().to_string();
+                    let dir = e.path();
+                    let has_desktop = dir.join("Desktop").is_dir();
+                    // 安全护栏：能列 AppData\Local 才算「可扫」；列不出来（权限不足）就跳过。
+                    let cache_readable =
+                        std::fs::read_dir(dir.join("AppData").join("Local")).is_ok();
+                    UserProfile {
+                        username,
+                        root: dir.to_string_lossy().to_string(),
+                        has_desktop,
+                        cache_readable,
+                    }
+                })
+                .filter(|p| {
+                    p.has_desktop && !SYSTEM_RESERVED_PROFILES.contains(&p.username.as_str())
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    out.sort_by(|a, b| a.username.cmp(&b.username));
+    out
 }
 
 #[cfg(test)]
@@ -1302,5 +1491,86 @@ mod tests {
         } else {
             println!("② 跳过：本机只有一个固定盘");
         }
+    }
+
+    // ===== task-084 C1：多用户 Profile 枚举 =====
+
+    /// 造一个临时 `Users` 根：给定用户名列表，各建 `Desktop`；`readable` 的用户
+    /// 再补一个 `AppData\Local`（可读判据）。
+    fn make_users_root(names: &[&str], readable: &[&str]) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        for name in names {
+            let u = dir.path().join(name);
+            std::fs::create_dir_all(u.join("Desktop")).unwrap();
+        }
+        for name in readable {
+            let u = dir.path().join(name);
+            std::fs::create_dir_all(u.join("AppData").join("Local")).unwrap();
+        }
+        dir
+    }
+
+    #[test]
+    fn profiles_include_only_desktop_users() {
+        // 只有有 Desktop 的目录才算真实用户；没有 Desktop 的（例如纯模板目录）不算
+        let dir = make_users_root(&["Alice", "Ghost", "Bob"], &[]);
+        std::fs::create_dir(dir.path().join("GhostNotAUser")).unwrap();
+        // Ghost 只有 Desktop 没有 AppData（可读性 false），Alice/Bob 同样没建 Local
+        let profiles = collect_profiles_from(dir.path());
+        let names: Vec<&str> = profiles.iter().map(|p| p.username.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["Alice", "Bob", "Ghost"],
+            "都应枚举到（有 Desktop），且按名字排序"
+        );
+        // GhostNotAUser 没有 Desktop，必须被过滤掉
+        assert!(!names.contains(&"GhostNotAUser"));
+    }
+
+    #[test]
+    fn profiles_skip_system_reserved() {
+        // Public / Default 等系统保留目录不是真实用户，扫了只会灌噪音
+        let dir = make_users_root(
+            &["Public", "Default", "Default User", "All Users", "Real"],
+            &["Public", "Default", "Default User", "All Users", "Real"],
+        );
+        let profiles = collect_profiles_from(dir.path());
+        let names: Vec<&str> = profiles.iter().map(|p| p.username.as_str()).collect();
+        assert_eq!(names, vec!["Real"], "系统保留目录必须全被排除: {names:?}");
+    }
+
+    #[test]
+    fn profiles_flag_cache_readability() {
+        // cache_readable 只反映 AppData\Local 能否列目录——能读的才算可扫
+        let dir = make_users_root(&["Alice", "Bob"], &["Alice"]);
+        let profiles = collect_profiles_from(dir.path());
+        let alice = profiles.iter().find(|p| p.username == "Alice").unwrap();
+        let bob = profiles.iter().find(|p| p.username == "Bob").unwrap();
+        assert!(alice.cache_readable, "Alice 有 AppData\\Local，应可扫");
+        assert!(!bob.cache_readable, "Bob 没有 AppData\\Local，应标记不可扫");
+        // root 是绝对路径、且带用户名
+        assert!(alice.root.ends_with("Alice"));
+    }
+
+    #[test]
+    fn profiles_sort_is_deterministic() {
+        // 枚举顺序不保证，但产出必须按用户名排序——单测和 UI 分组都依赖确定性
+        let dir = make_users_root(&["Zoe", "Amy", "Ken"], &[]);
+        let profiles = collect_profiles_from(dir.path());
+        let names: Vec<&str> = profiles.iter().map(|p| p.username.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["Amy", "Ken", "Zoe"],
+            "必须按用户名升序，避免顺序抖动"
+        );
+    }
+
+    #[test]
+    fn with_username_tags_scan_item() {
+        let it = crate::scan::modules::ScanItem::new("temp", "user_temp", "C:/x".into(), 1, 1);
+        assert_eq!(it.username, None, "默认不标注（当前用户内置模块）");
+        let tagged = it.clone().with_username("Bob");
+        assert_eq!(tagged.username.as_deref(), Some("Bob"));
+        assert_eq!(it.username, None, "with_username 不得原地改原条目");
     }
 }

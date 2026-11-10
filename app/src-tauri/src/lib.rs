@@ -191,7 +191,11 @@ pub fn run() {
             commands::plan_delete,
             commands::plan_apply,
             commands::plan_export,
-            commands::plan_import
+            commands::plan_import,
+            // task-084 C2：草稿暂存——勾选跨会话持久化 / 恢复 / 清空
+            commands::draft_save,
+            commands::draft_load,
+            commands::draft_clear
         ])
         .run(tauri::generate_context!())
         .expect("error while running C-Disk Cleaner");
