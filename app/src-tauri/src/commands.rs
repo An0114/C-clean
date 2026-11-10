@@ -34,7 +34,7 @@ use crate::progress::ProgressState;
 ///
 /// rules_dir 由 AppPaths 在 setup 时定位（prod 从 bundled 复制到 data_root，
 /// dev 回退仓库根 rules/）。加载失败一律保守返回 Err，由调用方转 5001。
-fn load_external_deny(rules_dir: &Path) -> Result<Vec<String>, String> {
+pub(crate) fn load_external_deny(rules_dir: &Path) -> Result<Vec<String>, String> {
     let loaded = load_rules(rules_dir).map_err(|e| format!("rules load failed: {e}"))?;
     Ok(external_deny_list(&loaded))
 }
@@ -196,14 +196,14 @@ pub async fn cleanup_dry_run(
     ))
 }
 
-/// 定位提权 exe（task-062）。
+/// 定位提权 exe（task-062）。`pub(crate)` 供 task-084 B1 的 auto_scan 复用。
 ///
 /// 三个候选，按优先级：
 /// 1. **安装态**：`bundle.resources` 把 `cclean-elevation.exe` 映射到安装目录**根**，
 ///    而 `scripts_dir` 就是 `<resource>/scripts`，所以 `parent()` 就是 resource 根；
 /// 2. **本机打包后**：workspace 根的 `target/release/`；
 /// 3. **dev**：`target/debug/`。
-fn locate_elevation_exe(paths: &AppPaths) -> Option<std::path::PathBuf> {
+pub(crate) fn locate_elevation_exe(paths: &AppPaths) -> Option<std::path::PathBuf> {
     if let Some(root) = paths.scripts_dir.parent() {
         let p = root.join("cclean-elevation.exe");
         if p.is_file() {
@@ -859,6 +859,17 @@ pub async fn set_prefs(
     }
     if let Err(e) = engine::prefs::set_auto_scan_interval(&conn, &prefs.auto_scan_interval) {
         eprintln!("[set_prefs] write auto_scan_interval: {e}");
+        return Ok(Envelope::err(INTERNAL));
+    }
+    // task-084 B1：自动扫描完成后自动清理 L1。bool，与 auto_scan_enabled 同层。
+    if let Err(e) = engine::prefs::set_auto_clean_l1(&conn, prefs.auto_clean_l1) {
+        eprintln!("[set_prefs] write auto_clean_l1: {e}");
+        return Ok(Envelope::err(INTERNAL));
+    }
+    // B1 附表：预估释放阈值。≤0 由 get 回退默认，这里直接落库原值。
+    if let Err(e) = engine::prefs::set_auto_clean_l1_threshold(&conn, prefs.auto_clean_l1_threshold)
+    {
+        eprintln!("[set_prefs] write auto_clean_l1_threshold: {e}");
         return Ok(Envelope::err(INTERNAL));
     }
     Ok(Envelope::ok(engine::prefs::Prefs::load(&conn)))

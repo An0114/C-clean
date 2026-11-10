@@ -19,6 +19,14 @@ const KEY_RESTART_WHITELIST: &str = "prefs.restart_whitelist";
 const KEY_THEME: &str = "prefs.theme";
 const KEY_AUTO_SCAN_ENABLED: &str = "prefs.auto_scan_enabled";
 const KEY_AUTO_SCAN_INTERVAL: &str = "prefs.auto_scan_interval";
+/// task-084 B1：自动扫描完成后是否自动清理 L1 安全项。**默认 false**——自动删除
+/// 是「用户不在场时执行不可逆操作」，必须显式拍板开启，绝不默认。
+const KEY_AUTO_CLEAN_L1: &str = "prefs.auto_clean_l1";
+/// B1 附表：自动清理的「预估释放阈值」（字节）。**预估释放 < 阈值就跳过本轮**——
+/// 建一次系统还原点要弹 UAC + 等几十秒，为清出几十 MB 不值得。
+const KEY_AUTO_CLEAN_L1_THRESHOLD: &str = "prefs.auto_clean_l1_threshold";
+/// 阈值默认 500 MB：正好是「值得为它弹一次 UAC 建还原点」的心理下限。
+pub const DEFAULT_AUTO_CLEAN_L1_THRESHOLD: i64 = 500 * 1024 * 1024;
 /// 上次自动扫描的时间戳（unix 秒）。**不暴露给前端**，只用于「是否到期」判断。
 const KEY_LAST_AUTO_SCAN_AT: &str = "prefs.last_auto_scan_at";
 
@@ -84,6 +92,33 @@ pub fn get_last_auto_scan_at(conn: &Connection) -> i64 {
 
 pub fn set_last_auto_scan_at(conn: &Connection, ts: i64) -> Result<(), String> {
     write_setting(conn, KEY_LAST_AUTO_SCAN_AT, &ts.to_string())
+}
+
+// ===================== task-084 B1：自动清理 L1 =====================
+
+/// 读「自动扫描完成后自动清理 L1」开关。缺行 / 非法值 → false（保守）。
+pub fn get_auto_clean_l1(conn: &Connection) -> bool {
+    read_setting(conn, KEY_AUTO_CLEAN_L1)
+        .map(|v| v == "1")
+        .unwrap_or(false)
+}
+
+pub fn set_auto_clean_l1(conn: &Connection, on: bool) -> Result<(), String> {
+    write_setting(conn, KEY_AUTO_CLEAN_L1, if on { "1" } else { "0" })
+}
+
+/// 读预估释放阈值（字节）。缺行 / 非数值 / ≤ 0 → 默认 500 MB。
+/// ≤0 视为「默认」而非「关掉」：阈值是低级配置，用户配置 0 想表达的大概率是
+/// 「回到默认」，而不是「任何大小都清」——把 0 解释成最小阈值会诱导清垃圾。
+pub fn get_auto_clean_l1_threshold(conn: &Connection) -> i64 {
+    read_setting(conn, KEY_AUTO_CLEAN_L1_THRESHOLD)
+        .and_then(|v| v.parse::<i64>().ok())
+        .filter(|&b| b > 0)
+        .unwrap_or(DEFAULT_AUTO_CLEAN_L1_THRESHOLD)
+}
+
+pub fn set_auto_clean_l1_threshold(conn: &Connection, bytes: i64) -> Result<(), String> {
+    write_setting(conn, KEY_AUTO_CLEAN_L1_THRESHOLD, &bytes.to_string())
 }
 
 /// 判断「现在是否该跑自动扫描」。
@@ -227,6 +262,13 @@ pub struct Prefs {
     /// 自动扫描间隔：`daily` / `weekly` / `monthly`。默认 `daily`。
     #[serde(default = "default_scan_interval")]
     pub auto_scan_interval: String,
+    /// task-084 B1：自动扫描完成后是否自动清理 L1 安全项。默认 false——绝不默认自动删除。
+    #[serde(default)]
+    pub auto_clean_l1: bool,
+    /// B1 附表：预估释放阈值（字节）。预估释放 < 阈值就跳过本轮。
+    /// 默认 500 MB。`serde(default)`：旧前端不传该字段时按默认，避免 `set_prefs` 崩。
+    #[serde(default = "default_auto_clean_l1_threshold")]
+    pub auto_clean_l1_threshold: i64,
 }
 
 /// `serde(default)` 的默认值：跟随系统。
@@ -238,6 +280,10 @@ fn default_scan_interval() -> String {
     SCAN_DAILY.to_string()
 }
 
+fn default_auto_clean_l1_threshold() -> i64 {
+    DEFAULT_AUTO_CLEAN_L1_THRESHOLD
+}
+
 impl Prefs {
     pub fn load(conn: &Connection) -> Self {
         Self {
@@ -246,6 +292,8 @@ impl Prefs {
             theme: get_theme(conn),
             auto_scan_enabled: get_auto_scan_enabled(conn),
             auto_scan_interval: get_auto_scan_interval(conn),
+            auto_clean_l1: get_auto_clean_l1(conn),
+            auto_clean_l1_threshold: get_auto_clean_l1_threshold(conn),
         }
     }
 }
@@ -722,5 +770,90 @@ mod tests {
         assert_eq!(get_last_auto_scan_at(&conn), 0, "缺行 = 从没扫过");
         set_last_auto_scan_at(&conn, 1_234_567).unwrap();
         assert_eq!(get_last_auto_scan_at(&conn), 1_234_567);
+    }
+
+    // ============ task-084 B1：自动清理 L1 ============
+
+    #[test]
+    fn auto_clean_l1_defaults_off() {
+        let (_dir, conn) = open_temp();
+        assert!(
+            !get_auto_clean_l1(&conn),
+            "缺行必须默认 false（绝不默认自动删除）"
+        );
+        assert!(!Prefs::load(&conn).auto_clean_l1);
+    }
+
+    #[test]
+    fn auto_clean_l1_roundtrip_persists() {
+        let (_dir, conn) = open_temp();
+        set_auto_clean_l1(&conn, true).unwrap();
+        assert!(get_auto_clean_l1(&conn));
+        assert!(Prefs::load(&conn).auto_clean_l1);
+        // 重开应用（再读一次）
+        assert!(get_auto_clean_l1(&conn), "重开应用后开关必须保留");
+        set_auto_clean_l1(&conn, false).unwrap();
+        assert!(!get_auto_clean_l1(&conn));
+    }
+
+    #[test]
+    fn auto_clean_l1_illegal_value_falls_back_off() {
+        let (_dir, conn) = open_temp();
+        conn.execute(
+            "INSERT INTO settings (key, value, updated_at) VALUES ('prefs.auto_clean_l1', 'yes', 1)",
+            [],
+        )
+        .unwrap();
+        assert!(!get_auto_clean_l1(&conn), "脏数据必须 fail-closed 到 false");
+    }
+
+    #[test]
+    fn auto_clean_l1_threshold_defaults_when_missing() {
+        let (_dir, conn) = open_temp();
+        assert_eq!(
+            get_auto_clean_l1_threshold(&conn),
+            DEFAULT_AUTO_CLEAN_L1_THRESHOLD
+        );
+        assert_eq!(
+            Prefs::load(&conn).auto_clean_l1_threshold,
+            DEFAULT_AUTO_CLEAN_L1_THRESHOLD
+        );
+    }
+
+    #[test]
+    fn auto_clean_l1_threshold_roundtrip_persists() {
+        let (_dir, conn) = open_temp();
+        set_auto_clean_l1_threshold(&conn, 2 * 1024 * 1024 * 1024).unwrap();
+        assert_eq!(get_auto_clean_l1_threshold(&conn), 2 * 1024 * 1024 * 1024);
+        assert_eq!(
+            Prefs::load(&conn).auto_clean_l1_threshold,
+            2 * 1024 * 1024 * 1024
+        );
+    }
+
+    #[test]
+    fn auto_clean_l1_threshold_illegal_value_falls_back_default() {
+        let (_dir, conn) = open_temp();
+        // 脏数据：非法数值
+        conn.execute(
+            "INSERT INTO settings (key, value, updated_at) VALUES ('prefs.auto_clean_l1_threshold', 'NaN', 1)",
+            [],
+        )
+        .unwrap();
+        assert_eq!(
+            get_auto_clean_l1_threshold(&conn),
+            DEFAULT_AUTO_CLEAN_L1_THRESHOLD,
+            "非数值必须回退默认阈值"
+        );
+        // ≤0 也回退默认（防止「0 = 清任何垃圾」诱导）
+        conn.execute(
+            "UPDATE settings SET value = '-1' WHERE key = 'prefs.auto_clean_l1_threshold'",
+            [],
+        )
+        .unwrap();
+        assert_eq!(
+            get_auto_clean_l1_threshold(&conn),
+            DEFAULT_AUTO_CLEAN_L1_THRESHOLD
+        );
     }
 }

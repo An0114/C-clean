@@ -35,3 +35,8 @@ pub mod report;
 
 /// 提权 exe 的主进程侧封装（task-062）：`ShellExecuteExW("runas")` + 等退出 + 读结果。
 pub mod elevation;
+
+/// 转发 rusqlite（task-084 B1）：Tauri 壳层不直接依赖 rusqlite，但 auto_scan
+/// 的自动清理要按 session 查 L1 项。把 `params!` 等宏经 engine 转发出去，
+/// 壳层用 `engine::rusqlite::params!`，避免在 app Cargo.toml 再加一个直接依赖。
+pub use rusqlite;

@@ -47,6 +47,10 @@ interface Prefs {
   // task-061：自动扫描（只扫描不删除）。默认关闭 + daily。
   autoScanEnabled: boolean;
   autoScanInterval: ScanInterval;
+  // task-084 B1：自动扫描完成后是否自动清理 L1 安全项。默认关闭（fail-closed）。
+  autoCleanL1: boolean;
+  // task-084 B1：自动清理的预估释放阈值（字节）。默认 500 MB。
+  autoCleanL1Threshold: number;
 }
 
 /** task-061：自动扫描间隔，与 `engine::prefs::{SCAN_DAILY, SCAN_WEEKLY, SCAN_MONTHLY}` 对齐。 */
@@ -69,6 +73,9 @@ const SCAN_OPTIONS: { value: ScanInterval; label: string }[] = [
   { value: "weekly", label: "每周" },
   { value: "monthly", label: "每月" },
 ];
+
+/** task-084 B1：自动清理阈值默认 500 MB，与 `engine::prefs::DEFAULT_AUTO_CLEAN_L1_THRESHOLD` 对齐。 */
+const DEFAULT_AUTO_CLEAN_THRESHOLD = 500 * 1024 * 1024;
 
 /** task-061：主题三态。与 `engine::prefs::{THEME_SYSTEM, THEME_LIGHT, THEME_DARK}` 对齐。 */
 type ThemeMode = "system" | "light" | "dark";
@@ -145,6 +152,9 @@ export default function Settings({ onUpdateFound, onThemeChange }: SettingsProps
     theme: "system",
     autoScanEnabled: false,
     autoScanInterval: "daily",
+    // task-084 B1：默认关闭自动清理 + 默认 500 MB 阈值（fail-closed）。
+    autoCleanL1: false,
+    autoCleanL1Threshold: DEFAULT_AUTO_CLEAN_THRESHOLD,
   });
   const [prefsSaving, setPrefsSaving] = useState<boolean>(false);
   // task-058：白名单编辑框的原始文本（每行一个进程名），提交时才解析成数组。
@@ -242,8 +252,14 @@ export default function Settings({ onUpdateFound, onThemeChange }: SettingsProps
           theme: th === "light" || th === "dark" || th === "system" ? th : "system",
           autoScanEnabled: Boolean(p?.autoScanEnabled),
           autoScanInterval:
-            si === "weekly" || si === "monthly" || si === "daily" ? si : "daily",
-        });
+          si === "weekly" || si === "monthly" || si === "daily" ? si : "daily",
+        // task-084 B1：布尔 `Boolean()` 兜 null；阈值 <1 由后端兜成默认，这里也做一道防御。
+        autoCleanL1: Boolean(p?.autoCleanL1),
+        autoCleanL1Threshold:
+          typeof p?.autoCleanL1Threshold === "number" && p.autoCleanL1Threshold > 0
+            ? p.autoCleanL1Threshold
+            : DEFAULT_AUTO_CLEAN_THRESHOLD,
+      });
         setWhitelistText(wl.join("\n"));
       } catch {
         // 读失败保持默认（fail-closed），不打扰用户。
@@ -339,6 +355,47 @@ export default function Settings({ onUpdateFound, onThemeChange }: SettingsProps
       }
     },
     [prefs.autoScanInterval, savePrefs]
+  );
+
+  // task-084 B1：自动清理 L1 开关。默认关，开启前明确告诉用户会做什么。
+  const onToggleAutoCleanL1 = useCallback(
+    async (next: boolean) => {
+      // 开启前说明影响：仅在自动扫描完成后、且预估释放达到阈值才触发。
+      if (next && !window.confirm("开启后将由程序在自动扫描后自动清理 L1 安全缓存" +
+        "（会创建系统还原点、文件移入保险箱，不永久删除）。是否继续？")) {
+        return;
+      }
+      setPrefs((p) => ({ ...p, autoCleanL1: next }));
+      setPrefsSaving(true);
+      try {
+        await savePrefs({ autoCleanL1: next });
+      } catch (e) {
+        setPrefs((p) => ({ ...p, autoCleanL1: !next }));
+        setToast({ ok: false, text: `保存设置失败：${String(e)}` });
+      } finally {
+        setPrefsSaving(false);
+      }
+    },
+    [savePrefs]
+  );
+
+  // task-084 B1：阈值保存（字节）。先把 MB 数值 ×1MB 落库。
+  const onChangeAutoCleanThreshold = useCallback(
+    async (mb: number) => {
+      const next = Math.max(1, Math.round(mb)) * 1024 * 1024;
+      if (next === prefs.autoCleanL1Threshold) return;
+      setPrefs((p) => ({ ...p, autoCleanL1Threshold: next }));
+      setPrefsSaving(true);
+      try {
+        await savePrefs({ autoCleanL1Threshold: next });
+      } catch (e) {
+        setPrefs((p) => ({ ...p, autoCleanL1Threshold: prefs.autoCleanL1Threshold }));
+        setToast({ ok: false, text: `保存设置失败：${String(e)}` });
+      } finally {
+        setPrefsSaving(false);
+      }
+    },
+    [prefs.autoCleanL1Threshold, savePrefs]
   );
 
   // task-058：保存白名单。按行切分 → 去空白 → 丢空行；空结果 = 清空（不限制）。
@@ -1006,6 +1063,90 @@ export default function Settings({ onUpdateFound, onThemeChange }: SettingsProps
             </div>
           )}
         </div>
+      </div>
+
+      {/* task-084 B1：自动清理 L1（task-100 拍板）。在「自动扫描」之上叠加——
+          需要先开启自动扫描，这个才有触发时机。默认关，fail-closed。 */}
+      <h2 style={{ margin: "24px 0 12px", fontSize: 16 }}>自动清理</h2>
+      <div style={cardStyle}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 600 }}>自动清理 L1 安全缓存</div>
+            <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 4, lineHeight: 1.5 }}>
+              每次自动扫描完成后，若本次预估释放达到下面的阈值，就自动把 L1
+              安全缓存移入保险箱并通知你。L2/L3 <b>绝不自动处理</b>——L2 需要逐项确认，
+              L3 受保护禁止删除。清理前会<b>创建系统还原点</b>（需管理员授权，一次弹窗）。
+              <b>默认关闭。</b>
+            </div>
+          </div>
+          <label
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              cursor: prefsSaving || !prefs.autoScanEnabled ? "not-allowed" : "pointer",
+              whiteSpace: "nowrap",
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={prefs.autoCleanL1}
+              disabled={prefsSaving || !prefs.autoScanEnabled}
+              onChange={(e) => onToggleAutoCleanL1(e.target.checked)}
+              aria-label="自动清理 L1"
+            />
+            <span style={{ fontSize: 12, color: "var(--text)" }}>
+              {prefs.autoCleanL1 ? "已开启" : "已关闭"}
+            </span>
+          </label>
+        </div>
+
+        <div
+          style={{
+            marginTop: 14,
+            borderTop: "1px solid var(--border)",
+            paddingTop: 14,
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            flexWrap: "wrap",
+          }}
+        >
+          <span style={{ fontSize: 12, color: "var(--text)" }}>触发阈值（预估释放 ≥）：</span>
+          {/* 阈值用 MB 单位展示/编辑，落库时 ×1MB 还原成字节。 */}
+          <input
+            type="number"
+            min={1}
+            step={100}
+            value={Math.round(prefs.autoCleanL1Threshold / (1024 * 1024))}
+            disabled={prefsSaving || !prefs.autoCleanL1}
+            onChange={(e) => {
+              const v = Number(e.target.value);
+              if (!Number.isNaN(v)) onChangeAutoCleanThreshold(v);
+            }}
+            style={{
+              width: 90,
+              padding: "5px 8px",
+              borderRadius: 4,
+              border: "1px solid var(--border)",
+              fontSize: 12,
+            }}
+          />
+          <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
+            MB（低于此量就跳过本轮，不值得为它弹 UAC 建还原点）
+          </span>
+        </div>
+
+        {!prefs.autoCleanL1 && (
+          <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 8 }}>
+            先开启上面的开关，阈值才会生效。
+          </div>
+        )}
+        {!prefs.autoScanEnabled && (
+          <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 8 }}>
+            自动清理依赖自动扫描，请先开启「定期在后台扫描」。
+          </div>
+        )}
       </div>
 
       {/* task-062：开机自启。状态真实来源是系统注册表（autostart 插件），不存 prefs。 */}
