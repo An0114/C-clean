@@ -1285,44 +1285,38 @@ pub async fn winsxs_cleanup(
 
 // ===================== task-066：大文件地图（E 模块） =====================
 
-/// 系统盘根路径，形如 `C:/`。
-///
-/// **不写死 `C:/`**：系统装在 D 盘的机器上，写死会让扫描永远返回空。
-/// `SystemDrive` 是 Windows 安装时就定好的环境变量（值形如 `C:`），最可靠。
-fn system_drive_root() -> std::path::PathBuf {
-    let drive = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".to_string());
-    std::path::PathBuf::from(format!("{drive}\\"))
-}
-
-/// `big_files_scan`：大文件地图（task-066）。
+/// `big_files_scan`：大文件地图（task-066；task-084 B3 跨盘）。
 ///
 /// # 只读
 ///
-/// 扫 hiberfil.sys / Windows.old / 回收站 / Top100，**一个字节都不删**。
-/// 这四类的正规处理方式各不相同（`powercfg /h off`、磁盘清理、清空回收站、
+/// 扫 hiberfil.sys / Windows.old / 回收站 / 各盘 Top 大文件，**一个字节都不删**。
+/// 这几类的正规处理方式各不相同（`powercfg /h off`、磁盘清理、清空回收站、
 /// 用户自己判断），所以本命令只负责「量出来 + 给建议」。
+///
+/// # task-084 B3 跨盘
+///
+/// v0.5.0 起覆盖所有**固定盘**：系统盘沿用用户目录语义（三分类卡 + 目标空间 + Top），
+/// 非系统盘扫盘顶一级目录的 Top 大文件。每个条目带 `drive_letter`，前端据此分组展示。
 ///
 /// # 为什么是 async
 ///
-/// Top100 要遍历系统盘的用户目录，几万到几十万条目，同步跑会卡住 IPC 线程池。
+/// 大文件要遍历多盘，几万到几十万条目，同步跑会卡住 IPC 线程池。
 /// async 让它跑在 Tauri 的异步执行器上，UI 不受影响。
 ///
 /// # 耗时保护
 ///
-/// engine 侧有「20 万条目 / 20 秒」双上限，撞到就返回 `truncated: true`——
+/// engine 侧有「20 万条目 / 20 秒」双上限（每盘独立），撞到就返回 `truncated: true`——
 /// 宁可少列几条，也不能让一次点击变成「转圈几分钟」。
 #[tauri::command]
 pub async fn big_files_scan() -> Result<Envelope<engine::scan::big_files::BigFilesReport>, String> {
-    let root = system_drive_root();
-    let env = engine::ipc::commands::big_files::handle_big_files_scan(&root);
+    let env = engine::ipc::commands::big_files::handle_big_files_scan_all_drives();
 
     // 只打一行摘要：扫描结果的明细可能有 100 条，全打出来日志没法看。
     if let Some(r) = &env.data {
         eprintln!(
-            "[big_files_scan] root={} total={}B top={} scanned={} truncated={} {}ms",
-            root.display(),
-            r.total_bytes,
+            "[big_files_scan] drives top={} total={}B scanned={} truncated={} {}ms",
             r.top_files.len(),
+            r.total_bytes,
             r.scanned_entries,
             r.truncated,
             r.elapsed_ms

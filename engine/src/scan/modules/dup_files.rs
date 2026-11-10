@@ -30,6 +30,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use sha2::{Digest, Sha256};
 
+use crate::scan::drive_enum::{drive_letter_of_path, non_system_drive_top_dirs};
+
 /// 只对大于等于该字节数的文件做重复检测（默认 10 MiB）。
 ///
 /// 为什么不是默认所有文件：潜在重复只可能在「同大小」之间找；但把所有文件都算一遍
@@ -51,6 +53,9 @@ pub struct DupFile {
     pub modified_ms: i64,
     /// 建议保留（同组内恰一份 `true`）。
     pub is_keep: bool,
+    /// 所属盘符（大写单字母，如 `"C"`）。task-084 B3 跨盘扩展：
+    /// 重复文件跨盘扫描后按此在 UI 上分组；解析不出盘符时为空串。
+    pub drive_letter: String,
 }
 
 /// 一个重复分组：内容（SHA-256）相同的一组文件。
@@ -68,6 +73,17 @@ pub struct DupGroup {
 /// 默认扫描入口：扫 `%USERPROFILE%` 下的 Downloads/Documents/Desktop。
 pub fn scan_duplicates() -> Vec<DupGroup> {
     scan_duplicates_in(&default_profile_dirs())
+}
+
+/// 跨盘扫描入口（task-084 B3）：系统盘用户目录 + 所有非系统盘的顶层目录。
+///
+/// 与 [`scan_duplicates`] 的分工：默认入口只扫系统盘用户目录（快、语义聚焦）；
+/// 本入口把 D:/E: 等数据盘的顶层目录也纳入，每个文件带 `drive_letter` 供前端按盘分组。
+/// 非系统盘只扫顶层一级（见 [`non_system_drive_top_dirs`] 的语义说明），防止整盘递归风暴。
+pub fn scan_duplicates_all_drives() -> Vec<DupGroup> {
+    let mut roots = default_profile_dirs();
+    roots.extend(non_system_drive_top_dirs());
+    scan_duplicates_in(&roots)
 }
 
 /// 相对 `%USERPROFILE%` 拼出三个用户目录，只保留确实存在的。
@@ -147,6 +163,9 @@ pub fn scan_duplicates_in(roots: &[PathBuf]) -> Vec<DupGroup> {
                     size_bytes: size,
                     modified_ms: modified,
                     is_keep: i == keep_idx,
+                    drive_letter: drive_letter_of_path(&path)
+                        .map(|c| c.to_string())
+                        .unwrap_or_default(),
                 })
                 .collect();
             dup_files.sort_by(|a, b| a.path.cmp(&b.path));

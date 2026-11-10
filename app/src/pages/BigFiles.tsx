@@ -23,6 +23,9 @@ interface BigFileItem {
   sizeBytes: number;
   category: string;
   recommendation: string;
+  /** task-084 B3：所属盘符（大写单字母，如 "C"）。跨盘扫描后按此分组。
+   * 兼容旧后端：字段缺失时按空串处理，归入「其他」。 */
+  driveLetter: string;
 }
 
 /** 与 engine BigFilesReport（camelCase）对齐。 */
@@ -45,6 +48,8 @@ interface DupGroup {
     sizeBytes: number;
     modifiedMs: number;
     isKeep: boolean;
+    /** task-084 B3：所属盘符。 */
+    driveLetter: string;
   }[];
 }
 
@@ -88,6 +93,71 @@ const UNKNOWN_META = { title: "其他", hint: "", color: "#6b7280" };
 
 function metaOf(category: string) {
   return CATEGORY_META[category] ?? { ...UNKNOWN_META, title: category || UNKNOWN_META.title };
+}
+
+/** 把一组带 `driveLetter` 的条目按盘分组（顺序：盘符升序；空串归「其他」放最后）。 */
+function groupByDrive<T extends { driveLetter?: string }>(items: T[]): { drive: string; items: T[] }[] {
+  const groups = new Map<string, T[]>();
+  for (const it of items) {
+    const drive = it.driveLetter || "";
+    const list = groups.get(drive) ?? [];
+    list.push(it);
+    groups.set(drive, list);
+  }
+  // Map 保持插入序；这里显式排序：字母升序，空串（其他）永远最后。
+  const sorted = [...groups.entries()].sort((a, b) => {
+    if (a[0] === "") return 1;
+    if (b[0] === "") return -1;
+    return a[0].localeCompare(b[0]);
+  });
+  return sorted.map(([drive, list]) => ({ drive, items: list }));
+}
+
+/** 盘的展示标签：`C:`；空串显示「其他」。 */
+function driveLabel(drive: string) {
+  return drive ? `${drive}:` : "其他";
+}
+
+/** 单个盘的标题栏（盘符 + 条目数 + 合计字节）。 */
+function DriveHeader({
+  drive,
+  label,
+  count,
+  sum,
+}: {
+  drive: string;
+  label: string;
+  count: number;
+  sum: number;
+}) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "baseline",
+        gap: 8,
+        flexWrap: "wrap",
+      }}
+    >
+      <span
+        style={{
+          padding: "3px 8px",
+          borderRadius: 5,
+          fontSize: 12,
+          fontWeight: 600,
+          background: "var(--surface, var(--bg))",
+          border: "1px solid var(--border)",
+          color: "var(--text)",
+        }}
+        data-testid={drive ? `drive-header-${drive}` : "drive-header-other"}
+      >
+        {label}
+      </span>
+      <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
+        {count} 项 · {formatBytes(sum)}
+      </span>
+    </div>
+  );
 }
 
 const cardStyle: React.CSSProperties = {
@@ -396,7 +466,7 @@ function TargetSpacePanel({ items, sum, loading }: { items: BigFileItem[]; sum: 
   );
 }
 
-/** task-084 A2：重复文件 tab。每组保留最新修改时间那份，其余标可清理。 */
+/** task-084 A2：重复文件 tab。每组保留最新修改时间那份，其余标可清理。task-084 B3 跨盘：文件带盘符标识。 */
 function DuplicatesPanel({ groups, loading }: { groups: DupGroup[] | null; loading: boolean }) {
   if (loading) {
     return <div style={{ marginTop: 16, fontSize: 13, color: "var(--text-muted)" }}>正在计算重复文件 SHA-256…（超过 10MB 的文件，稍候）</div>;
@@ -405,16 +475,18 @@ function DuplicatesPanel({ groups, loading }: { groups: DupGroup[] | null; loadi
     return <div style={{ marginTop: 16, fontSize: 13, color: "var(--text-muted)" }}>暂无数据。</div>;
   }
   if (groups.length === 0) {
-    return <div style={{ marginTop: 16, fontSize: 13, color: "var(--text-muted)" }}>用户目录里没有检测到重复的大文件。</div>;
+    return <div style={{ marginTop: 16, fontSize: 13, color: "var(--text-muted)" }}>扫描范围里没有检测到重复的大文件。</div>;
   }
   return (
     <div style={{ marginTop: 16 }}>
       <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 12 }}>
-        对用户目录超过 10MB 的文件做 SHA-256 去重。每组<b>保留最后修改时间最新的一份</b>，其余建议清理；
-        本工具只报告，不代删。共 {groups.length} 组。
+        对系统盘用户目录及非系统盘顶层目录里超过 10MB 的文件做 SHA-256 去重，按盘标注。每组
+        <b>保留最后修改时间最新的一份</b>，其余建议清理；本工具只报告，不代删。共 {groups.length} 组。
       </div>
       {groups.map((g) => {
         const reclaimable = g.sizeBytes * (g.files.length - 1);
+        // 组内涉及哪些盘（用于快速识别跨盘重复）
+        const drives = [...new Set(g.files.map((f) => f.driveLetter).filter(Boolean))].sort();
         return (
           <div key={g.groupId} style={{ ...cardStyle, marginBottom: 12 }} data-testid="dup-group">
             <div style={{ marginBottom: 8 }}>
@@ -422,15 +494,21 @@ function DuplicatesPanel({ groups, loading }: { groups: DupGroup[] | null; loadi
               <span style={{ fontSize: 11, color: "var(--text-muted)", marginLeft: 8 }}>
                 {g.files.length} 份 × {formatBytes(g.sizeBytes)} · 可释放 {formatBytes(reclaimable)}
               </span>
+              {drives.length > 0 && (
+                <span style={{ fontSize: 11, color: "var(--text-muted)", marginLeft: 8 }}>
+                  涉及盘：{drives.map((d) => `${d}:`).join(" / ")}
+                </span>
+              )}
             </div>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
               <tbody>
                 {g.files.map((f) => (
                   <tr key={f.path} style={{ borderTop: "1px solid var(--border)" }}>
                     <td style={{ padding: "6px 8px", wordBreak: "break-all" }} title={f.path}>
-                      {f.isKeep ? "✅ 保留" : "🗑 可清理"} {f.path}
+                      {f.isKeep ? "✅ 保留" : "🗑 可清理"}{" "}
+                      <span style={{ color: "var(--text-muted)" }}>[{f.driveLetter || "?"}:]</span> {f.path}
                     </td>
-                    <td style={{ padding: "6px 8px", textAlign: "right", whiteSpace: "nowrap" }}>
+                    <td style={{ padding: "6px 8px", color: "var(--text-muted)", whiteSpace: "nowrap" }}>
                       {new Date(f.modifiedMs).toLocaleDateString()}
                     </td>
                   </tr>
@@ -444,7 +522,7 @@ function DuplicatesPanel({ groups, loading }: { groups: DupGroup[] | null; loadi
   );
 }
 
-/** task-084 A3：文件夹分布 tab。Top20 按子树大小倒序。 */
+/** task-084 A3：文件夹分布 tab。Top20 按子树大小倒序，task-084 B3 按盘分组。 */
 function FoldersPanel({ stats, loading }: { stats: FolderStat[] | null; loading: boolean }) {
   if (loading) {
     return <div style={{ marginTop: 16, fontSize: 13, color: "var(--text-muted)" }}>正在统计文件夹分布…</div>;
@@ -455,33 +533,50 @@ function FoldersPanel({ stats, loading }: { stats: FolderStat[] | null; loading:
   if (stats.length === 0) {
     return <div style={{ marginTop: 16, fontSize: 13, color: "var(--text-muted)" }}>没有可统计的文件夹。</div>;
   }
+  const groups = groupByDrive(stats);
   return (
-    <div style={{ ...cardStyle, marginTop: 16, padding: 0, overflow: "hidden" }}>
-      <div style={{ padding: "12px 16px", fontSize: 13, fontWeight: 600, borderBottom: "1px solid var(--border)" }}>
-        占用最多的 {stats.length} 个文件夹（子树总大小，倒序）
+    <div style={{ marginTop: 16 }}>
+      <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 12 }}>
+        占用最多的文件夹（子树总大小，倒序）· 按盘分组
       </div>
-      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-        <thead>
-          <tr style={{ color: "var(--text-muted)", textAlign: "left" }}>
-            <th style={{ padding: "8px 16px", fontWeight: 500 }}>文件夹</th>
-            <th style={{ padding: "8px 16px", fontWeight: 500, width: 90, textAlign: "right" }}>占用</th>
-            <th style={{ padding: "8px 16px", fontWeight: 500, width: 70, textAlign: "right" }}>文件数</th>
-          </tr>
-        </thead>
-        <tbody>
-          {stats.map((f) => (
-            <tr key={f.path} style={{ borderTop: "1px solid var(--border)" }}>
-              <td style={{ padding: "8px 16px", wordBreak: "break-all" }} title={f.path}>
-                {f.path}
-              </td>
-              <td style={{ padding: "8px 16px", textAlign: "right", whiteSpace: "nowrap" }}>
-                {formatBytes(f.sizeBytes)}
-              </td>
-              <td style={{ padding: "8px 16px", textAlign: "right", whiteSpace: "nowrap" }}>{f.fileCount}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      {groups.map((g) => {
+        const sum = g.items.reduce((s, f) => s + f.sizeBytes, 0);
+        return (
+          <div key={g.drive || "__other"} style={{ ...cardStyle, marginBottom: 12, padding: 0, overflow: "hidden" }}>
+            <div
+              style={{
+                padding: "10px 16px",
+                borderBottom: "1px solid var(--border)",
+                background: "var(--surface, var(--bg))",
+              }}
+            >
+              <DriveHeader drive={g.drive} label={driveLabel(g.drive)} count={g.items.length} sum={sum} />
+            </div>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+              <thead>
+                <tr style={{ color: "var(--text-muted)", textAlign: "left" }}>
+                  <th style={{ padding: "8px 16px", fontWeight: 500 }}>文件夹</th>
+                  <th style={{ padding: "8px 16px", fontWeight: 500, width: 90, textAlign: "right" }}>占用</th>
+                  <th style={{ padding: "8px 16px", fontWeight: 500, width: 70, textAlign: "right" }}>文件数</th>
+                </tr>
+              </thead>
+              <tbody>
+                {g.items.map((f) => (
+                  <tr key={f.path} style={{ borderTop: "1px solid var(--border)" }}>
+                    <td style={{ padding: "8px 16px", wordBreak: "break-all" }} title={f.path}>
+                      {f.path}
+                    </td>
+                    <td style={{ padding: "8px 16px", textAlign: "right", whiteSpace: "nowrap" }}>
+                      {formatBytes(f.sizeBytes)}
+                    </td>
+                    <td style={{ padding: "8px 16px", textAlign: "right", whiteSpace: "nowrap" }}>{f.fileCount}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -514,38 +609,47 @@ function CategoryCard({ item }: { item: BigFileItem }) {
   );
 }
 
-/** Top100 明细表。没有删除按钮——这是「只读」的实质体现。 */
+/** 各盘 Top 大文件表（task-084 B3 按盘分组）。没有删除按钮——「只读」的实质体现。 */
 function TopFilesTable({ items }: { items: BigFileItem[] }) {
   if (items.length === 0) {
     return null;
   }
+  const groups = groupByDrive(items);
   return (
     <div style={{ ...cardStyle, marginTop: 12, padding: 0, overflow: "hidden" }}>
       <div style={{ padding: "12px 16px", fontSize: 13, fontWeight: 600, borderBottom: "1px solid var(--border)" }}>
-        最大的 {items.length} 个文件
+        最大的 {items.length} 个文件（按盘分组）
       </div>
-      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-        <thead>
-          <tr style={{ color: "var(--text-muted)", textAlign: "left" }}>
-            <th style={{ padding: "8px 16px", fontWeight: 500 }}>路径</th>
-            <th style={{ padding: "8px 16px", fontWeight: 500, width: 100, textAlign: "right" }}>
-              大小
-            </th>
-          </tr>
-        </thead>
-        <tbody>
-          {items.map((f) => (
-            <tr key={f.path} style={{ borderTop: "1px solid var(--border)" }}>
-              <td style={{ padding: "8px 16px", wordBreak: "break-all" }} title={f.path}>
-                {f.path}
-              </td>
-              <td style={{ padding: "8px 16px", textAlign: "right", whiteSpace: "nowrap" }}>
-                {formatBytes(f.sizeBytes)}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      {groups.map((g) => {
+        const sum = g.items.reduce((s, f) => s + f.sizeBytes, 0);
+        return (
+          <div key={g.drive || "__other"} style={{ padding: "12px 16px", borderBottom: "1px solid var(--border)" }}>
+            <DriveHeader drive={g.drive} label={driveLabel(g.drive)} count={g.items.length} sum={sum} />
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, marginTop: 6 }}>
+              <thead>
+                <tr style={{ color: "var(--text-muted)", textAlign: "left" }}>
+                  <th style={{ padding: "8px 16px", fontWeight: 500 }}>路径</th>
+                  <th style={{ padding: "8px 16px", fontWeight: 500, width: 100, textAlign: "right" }}>
+                    大小
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {g.items.map((f) => (
+                  <tr key={f.path} style={{ borderTop: "1px solid var(--border)" }}>
+                    <td style={{ padding: "8px 16px", wordBreak: "break-all" }} title={f.path}>
+                      {f.path}
+                    </td>
+                    <td style={{ padding: "8px 16px", textAlign: "right", whiteSpace: "nowrap" }}>
+                      {formatBytes(f.sizeBytes)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        );
+      })}
     </div>
   );
 }

@@ -28,6 +28,8 @@ use std::collections::{BinaryHeap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use crate::scan::drive_enum::{drive_letter_of_path, fixed_drives, system_drive_letter};
+
 /// 分类标识。前端按这些值选图标 / 分组，**改动要同步 `BigFiles.tsx`**。
 pub const CATEGORY_HIBERFIL: &str = "hiberfil";
 /// 分类标识：`C:\Windows.old`。
@@ -91,6 +93,9 @@ pub struct BigFileItem {
     /// 处理建议（中文，**不含数字**——「可释放 X」由前端按实际大小拼，
     /// 后端写死数字会在不同机器上自相矛盾）。
     pub recommendation: String,
+    /// 所属盘符（大写单字母，如 `"C"`）。task-084 B3 跨盘扩展：
+    /// 大文件地图跨盘扫描后按此在 UI 上分组。路径没法解析出盘符时为空串。
+    pub drive_letter: String,
 }
 
 /// 一次扫描的完整结果。
@@ -168,6 +173,83 @@ pub fn scan_all(root: &Path, opts: TopFilesOptions) -> BigFilesReport {
     // 目标空间**不计入** total_bytes（可能和 Top100 重复，见字段注释），
     // 元组第二项是全目标空间合计，供前端 / 后续跨盘扩展使用。
     let (target_spaces, _target_total) = scan_target_spaces();
+
+    let mut total_bytes: u64 = categories.iter().map(|c| c.size_bytes).sum();
+    for f in &top_files {
+        total_bytes = total_bytes.saturating_add(f.size_bytes);
+    }
+
+    BigFilesReport {
+        categories,
+        top_files,
+        target_spaces,
+        total_bytes,
+        scanned_entries,
+        truncated,
+        elapsed_ms: started.elapsed().as_millis() as u64,
+    }
+}
+
+/// 跨盘扫描入口（task-084 B3）：扫完所有**固定盘**，把结果合并进一份报告。
+///
+/// # 为什么按盘分组而不是只扫系统盘
+///
+/// 之前的 [`scan_all`] 只扫系统盘——用户的虚拟机镜像 / 视频素材 / 编译产物常堆在
+/// D:/E: 这类数据盘上，只看系统盘会漏掉真正的「大家伙」。本函数把每个固定盘都扫一遍，
+/// 每个条目都带 `drive_letter`，前端据此按盘分组展示。
+///
+/// # 每盘的语义
+///
+/// - **系统盘**：沿用 [`scan_all`] 语义——三张固定分类卡（hiberfil / Windows.old /
+///   回收站）+ 用户目录 Top100 + 目标空间。这三类概念只有系统盘才有（休眠文件在系统盘、
+///   Windows.old 在系统盘、回收站按盘枚举但前端固定卡片只有一套）。
+/// - **非系统盘**：扫「盘顶一级目录」里的大文件（`scan_top_files` 会按
+///   [`should_skip_dir`] 跳过系统目录），没有分类卡片，只有 Top 大文件。
+///
+/// # 合并规则
+///
+/// - `categories` / `target_spaces` 只取系统盘的结果（它们本就只属于系统盘）；
+/// - `top_files` 合并所有盘，按盘字母分组、每个盘内部按大小降序、同盘同大小按路径，
+///   保证输出确定；
+/// - `total_bytes` 重算 = 分类卡之和 + Top 之和（不重复计数，跨盘也不重叠）；
+/// - `scanned_entries` / `truncated` 累加/或上所有盘。
+pub fn scan_all_drives(opts: TopFilesOptions) -> BigFilesReport {
+    let started = Instant::now();
+    let sys_letter = system_drive_letter();
+
+    let mut categories: Vec<BigFileItem> = Vec::new();
+    let mut top_files: Vec<BigFileItem> = Vec::new();
+    let mut target_spaces: Vec<BigFileItem> = Vec::new();
+    let mut scanned_entries: u64 = 0;
+    let mut truncated = false;
+
+    for drive in fixed_drives() {
+        let letter = drive.letter;
+        let root = PathBuf::from(format!("{letter}:\\"));
+        if letter == sys_letter {
+            // 系统盘：完整语义（分类卡 + 目标空间 + Top）。
+            let r = scan_all(&root, opts);
+            categories = r.categories;
+            target_spaces = r.target_spaces;
+            top_files.extend(r.top_files);
+            scanned_entries += r.scanned_entries;
+            truncated |= r.truncated;
+        } else {
+            // 非系统盘：只有 Top 大文件。
+            let (items, scanned, trunc) = scan_top_files(&root, opts);
+            top_files.extend(items);
+            scanned_entries += scanned;
+            truncated |= trunc;
+        }
+    }
+
+    // 按盘分组 + 组内确定性排序：盘字母升序，组内大小降序，同大小按路径升序。
+    top_files.sort_by(|a, b| {
+        a.drive_letter
+            .cmp(&b.drive_letter)
+            .then(b.size_bytes.cmp(&a.size_bytes))
+            .then(a.path.cmp(&b.path))
+    });
 
     let mut total_bytes: u64 = categories.iter().map(|c| c.size_bytes).sum();
     for f in &top_files {
@@ -321,6 +403,7 @@ fn scan_target_dir(
     let items = pairs
         .into_iter()
         .map(|(size, path)| BigFileItem {
+            drive_letter: drive_letter_str(&path),
             path: path.to_string_lossy().to_string(),
             size_bytes: size,
             category: category.to_string(),
@@ -349,6 +432,7 @@ pub fn scan_hiberfil(root: &Path) -> BigFileItem {
         ),
     };
     BigFileItem {
+        drive_letter: drive_letter_str(&path),
         path: path.to_string_lossy().to_string(),
         size_bytes: size,
         category: CATEGORY_HIBERFIL.to_string(),
@@ -364,6 +448,7 @@ pub fn scan_windows_old(root: &Path, opts: TopFilesOptions) -> BigFileItem {
     let path = root.join("Windows.old");
     if !path.is_dir() {
         return BigFileItem {
+            drive_letter: drive_letter_str(&path),
             path: path.to_string_lossy().to_string(),
             size_bytes: 0,
             category: CATEGORY_WINDOWS_OLD.to_string(),
@@ -378,6 +463,7 @@ pub fn scan_windows_old(root: &Path, opts: TopFilesOptions) -> BigFileItem {
         "跨版本升级残留。确认新系统稳定后，用「磁盘清理 → 清理系统文件」删除".to_string()
     };
     BigFileItem {
+        drive_letter: drive_letter_str(&path),
         path: path.to_string_lossy().to_string(),
         size_bytes: w.total_bytes,
         category: CATEGORY_WINDOWS_OLD.to_string(),
@@ -395,8 +481,10 @@ pub fn scan_recycle_bin(root: &Path) -> BigFileItem {
 
     #[cfg(windows)]
     if let Ok(size) = query_recycle_bin_api(&drive) {
+        let path = format!("{drive}$Recycle.Bin");
         return BigFileItem {
-            path: format!("{drive}$Recycle.Bin"),
+            drive_letter: drive_letter_str(Path::new(&path)),
+            path,
             size_bytes: size,
             category: CATEGORY_RECYCLE_BIN.to_string(),
             recommendation: "打开回收站确认无需恢复后，右键「清空回收站」".to_string(),
@@ -406,6 +494,7 @@ pub fn scan_recycle_bin(root: &Path) -> BigFileItem {
     // 退路：遍历目录。注意只能统计当前用户可读的部分。
     let bin = root.join("$Recycle.Bin");
     BigFileItem {
+        drive_letter: drive_letter_str(&bin),
         path: bin.to_string_lossy().to_string(),
         size_bytes: dir_total_bytes(&bin),
         category: CATEGORY_RECYCLE_BIN.to_string(),
@@ -440,6 +529,16 @@ fn drive_root(root: &Path) -> String {
     let s = root.to_string_lossy();
     let letter = s.trim_end_matches(['\\', '/']);
     format!("{letter}\\")
+}
+
+/// 从路径取盘符字母（空串当解析不出来）。
+///
+/// B3 跨盘扩展：统一用 `drive_letter_of_path`（它剥 `\\?\` 前缀、小写转大写、
+/// 拒绝 UNC / 相对路径），保证「同路径在模块内外算出同一个盘符」。
+fn drive_letter_str(path: &Path) -> String {
+    drive_letter_of_path(path)
+        .map(|c| c.to_string())
+        .unwrap_or_default()
 }
 
 /// 系统 API 查回收站：返回总字节数。
@@ -634,6 +733,7 @@ fn walk_collect(root: &Path, skip_root_files: &[&str], opts: TopFilesOptions) ->
             path: path.to_string_lossy().to_string(),
             size_bytes: size,
             category: CATEGORY_TOP_FILES.to_string(),
+            drive_letter: drive_letter_str(&path),
             recommendation: "确认不再需要后手动删除；本工具不代删用户文件".to_string(),
         })
         .collect();

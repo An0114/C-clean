@@ -42,12 +42,14 @@ const REPORT = {
       sizeBytes: 8 * GB,
       category: "top_files",
       recommendation: "确认不再需要后手动删除",
+      driveLetter: "C",
     },
     {
       path: "C:\\Users\\me\\game.iso",
       sizeBytes: 4 * GB,
       category: "top_files",
       recommendation: "确认不再需要后手动删除",
+      driveLetter: "C",
     },
   ],
   // task-084 A1：目标空间（Downloads / Documents / Desktop / Temp）
@@ -70,8 +72,8 @@ const DUP_GROUPS = [
     groupId: "abc1234567890000",
     sizeBytes: 15 * 1024 * 1024,
     files: [
-      { path: "C:\\Users\\me\\Downloads\\a.bin", sizeBytes: 15 * 1024 * 1024, modifiedMs: 1000, isKeep: true },
-      { path: "C:\\Users\\me\\Desktop\\copy.bin", sizeBytes: 15 * 1024 * 1024, modifiedMs: 500, isKeep: false },
+      { path: "C:\\Users\\me\\Downloads\\a.bin", sizeBytes: 15 * 1024 * 1024, modifiedMs: 1000, isKeep: true, driveLetter: "C" },
+      { path: "D:\\backup\\copy.bin", sizeBytes: 15 * 1024 * 1024, modifiedMs: 500, isKeep: false, driveLetter: "D" },
     ],
   },
 ];
@@ -146,7 +148,9 @@ describe("大文件地图", () => {
 
     expect(await screen.findByText("C:\\Users\\me\\vm.vhdx")).toBeTruthy();
     expect(screen.getByText("C:\\Users\\me\\game.iso")).toBeTruthy();
-    expect(screen.getByText("最大的 2 个文件")).toBeTruthy();
+    expect(screen.getByText(/^最大的 2 个文件（按盘分组）$/)).toBeTruthy();
+    // 按盘分组：C 盘标题出现在表内
+    expect(screen.getByTestId("drive-header-C")).toBeTruthy();
     // Top 汇总 = 8 + 4 = 12 GB
     expect(screen.getByText("12.0 GB")).toBeTruthy();
   });
@@ -251,6 +255,44 @@ describe("大文件地图", () => {
       await waitFor(() => expect(mockedInvoke).toHaveBeenCalledWith("big_files_duplicates", {}));
     });
 
+    it("task-084 B3：Top100 按盘分组，多盘各自的路径都展示", async () => {
+      mockScan({
+        ...REPORT,
+        topFiles: [
+          ...REPORT.topFiles,
+          {
+            path: "D:\\Data\\movie.mkv",
+            sizeBytes: 6 * GB,
+            category: "top_files",
+            recommendation: "确认不再需要后手动删除",
+            driveLetter: "D",
+          },
+        ],
+      });
+      render(<BigFiles />);
+      await screen.findByTestId("category-hiberfil");
+
+      // 两个盘的标题都出现，跨盘文件也列出来了
+      expect(screen.getByTestId("drive-header-C")).toBeTruthy();
+      expect(screen.getByTestId("drive-header-D")).toBeTruthy();
+      expect(screen.getByText("D:\\Data\\movie.mkv")).toBeTruthy();
+    });
+
+    it("task-084 B3：重复组里跨盘文件带盘符标注", async () => {
+      mockScan();
+      render(<BigFiles />);
+      await screen.findByTestId("category-hiberfil");
+
+      fireEvent.click(screen.getByRole("tab", { name: "重复文件" }));
+
+      expect(await screen.findByTestId("dup-group")).toBeTruthy();
+      // 跨盘重复：涉及盘 C 与 D
+      expect(screen.getByText(/涉及盘：C: \/ D:/)).toBeTruthy();
+      // 每行文件前标注盘符
+      expect(screen.getByText(/\[C:\]/)).toBeTruthy();
+      expect(screen.getByText(/\[D:\]/)).toBeTruthy();
+    });
+
     it("文件夹分布 tab 懒加载并展示 Top 文件夹表", async () => {
       mockScan();
       render(<BigFiles />);
@@ -258,8 +300,10 @@ describe("大文件地图", () => {
 
       fireEvent.click(screen.getByRole("tab", { name: "文件夹分布" }));
 
-      expect(await screen.findByText(/占用最多的 2 个文件夹/)).toBeTruthy();
+      expect(await screen.findByText(/占用最多的文件夹/)).toBeTruthy();
       expect(screen.getByText(/AppData.Loc/)).toBeTruthy();
+      // task-084 B3：文件夹分布按盘分组，C 盘标题出现
+      expect(screen.getByTestId("drive-header-C")).toBeTruthy();
       await waitFor(() => expect(mockedInvoke).toHaveBeenCalledWith("big_files_folder_stats", {}));
     });
   });

@@ -21,6 +21,8 @@
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 
+use crate::scan::drive_enum::non_system_drive_top_dirs;
+
 /// 输出 Top N 个文件夹（默认 20）。
 pub const FOLDER_TOP_N: usize = 20;
 
@@ -46,6 +48,17 @@ pub struct FolderStat {
 /// 默认入口：扫 `%USERPROFILE%` 下四个用户目录。
 pub fn folder_stats() -> Vec<FolderStat> {
     folder_stats_in(&default_profile_dirs())
+}
+
+/// 跨盘扫描入口（task-084 B3）：系统盘用户目录 + 所有非系统盘的顶层目录。
+///
+/// 与 [`folder_stats`] 的分工：默认入口只扫系统盘用户目录；本入口把 D:/E: 等数据盘的
+/// 顶层目录也纳入文件夹分布统计，条目带 `drive_letter` 供前端按盘分组。非系统盘只扫顶层
+/// 一级（见 [`non_system_drive_top_dirs`]），防止整盘递归风暴。
+pub fn folder_stats_all_drives() -> Vec<FolderStat> {
+    let mut roots = default_profile_dirs();
+    roots.extend(non_system_drive_top_dirs());
+    folder_stats_in(&roots)
 }
 
 fn default_profile_dirs() -> Vec<PathBuf> {
