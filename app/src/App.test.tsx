@@ -385,6 +385,7 @@ describe("tab 切换（task-066 大文件）", () => {
               },
             ],
             topFiles: [],
+            targetSpaces: [],
             totalBytes: 1024,
             scannedEntries: 3,
             truncated: false,
