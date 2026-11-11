@@ -7,7 +7,9 @@
 use std::path::Path;
 
 use super::super::envelope::Envelope;
-use crate::scan::big_files::{scan_all, BigFilesReport, TopFilesOptions};
+use crate::scan::big_files::{scan_all, scan_all_drives, BigFilesReport, TopFilesOptions};
+use crate::scan::modules::dup_files::{scan_duplicates_all_drives, DupGroup};
+use crate::scan::modules::folder_stats::{folder_stats_all_drives, FolderStat};
 
 /// 处理 `big_files.scan`：在 `root`（形如 `C:\`）下跑一次只读扫描。
 ///
@@ -27,4 +29,28 @@ pub fn handle_big_files_scan(root: &Path) -> Envelope<BigFilesReport> {
     }
     let report = scan_all(root, TopFilesOptions::default());
     Envelope::ok(report)
+}
+
+/// 处理 `big_files.scan_all_drives`：扫完所有固定盘，结果按 `drive_letter` 分组（task-084 B3）。
+///
+/// 单盘 [`handle_big_files_scan`] 只扫系统盘；跨盘入口覆盖所有固定盘（系统盘沿用用户目录
+/// 语义 + 三分类卡，非系统盘扫盘顶一级目录的 Top 大文件）。每盘结果都带
+/// `drive_letter`，前端据此分组展示。同样「没有失败态」，永远 `Envelope::ok`。
+pub fn handle_big_files_scan_all_drives() -> Envelope<BigFilesReport> {
+    let report = scan_all_drives(TopFilesOptions::default());
+    Envelope::ok(report)
+}
+
+/// 处理 `big_files.folder_stats`：全部固定盘的文件夹分布 Top20（task-084 B3 跨盘）。
+///
+/// 纯只读、系统盘用户目录 + 非系统盘顶层目录，可失败项内部跳过，永远 `Envelope::ok`。
+pub fn handle_big_files_folder_stats() -> Envelope<Vec<FolderStat>> {
+    Envelope::ok(folder_stats_all_drives())
+}
+
+/// 处理 `big_files.duplicates`：全部固定盘的 >10MB 文件重复检测（task-084 B3 跨盘）。
+///
+/// 纯只读、只报告不出删除，永远 `Envelope::ok`。每个文件带 `drive_letter` 供前端分组。
+pub fn handle_big_files_duplicates() -> Envelope<Vec<DupGroup>> {
+    Envelope::ok(scan_duplicates_all_drives())
 }

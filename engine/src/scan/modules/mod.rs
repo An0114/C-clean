@@ -22,6 +22,10 @@
 
 pub mod browser_cache;
 pub mod dev_cache;
+/// task-084 A2：重复文件检测（只读）。
+pub mod dup_files;
+/// task-084 A3：文件夹分布统计（只读）。
+pub mod folder_stats;
 pub mod prefetch;
 /// task-083 B2：基于已安装软件清单的缓存识别。
 pub mod software_cache;
@@ -58,6 +62,13 @@ pub struct ScanItem {
     pub size_bytes: i64,
     /// 风险等级整数（0/1/2）。
     pub risk_level: i64,
+    /// task-084 C1：所属 Windows 用户名（跨用户扫描时非空；当前用户为空）。
+    ///
+    /// 为什么用 `Option<String>` 而不是 `String`：5 个内置模块扫的都是**当前用户**
+    /// 的目录，绝大多数字根本不知道用户名，也不该被逼着去查。只有跨用户扫描
+    /// （`ScanOrchestrator` 枚举 `C:\Users\*`）才需要标注，让它带 `Option` 可空
+    /// 是最小侵入——既有构造点全部不动。
+    pub username: Option<String>,
 }
 
 impl ScanItem {
@@ -75,7 +86,14 @@ impl ScanItem {
             path,
             size_bytes,
             risk_level,
+            username: None,
         }
+    }
+
+    /// task-084 C1：给条目标记用户名（跨用户扫描时调用）。
+    pub fn with_username(mut self, username: impl Into<String>) -> Self {
+        self.username = Some(username.into());
+        self
     }
 }
 

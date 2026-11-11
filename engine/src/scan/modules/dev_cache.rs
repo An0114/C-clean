@@ -77,6 +77,13 @@ pub const CATEGORY_PNPM: &str = "pnpm_store";
 
 /// L1：包管理器缓存，删了下次安装重新下载。
 pub const RISK_L1: i64 = 1;
+/// L2：Gradle/Maven 依赖缓存，删错要重下几百 MB 依赖——需逐项确认（不被一键全选命中）。
+pub const RISK_L2: i64 = 2;
+
+/// Gradle 缓存类别键（`~/.gradle/caches`）。
+pub const CATEGORY_GRADLE: &str = "gradle_cache";
+/// Maven 本地仓库类别键（`~/.m2/repository`）。
+pub const CATEGORY_MAVEN: &str = "maven_cache";
 
 /// 目标目录表：`(路径, 类别键)`。
 ///
@@ -153,6 +160,42 @@ pub fn scan_from_rules(rules: &CacheRules) -> Vec<ScanItem> {
         .into_iter()
         .flat_map(|r| scan_dir(Path::new(&r.root), MODULE_CODE, &r.category, r.risk_level))
         .collect()
+}
+
+/// task-084 B5：Gradle / Maven 依赖缓存扫描（独立开关，独立于 [`scan`]）。
+///
+/// # 为什么不并入 [`scan`] / `scan_from_rules`
+///
+/// 这四个（两个 npm、pip、pnpm）是「删错重下几分钟」的轻缓存；而 `~/.gradle/caches`
+/// 与 `~/.m2/repository` 动辄几百 MB，**扫进清单本身不危险（只扫不删），危险的是
+/// 被一键全选附带清掉**。所以它是**独立的追加步骤**：
+///
+/// - 不进入 `OWN_CATEGORIES` / 规则库 `system` 组（在那里会用 L1 被「一键全选」
+///   命中）——这里固定 L2，用户必须逐项确认才删；
+/// - 由编排器按 `prefs.dev_cache_gradle_maven` 独立开关决定是否执行（fail-closed）；
+/// - 不进 Rust/ps1 抽样对比（那是 `scan_dev_cache.ps1` 4 个根的等价性契约，
+///   Gradle/Maven 本来就不在 ps1 里）。
+///
+/// 根目录基于 `%USERPROFILE%`（不是硬编码 C 盘），避免扫到别的用户的资料。
+pub fn gradle_maven_roots(user_profile: &Path) -> Vec<(PathBuf, &'static str)> {
+    vec![
+        (user_profile.join(r".gradle\caches"), CATEGORY_GRADLE),
+        (user_profile.join(r".m2\repository"), CATEGORY_MAVEN),
+    ]
+}
+
+/// 读 `%USERPROFILE%` 后扫描 Gradle/Maven 缓存。
+///
+/// `%USERPROFILE%` 缺失/空白时跳过整类（与 [`scan`] 的「宁可少扫一类也不猜路径」
+/// 同一原则）。目录不存在是常态（没装 Gradle/Maven 的机器），[`scan_dir`] 返回空。
+pub fn scan_gradle_maven() -> Vec<ScanItem> {
+    let mut out = Vec::new();
+    if let Some(home) = env_dir("USERPROFILE") {
+        for (dir, category) in gradle_maven_roots(&home) {
+            out.extend(scan_dir(&dir, MODULE_CODE, category, RISK_L2));
+        }
+    }
+    out
 }
 
 /// 读一个环境变量并转成路径；缺失或空白返回 `None`。
@@ -350,5 +393,42 @@ mod tests {
     fn env_dir_missing_variable_is_none() {
         // 真环境里取一个肯定不存在的变量名
         assert_eq!(env_dir("CCLEAN_DEFINITELY_NOT_SET_076"), None);
+    }
+
+    // ============ task-084 B5：Gradle / Maven ============
+
+    #[test]
+    fn gradle_maven_roots_match_expected_paths() {
+        // 钉住基于 %USERPROFILE% 的相对根，绝不硬编码 C 盘（否则会扫到别的用户）
+        let home = Path::new(r"C:\Users\test");
+        let roots = gradle_maven_roots(home);
+        assert_eq!(roots.len(), 2);
+        assert_eq!(roots[0], (home.join(r".gradle\caches"), CATEGORY_GRADLE));
+        assert_eq!(roots[1], (home.join(r".m2\repository"), CATEGORY_MAVEN));
+    }
+
+    // scan_gradle_maven 依赖 %USERPROFILE% 环境变量，无法在测试里安全注入
+    // （std::env::set_var 会污染同进程其他用例），这里只测 layout 与「目录不存在返回空」。
+    #[test]
+    fn scan_gradle_maven_layout_empty_for_missing_dirs() {
+        let home = tempfile::tempdir().unwrap();
+        // 没有 .gradle/.m2 的「全新用户」：不该产出任意条目，也不该报错
+        for (dir, _) in gradle_maven_roots(home.path()) {
+            assert!(!dir.exists());
+        }
+        // gradle_maven_roots 本身只是路径表，能否产出条目由 scan_dir 决定；
+        // 这里验证「路径存在时」穿过 scan_dir 也能打点正确字段。
+        let gradle_dir = home.path().join(r".gradle\caches\modules-2");
+        fs::create_dir_all(&gradle_dir).unwrap();
+        fs::write(gradle_dir.join("dep.jar"), vec![b'x'; 50]).unwrap();
+        for (dir, category) in gradle_maven_roots(home.path()) {
+            let items = super::scan_dir(&dir, MODULE_CODE, category, RISK_L2);
+            if category == CATEGORY_GRADLE {
+                assert!(!items.is_empty(), "gradle 目录已存在，应当扫出条目");
+                assert!(items.iter().all(|i| i.risk_level == RISK_L2));
+            } else {
+                assert!(items.is_empty(), "maven 目录不存在，应当 0 项");
+            }
+        }
     }
 }

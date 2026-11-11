@@ -42,12 +42,23 @@ const REPORT = {
       sizeBytes: 8 * GB,
       category: "top_files",
       recommendation: "确认不再需要后手动删除",
+      driveLetter: "C",
     },
     {
       path: "C:\\Users\\me\\game.iso",
       sizeBytes: 4 * GB,
       category: "top_files",
       recommendation: "确认不再需要后手动删除",
+      driveLetter: "C",
+    },
+  ],
+  // task-084 A1：目标空间（Downloads / Documents / Desktop / Temp）
+  targetSpaces: [
+    {
+      path: "C:\\Users\\me\\Downloads\\big_installer.exe",
+      sizeBytes: 700 * 1024 * 1024,
+      category: "target_downloads",
+      recommendation: "你的下载文件，确认不需要后手动删除",
     },
   ],
   totalBytes: 6.4 * GB + 12.5 * GB + 2.1 * GB + 8 * GB + 4 * GB,
@@ -56,9 +67,39 @@ const REPORT = {
   elapsedMs: 3210,
 };
 
+const DUP_GROUPS = [
+  {
+    groupId: "abc1234567890000",
+    sizeBytes: 15 * 1024 * 1024,
+    files: [
+      { path: "C:\\Users\\me\\Downloads\\a.bin", sizeBytes: 15 * 1024 * 1024, modifiedMs: 1000, isKeep: true, driveLetter: "C" },
+      { path: "D:\\backup\\copy.bin", sizeBytes: 15 * 1024 * 1024, modifiedMs: 500, isKeep: false, driveLetter: "D" },
+    ],
+  },
+];
+
+const FOLDER_STATS = [
+  {
+    path: "C:\\Users\\me\\AppData\\Local",
+    sizeBytes: 10 * 1024 * 1024 * 1024,
+    fileCount: 500,
+    category: "AppData",
+    driveLetter: "C",
+  },
+  {
+    path: "C:\\Users\\me\\Downloads",
+    sizeBytes: 2 * 1024 * 1024 * 1024,
+    fileCount: 200,
+    category: "Downloads",
+    driveLetter: "C",
+  },
+];
+
 function mockScan(data: unknown = REPORT) {
   mockedInvoke.mockImplementation(((cmd: string) => {
     if (cmd === "big_files_scan") return Promise.resolve(ok(data));
+    if (cmd === "big_files_duplicates") return Promise.resolve(ok(DUP_GROUPS));
+    if (cmd === "big_files_folder_stats") return Promise.resolve(ok(FOLDER_STATS));
     return Promise.resolve(ok(null));
   }) as unknown as typeof invoke);
 }
@@ -107,19 +148,24 @@ describe("大文件地图", () => {
 
     expect(await screen.findByText("C:\\Users\\me\\vm.vhdx")).toBeTruthy();
     expect(screen.getByText("C:\\Users\\me\\game.iso")).toBeTruthy();
-    expect(screen.getByText("最大的 2 个文件")).toBeTruthy();
+    expect(screen.getByText(/^最大的 2 个文件（按盘分组）$/)).toBeTruthy();
+    // 按盘分组：C 盘标题出现在表内
+    expect(screen.getByTestId("drive-header-C")).toBeTruthy();
     // Top 汇总 = 8 + 4 = 12 GB
     expect(screen.getByText("12.0 GB")).toBeTruthy();
   });
 
-  it("只读：整页只有「重新扫描」一个按钮，没有任何删除入口", async () => {
+  it("只读：没有删除/清理/一键释放入口", async () => {
     mockScan();
     render(<BigFiles />);
     await screen.findByTestId("category-hiberfil");
 
     const buttons = screen.getAllByRole("button");
-    // 强断言：按钮文案白名单。多一个「删除 / 清理 / 一键释放」都会在这里红。
-    expect(buttons.map((b) => b.textContent)).toEqual(["重新扫描"]);
+    // 按钮白名单：重新扫描 + 四个 tab。多一个「删除 / 清理 / 一键释放」都会在这里红。
+    const labels = buttons.map((b) => b.textContent);
+    for (const forbidden of [/一键清理/, /删除/, /释放/]) {
+      expect(labels.some((t) => forbidden.test(t ?? ""))).toBe(false);
+    }
     expect(screen.queryByText(/一键清理/)).toBeNull();
   });
 
@@ -178,5 +224,87 @@ describe("大文件地图", () => {
 
     // 兜底用 category 原值当标题，不白屏
     expect(await screen.findByText("brand_new")).toBeTruthy();
+  });
+
+  describe("task-084 新 tab", () => {
+    it("目标空间 tab 按 category 分组展示 Downloads 大文件", async () => {
+      mockScan();
+      render(<BigFiles />);
+      await screen.findByTestId("category-hiberfil");
+
+      fireEvent.click(screen.getByRole("tab", { name: "目标空间" }));
+
+      expect(await screen.findByTestId("target-target_downloads")).toBeTruthy();
+      expect(screen.getByText(/big_installer\.exe/)).toBeTruthy();
+      // 只读：目标空间也没有删除入口
+      expect(screen.queryByText(/一键清理/)).toBeNull();
+    });
+
+    it("重复文件 tab 懒加载并展示重复组 + 保留标记", async () => {
+      mockScan();
+      render(<BigFiles />);
+      await screen.findByTestId("category-hiberfil");
+
+      fireEvent.click(screen.getByRole("tab", { name: "重复文件" }));
+
+      expect(await screen.findByTestId("dup-group")).toBeTruthy();
+      // 「保留 / 可清理」标记在重复组表格里
+      expect(screen.getByText(/✅ 保留/)).toBeTruthy();
+      expect(screen.getByText(/可清理/)).toBeTruthy();
+      // 首次切到该 tab 才调后端
+      await waitFor(() => expect(mockedInvoke).toHaveBeenCalledWith("big_files_duplicates", {}));
+    });
+
+    it("task-084 B3：Top100 按盘分组，多盘各自的路径都展示", async () => {
+      mockScan({
+        ...REPORT,
+        topFiles: [
+          ...REPORT.topFiles,
+          {
+            path: "D:\\Data\\movie.mkv",
+            sizeBytes: 6 * GB,
+            category: "top_files",
+            recommendation: "确认不再需要后手动删除",
+            driveLetter: "D",
+          },
+        ],
+      });
+      render(<BigFiles />);
+      await screen.findByTestId("category-hiberfil");
+
+      // 两个盘的标题都出现，跨盘文件也列出来了
+      expect(screen.getByTestId("drive-header-C")).toBeTruthy();
+      expect(screen.getByTestId("drive-header-D")).toBeTruthy();
+      expect(screen.getByText("D:\\Data\\movie.mkv")).toBeTruthy();
+    });
+
+    it("task-084 B3：重复组里跨盘文件带盘符标注", async () => {
+      mockScan();
+      render(<BigFiles />);
+      await screen.findByTestId("category-hiberfil");
+
+      fireEvent.click(screen.getByRole("tab", { name: "重复文件" }));
+
+      expect(await screen.findByTestId("dup-group")).toBeTruthy();
+      // 跨盘重复：涉及盘 C 与 D
+      expect(screen.getByText(/涉及盘：C: \/ D:/)).toBeTruthy();
+      // 每行文件前标注盘符
+      expect(screen.getByText(/\[C:\]/)).toBeTruthy();
+      expect(screen.getByText(/\[D:\]/)).toBeTruthy();
+    });
+
+    it("文件夹分布 tab 懒加载并展示 Top 文件夹表", async () => {
+      mockScan();
+      render(<BigFiles />);
+      await screen.findByTestId("category-hiberfil");
+
+      fireEvent.click(screen.getByRole("tab", { name: "文件夹分布" }));
+
+      expect(await screen.findByText(/占用最多的文件夹/)).toBeTruthy();
+      expect(screen.getByText(/AppData.Loc/)).toBeTruthy();
+      // task-084 B3：文件夹分布按盘分组，C 盘标题出现
+      expect(screen.getByTestId("drive-header-C")).toBeTruthy();
+      await waitFor(() => expect(mockedInvoke).toHaveBeenCalledWith("big_files_folder_stats", {}));
+    });
   });
 });

@@ -2,6 +2,8 @@
 
 pub mod auto_scan;
 pub mod big_files;
+/// task-084 C2：草稿暂存（勾选持久化）。
+pub mod draft;
 pub mod dry_run;
 pub mod plan;
 pub mod registry_health;

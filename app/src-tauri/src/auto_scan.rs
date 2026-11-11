@@ -114,6 +114,169 @@ fn run_scan_now(app: &AppHandle) -> Result<Option<ScanOutcome>, String> {
     }))
 }
 
+/// task-084 B1（task-100 拍板）：一次自动清理 L1 的结果，供通知文案使用。
+struct AutoCleanOutcome {
+    /// 清理是否实际执行（false = 未开启 / 无 L1 项 / 预估不足 / 还原点失败被跳过）。
+    cleaned: bool,
+    /// 已移动进保险箱的字节数（`cleaned` 为 true 时有效）。
+    freed_bytes: u64,
+    /// 已处理的条数。
+    deleted_count: u64,
+    /// 是否因「还原点创建失败」而跳过。区别于「未触发」——通知要如实告知用户原因。
+    skipped_for_restore_point: bool,
+}
+
+impl AutoCleanOutcome {
+    fn skipped() -> Self {
+        Self {
+            cleaned: false,
+            freed_bytes: 0,
+            deleted_count: 0,
+            skipped_for_restore_point: false,
+        }
+    }
+
+    fn restore_skip() -> Self {
+        Self {
+            skipped_for_restore_point: true,
+            ..Self::skipped()
+        }
+    }
+}
+
+/// 自动扫描完成后，若开启「自动清理 L1」，对本次 session 的 L1 安全项执行自动清理。
+///
+/// 契约（来自 task-100 拍板，全部 fail-closed）：
+/// - **只清 L1**：L2 的前提是「逐项确认」，自动扫描绝不碰；L3 根本进不了 `cleanup_item`。
+/// - **阈值门槛**：预估释放 < `prefs.auto_clean_l1_threshold` 就跳过本轮——清几 MB 不值得
+///   为它弹一次 UAC 建还原点。
+/// - **同样建还原点**（验收③）：自动清理同样建系统还原点，**建失败 → 本轮直接跳过**，
+///   绝不在没有兜底时后台裸奔删文件。
+/// - **走保险箱**（task-100「走保险箱」）：文件移入保险箱而非永久删除，用户不在场仍可追溯。
+/// - **审计可查**（验收④）：复用 `execute_items`，逐条成功/失败都写 audit_log。
+fn auto_clean_l1(app: &AppHandle, o: &ScanOutcome) -> AutoCleanOutcome {
+    let paths = app.state::<crate::paths::AppPaths>();
+    let conn = match engine::db::conn::open(&paths.data_root) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[auto-clean] open db: {e}");
+            return AutoCleanOutcome::skipped();
+        }
+    };
+
+    // 开关读失败按「关」处理（fail-closed，绝不默认自动删除）。
+    if !engine::prefs::get_auto_clean_l1(&conn) {
+        return AutoCleanOutcome::skipped();
+    }
+    let threshold = engine::prefs::get_auto_clean_l1_threshold(&conn);
+
+    // 只清本次 session 的 L1 项。
+    let item_ids: Vec<i64> = {
+        let mut stmt = match conn
+            .prepare("SELECT id FROM cleanup_item WHERE session_id = ?1 AND risk_level = 'L1'")
+        {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("[auto-clean] prepare l1 select: {e}");
+                return AutoCleanOutcome::skipped();
+            }
+        };
+        let rows = match stmt.query_map(engine::rusqlite::params![o.session_id], |r| {
+            r.get::<_, i64>(0)
+        }) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("[auto-clean] query l1 ids: {e}");
+                return AutoCleanOutcome::skipped();
+            }
+        };
+        rows.filter_map(Result::ok).collect()
+    };
+    if item_ids.is_empty() {
+        return AutoCleanOutcome::skipped();
+    }
+
+    // 阈值门槛：预估释放不足则跳过（建还原点的 UAC/等待不划算）。
+    let estimated: i64 = conn
+        .query_row(
+            "SELECT COALESCE(SUM(size_bytes), 0) FROM cleanup_item
+             WHERE session_id = ?1 AND risk_level = 'L1'",
+            engine::rusqlite::params![o.session_id],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if estimated < threshold {
+        eprintln!(
+            "[auto-clean] 预估释放 {}B < 阈值 {}B，跳过本轮自动清理",
+            estimated, threshold
+        );
+        return AutoCleanOutcome::skipped();
+    }
+
+    // 自动清理同样建系统还原点（验收③）。找不到提权 exe / 建失败 → 本轮跳过。
+    let Some(exe) = crate::commands::locate_elevation_exe(&paths) else {
+        eprintln!("[auto-clean] 提权 exe 未找到，跳过自动清理");
+        return AutoCleanOutcome::restore_skip();
+    };
+    if let Err(e) = engine::elevation::ensure_restore_point(&conn, &exe) {
+        eprintln!("[auto-clean] 还原点创建失败，跳过自动清理: {e}");
+        return AutoCleanOutcome::restore_skip();
+    }
+
+    // 走保险箱 + 复用 execute_items 的二次白名单校验与审计。
+    let external_deny = crate::commands::load_external_deny(&paths.rules_dir).unwrap_or_default();
+    let summary = engine::execute::executor::execute_items(
+        &item_ids,
+        &conn,
+        &external_deny,
+        |_item_id, task_id| -> Box<dyn engine::execute::delete::Deleter + '_> {
+            let source = if task_id >= 0 { Some(task_id) } else { None };
+            Box::new(engine::execute::safe_box::SafeBoxDeleter::new(
+                &paths.box_dir,
+                &conn,
+                source,
+            ))
+        },
+    );
+
+    // 通知前端「自动清理完成」，仪表盘据此刷新统计与列表。
+    let _ = app.emit(
+        "auto-scan://cleaned",
+        serde_json::json!({
+            "deleted": summary.deleted_count,
+            "bytes": summary.bytes_freed_total,
+            "failed": summary.failed_count,
+        }),
+    );
+
+    AutoCleanOutcome {
+        cleaned: true,
+        freed_bytes: summary.bytes_freed_total,
+        deleted_count: summary.deleted_count,
+        skipped_for_restore_point: false,
+    }
+}
+
+/// 扫描完成后的统一收尾：执行自动清理（若开启）+ 生成给用户看的通知文案。
+fn post_scan(app: &AppHandle, o: &ScanOutcome) -> String {
+    let outcome = auto_clean_l1(app, o);
+    if outcome.cleaned {
+        format!(
+            "自动扫描完成：发现 {} 项可清理，已自动清理 L1 安全项 {} 项、约 {}（已移入保险箱）",
+            o.items,
+            outcome.deleted_count,
+            human_bytes(outcome.freed_bytes as i64)
+        )
+    } else if outcome.skipped_for_restore_point {
+        format!(
+            "发现 {} 项可清理，但自动清理因系统还原点创建失败被跳过，可打开应用手动清理",
+            o.items
+        )
+    } else {
+        notify_body(o)
+    }
+}
+
 /// 记「上次自动扫描时间」。写失败只打日志，不影响扫描结果。
 ///
 /// **无论成败都要记**：不记的话，扫描失败时应用内轮询会每 30 分钟重试轰炸。
@@ -161,9 +324,9 @@ fn tick_once(app: &AppHandle) -> Result<Option<String>, String> {
         return Ok(Some("用户正在手动扫描，跳过本轮自动扫描".into()));
     };
 
-    // 2. 记时间（成败都记）+ 通知。
+    // 2. 记时间（成败都记）+ 自动清理 L1（若开启）+ 通知。
     mark_last_scan(app);
-    let _ = notify(app, &notify_body(&o));
+    let _ = notify(app, &post_scan(app, &o));
 
     Ok(Some(format!(
         "完成 session={} ok={} items={} bytes={}",
@@ -193,7 +356,7 @@ pub fn run_once_for_task(app: &AppHandle) -> Result<String, String> {
     };
 
     mark_last_scan(app);
-    let _ = notify(app, &notify_body(&o));
+    let _ = notify(app, &post_scan(app, &o));
     Ok(format!(
         "计划任务完成 session={} ok={} items={} bytes={}",
         o.session_id, o.ok, o.items, o.bytes

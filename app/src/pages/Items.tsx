@@ -22,7 +22,7 @@
 // %TEMP% 里被锁住的小文件）在 UI 上根本找不到 —— 走查 G2 缺陷。现在改为
 // `{ page, pageSize }` 分页入参 + 底部翻页栏，翻页时清空勾选（避免跨页误删）。
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { formatBytes } from "../utils/formatBytes";
 import { api, apiRaw } from "../utils/invoke";
@@ -448,6 +448,7 @@ export default function Items({
   // 提示文案留在本地 state：载荷被清掉之后用户还得看得到「勾选了几项、几条没找到」。
   useEffect(() => {
     if (!planApply || planApply.itemIds.length === 0) return;
+    planApplied.current = true;
     setSelected(new Set(planApply.itemIds));
     setPlanNotice(planApply.notice);
     setPreview(null); // 勾选变了，旧预览失效（与 C8 的处理一致）
@@ -458,6 +459,62 @@ export default function Items({
   useEffect(() => {
     onSelectionChange?.(Array.from(selected));
   }, [selected, onSelectionChange]);
+
+  // task-084 C2：草稿暂存。三件事在一个开关（draftHydrated）下串起来：
+  //   1. 挂载首拉完成后读回上次勾选（draft_load），按路径回当前页 rows 恢复勾选；
+  //   2. 恢复完成之后，任何 selected 变更都即时覆写草稿（draft_save）；
+  //   3. 清理成功后清空草稿（draft_clear，在 runCleanup 里）。
+  // 为什么必须这套开关：首拉完成前 selected 是空的，若不 gate，那一次「空勾选」变更
+  // 会在恢复拖着回写之前先把草稿覆写成空——用户重开的勾选就丢了。
+  //
+  // 恢复范围说明（受分页约束的取舍）：草稿存的是**路径**，而本页只拉第一页，
+  // 恢复只匹配当前 rows（第一页）里存在、且路径在草稿中的项。第一页之外的历史勾选
+  // 页面上本来就看不到（用户需翻页手动复核），不强行跨页恢复，避免「勾了却看不见」
+  // 的隐性状态。
+  const draftHydrated = useRef(false);
+  // task-084 C2：本会话是否已应用过「方案」。应用方案的勾选是用户**当下**的选择，
+  // 优先级高于旧草稿——若直接按旧草稿恢复，会把刚套好的方案勾选覆盖掉。
+  const planApplied = useRef(false);
+
+  useEffect(() => {
+    if (draftHydrated.current) return;
+    // 等首拉真正落地（status 变 ok 且 rows 非空）再做恢复。
+    if (status !== "ok" || rows.length === 0) return;
+    // 已应用方案的会话不再恢复旧草稿（方案勾选优先），但标记已化，后续变更照常写草稿。
+    if (planApplied.current) {
+      draftHydrated.current = true;
+      return;
+    }
+    (async () => {
+      try {
+        const list = await api<Array<{ itemPath: string }> | null>("draft_load", {});
+        if (!Array.isArray(list)) return;
+        const draftPaths = new Set(list.map((d) => d.itemPath));
+        const restored = new Set(
+          rows.filter((r) => draftPaths.has(r.path)).map((r) => r.id),
+        );
+        if (restored.size > 0) {
+          setSelected(restored);
+          setMsg(`已恢复上次会话的 ${restored.size} 项勾选`);
+        }
+      } catch {
+        // 读失败 fail-closed：不恢复、也不打扰用户（草稿是低价值状态）。
+      } finally {
+        draftHydrated.current = true;
+      }
+    })();
+  }, [status, rows]);
+
+  // task-084 C2：恢复完成后，勾选一变就即时覆写整张草稿。
+  useEffect(() => {
+    if (!draftHydrated.current) return;
+    const paths = rows.filter((r) => selected.has(r.id)).map((r) => r.path);
+    // 后端是「清空 + 重写」，空 paths = 清草稿（用户手动取消全部勾选）。
+    void api<null>("draft_save", { itemPaths: paths }).catch((e) => {
+      // 写失败 fail-closed：丢一次草稿不阻塞页面，下次勾选仍会重写。
+      console.error("draft_save failed", e);
+    });
+  }, [rows, selected]);
 
   /**
    * 翻页：越界直接忽略；翻页时清空勾选。
@@ -507,80 +564,113 @@ export default function Items({
   // task-049：三态互斥（清理 / 重试 / 预览 任一为真时，其余操作按钮禁用）。
   const busy = cleaning || retrying || previewing;
 
-  const cleanup = useCallback(async () => {
-    if (selected.size === 0 || busy) return;
-    setCleaning(true);
-    setResult(null);
-    // C8：清理成功后清单会变，预览必然过期。
-    setPreview(null);
-    try {
-      const ids = Array.from(selected);
-      // task-062：含 L2 风险项时后端会先建系统还原点（弹一次 UAC）。
-      // 用 apiRaw 而不是 api——需要接住 2007（还原点失败）这个业务码，
-      // api() 会把它当异常抛掉，拿不到码就没法区分「还原点失败」和「清理失败」。
-      let env = await apiRaw<ExecuteSummary>("cleanup_execute", { itemIds: ids });
-      if (env.code === 2007) {
-        // 还原点创建失败（最常见原因：系统还原被关闭 / UAC 被拒）。
-        // 让用户自己决定要不要继续——不替他做决定，但也不让流程卡死。
-        const go = window.confirm(
-          "系统还原点创建失败。\n\n" +
-            "常见原因：系统还原功能未开启、UAC 提权被取消、或还原点磁盘空间不足。\n\n" +
-            "继续清理的话，文件仍会先移入保险箱（7 天内可恢复），但**没有系统级回滚点**。\n\n" +
-            "是否继续清理？",
-        );
-        if (!go) {
-          setResult({
-            tone: "fail",
-            headline: "已取消清理：系统还原点创建失败",
-            failures: [],
-            refused: [],
+  // task-064：本页的 L0 提示项（task-084 B2「一键清理 L0」用）。
+  // L0 = 完全无风险临时文件（风险徽标底色最淡）。同样**只统计当前页**。
+  const l0Rows = rows.filter((r) => r.riskLevel === "L0");
+  const l0Count = l0Rows.length;
+  const l0Bytes = l0Rows.reduce((sum, r) => sum + r.sizeBytes, 0);
+
+  /**
+   * 清理核心（供「清理已选」与 task-084 B2「一键清理 L0」共用）。
+   *
+   * 抽出而不是各自内联：两处都要走「接住 2007 还原点失败 → 让用户决定继续」这条
+   * 路径，还要渲染统一的结果条 + 重拉列表。唯一区别是 ids 来源不同。
+   */
+  const runCleanup = useCallback(
+    async (ids: number[]) => {
+      if (ids.length === 0 || busy) return;
+      setCleaning(true);
+      setResult(null);
+      // C8：清理成功后清单会变，预览必然过期。
+      setPreview(null);
+      try {
+        // task-062：含 L2 风险项时后端会先建系统还原点（弹一次 UAC）。
+        // 用 apiRaw 而不是 api——需要接住 2007（还原点失败）这个业务码，
+        // api() 会把它当异常抛掉，拿不到码就没法区分「还原点失败」和「清理失败」。
+        let env = await apiRaw<ExecuteSummary>("cleanup_execute", { itemIds: ids });
+        if (env.code === 2007) {
+          // 还原点创建失败（最常见原因：系统还原被关闭 / UAC 被拒）。
+          // 让用户自己决定要不要继续——不替他做决定，但也不让流程卡死。
+          const go = window.confirm(
+            "系统还原点创建失败。\n\n" +
+              "常见原因：系统还原功能未开启、UAC 提权被取消、或还原点磁盘空间不足。\n\n" +
+              "继续清理的话，文件仍会先移入保险箱（7 天内可恢复），但**没有系统级回滚点**。\n\n" +
+              "是否继续清理？",
+          );
+          if (!go) {
+            setResult({
+              tone: "fail",
+              headline: "已取消清理：系统还原点创建失败",
+              failures: [],
+              refused: [],
+            });
+            return;
+          }
+          // 用户确认继续 → 带 skipRestorePoint 重调。
+          env = await apiRaw<ExecuteSummary>("cleanup_execute", {
+            itemIds: ids,
+            skipRestorePoint: true,
           });
-          return;
         }
-        // 用户确认继续 → 带 skipRestorePoint 重调。
-        env = await apiRaw<ExecuteSummary>("cleanup_execute", {
-          itemIds: ids,
-          skipRestorePoint: true,
+        if (env.code !== 0 || !env.data) {
+          throw new Error(env.message || `清理失败（code=${env.code}）`);
+        }
+        const summary = env.data;
+        // task-052 G5：已不存在（alreadyGone）既不算成功释放、也不算失败，
+        // 必须从失败明细里排除，否则会渲染出一堆「— 未知原因」的假失败行。
+        const failures = summary.results.filter((r) => !r.deleted && !r.alreadyGone);
+        const gone = summary.alreadyGoneCount ?? 0;
+        // 走查 G5 的原始症状是「已清理 1 项，释放 0 B」：真删了 0 字节却报成功。
+        // 现在把「已不存在」单独说出来，用户能看懂为什么释放量比预期小。
+        const okHeadline =
+          `已清理 ${summary.deletedCount} 项，释放 ${formatBytes(summary.bytesFreedTotal)}` +
+          (gone > 0 ? `；${gone} 项已不存在（未计入释放量）` : "");
+        setResult({
+          tone: failures.length === 0 ? "ok" : "fail",
+          headline:
+            failures.length === 0
+              ? okHeadline
+              : `清理完成：成功 ${summary.deletedCount} 项 / 失败 ${summary.failedCount} 项` +
+                (gone > 0 ? ` / 已不存在 ${gone} 项` : ""),
+          failures,
+          refused: [],
+          // task-063：留着完整结果，供结果条上的「导出报告」使用。
+          summary,
         });
+        setSelected(new Set());
+        // task-084 C2：清理落地后草稿作废，清掉（避免下次重开又恢复出已删路径）。
+        void api<null>("draft_clear", {}).catch(() => {});
+        await load();
+      } catch (e) {
+        setResult({
+          tone: "fail",
+          headline: `清理失败：${String(e)}`,
+          failures: [],
+          refused: [],
+        });
+      } finally {
+        setCleaning(false);
       }
-      if (env.code !== 0 || !env.data) {
-        throw new Error(env.message || `清理失败（code=${env.code}）`);
-      }
-      const summary = env.data;
-      // task-052 G5：已不存在（alreadyGone）既不算成功释放、也不算失败，
-      // 必须从失败明细里排除，否则会渲染出一堆「— 未知原因」的假失败行。
-      const failures = summary.results.filter((r) => !r.deleted && !r.alreadyGone);
-      const gone = summary.alreadyGoneCount ?? 0;
-      // 走查 G5 的原始症状是「已清理 1 项，释放 0 B」：真删了 0 字节却报成功。
-      // 现在把「已不存在」单独说出来，用户能看懂为什么释放量比预期小。
-      const okHeadline =
-        `已清理 ${summary.deletedCount} 项，释放 ${formatBytes(summary.bytesFreedTotal)}` +
-        (gone > 0 ? `；${gone} 项已不存在（未计入释放量）` : "");
-      setResult({
-        tone: failures.length === 0 ? "ok" : "fail",
-        headline:
-          failures.length === 0
-            ? okHeadline
-            : `清理完成：成功 ${summary.deletedCount} 项 / 失败 ${summary.failedCount} 项` +
-              (gone > 0 ? ` / 已不存在 ${gone} 项` : ""),
-        failures,
-        refused: [],
-        // task-063：留着完整结果，供结果条上的「导出报告」使用。
-        summary,
-      });
-      setSelected(new Set());
-      await load();
-    } catch (e) {
-      setResult({
-        tone: "fail",
-        headline: `清理失败：${String(e)}`,
-        failures: [],
-        refused: [],
-      });
-    } finally {
-      setCleaning(false);
-    }
-  }, [selected, busy, load]);
+    },
+    [busy, load]
+  );
+
+  const cleanup = useCallback(
+    () => runCleanup(Array.from(selected)),
+    [runCleanup, selected]
+  );
+
+  // task-084 B2：一键清理 L0。直接清本页所有 L0 项，不要求先手动勾选。
+  const cleanL0 = useCallback(() => {
+    if (l0Count === 0 || busy) return;
+    const roomHint = formatBytes(l0Bytes);
+    const go = window.confirm(
+      `将清理本页 ${l0Count} 项 L0 无风险临时文件（约 ${roomHint}）。\n\n` +
+      "L0 为完全无风险项，删除不影响系统；清理前仍会创建系统还原点。是否继续？",
+    );
+    if (!go) return;
+    runCleanup(l0Rows.map((r) => r.id));
+  }, [l0Count, l0Bytes, l0Rows, busy, runCleanup]);
 
   // task-063：导出报告。把本次清理结果原样传回后端渲染（结果只在前端内存里）。
   const exportReport = useCallback(
@@ -904,6 +994,28 @@ export default function Items({
           }}
         >
           全选 L1（安全）
+        </button>
+        {/* task-084 B2：一键清理 L0。L0 = 完全无风险临时文件，直接清，不用先勾选。
+            底色用 muted 灰——刻意比 L1 绿色更「弱」，体现「无风险」不是「亮点」。 */}
+        <button
+          onClick={cleanL0}
+          disabled={busy || l0Count === 0}
+          title={
+            l0Count === 0
+              ? "本页没有 L0 无风险项"
+              : `一键清理本页 ${l0Count} 项 L0 临时文件（约 ${formatBytes(l0Bytes)}）`
+          }
+          style={{
+            padding: "6px 14px",
+            borderRadius: 6,
+            border: "1px solid var(--border)",
+            background: l0Count === 0 ? "var(--surface)" : "var(--bg)",
+            color: l0Count === 0 ? "var(--text-muted)" : "var(--text)",
+            fontSize: 13,
+            cursor: l0Count === 0 ? "not-allowed" : "pointer",
+          }}
+        >
+          {cleaning ? "清理中…" : "一键清理 L0"}
         </button>
         <button
           onClick={previewSelection}

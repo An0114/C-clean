@@ -201,6 +201,55 @@ pub fn fixed_drive_letters() -> Vec<char> {
     fixed_drives().iter().map(|d| d.letter).collect()
 }
 
+/// 系统盘盘符（大写，如 `'C'`）。
+///
+/// 读 `SystemDrive` 环境变量（Windows 安装时定好，值形如 `C:`）；拿不到时回退 `'C'`。
+/// 大文件地图跨盘扩展需要区分「系统盘沿用用户目录语义」和「非系统盘扫盘顶一级目录」，
+/// 这个区分是安全/语义边界，不能靠「盘符字母最小就当作系统盘」这种假设。
+pub fn system_drive_letter() -> char {
+    std::env::var("SystemDrive")
+        .ok()
+        .and_then(|s| drive_letter_of(&s))
+        .unwrap_or('C')
+}
+
+/// 所有**非系统**固定盘的顶层目录（task-084 B3 跨盘扩展）。
+///
+/// # 语义
+///
+/// 系统盘沿用「用户目录」语义（Downloads/Documents/Desktop/...），这部分由调用方
+/// 拼（它知道自己的用户目录清单）；**这里补全的是非系统盘该扫什么**：D:/E: 常是数据盘，
+/// 顶层往往就是「Games」「Data」「Projects」这类分门别类的目录，直接整盘递归既慢又没必要，
+/// 扫一层顶层目录即可。调用方把 `system_roots` 与这里的结果拼在一起就是全盘的根集合。
+///
+/// # 安全 / 韧性
+///
+/// 只返回「读得出来」的顶层目录——ACL 拒读的目录跳过（读写都进不了目录，扫也白扫）。
+/// 非 Windows 平台 `fixed_drives()` 返回空，这里自然为空。
+pub fn non_system_drive_top_dirs() -> Vec<std::path::PathBuf> {
+    let sys = system_drive_letter();
+    let mut out = Vec::new();
+    for d in fixed_drives() {
+        if d.letter == sys {
+            continue;
+        }
+        let root = std::path::PathBuf::from(format!("{}:\\", d.letter));
+        let Ok(entries) = std::fs::read_dir(&root) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            let p = e.path();
+            if std::fs::symlink_metadata(&p)
+                .map(|m| m.is_dir())
+                .unwrap_or(false)
+            {
+                out.push(p);
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

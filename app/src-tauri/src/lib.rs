@@ -157,6 +157,8 @@ pub fn run() {
             commands::user_rules_update,
             commands::user_rules_set_enabled,
             commands::user_rules_delete,
+            commands::user_rules_export,
+            commands::user_rules_import,
             commands::get_prefs,
             commands::set_prefs,
             // task-062：托盘 / 自启
@@ -168,9 +170,14 @@ pub fn run() {
             commands::winsxs_cleanup,
             // task-066：大文件地图（E 模块，只读）
             commands::big_files_scan,
+            // task-084 A2/A3：大文件地图扩展（重复文件 / 文件夹分布，只读）
+            commands::big_files_duplicates,
+            commands::big_files_folder_stats,
             // task-067：残留增强（D 模块）
             commands::residual_scan,
             commands::residual_delete,
+            // task-084 A4：残留一键定位（explorer /select）
+            commands::residual_locate,
             // task-068：注册表健康中心（F 模块）
             commands::registry_health_scan,
             commands::registry_health_delete,
@@ -184,7 +191,11 @@ pub fn run() {
             commands::plan_delete,
             commands::plan_apply,
             commands::plan_export,
-            commands::plan_import
+            commands::plan_import,
+            // task-084 C2：草稿暂存——勾选跨会话持久化 / 恢复 / 清空
+            commands::draft_save,
+            commands::draft_load,
+            commands::draft_clear
         ])
         .run(tauri::generate_context!())
         .expect("error while running C-Disk Cleaner");

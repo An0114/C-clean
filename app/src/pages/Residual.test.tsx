@@ -218,6 +218,43 @@ describe("残留扫描", () => {
     expect(screen.getByText(/文件被占用/)).toBeTruthy();
   });
 
+  it("点击「定位」调用 residual_locate，实参是那条路径", async () => {
+    mockInvoke();
+    render(<Residual />);
+    await screen.findByText("WinRAR");
+
+    fireEvent.click(screen.getByRole("button", { name: "定位 WinRAR" }));
+
+    await waitFor(() => expect(callsOf("residual_locate")).toHaveLength(1));
+    expect(callsOf("residual_locate")[0]).toEqual({ path: FILE_ITEM_A.path });
+  });
+
+  it("定位目标已不存在（2008）时提示并刷新列表", async () => {
+    mockInvoke({
+      residual_locate: () =>
+        Promise.resolve({ code: 2008, message: "要定位的路径已不存在", data: null }),
+    });
+    render(<Residual />);
+    await screen.findByText("WinRAR");
+
+    fireEvent.click(screen.getByRole("button", { name: "定位 WinRAR" }));
+
+    expect(await screen.findByText(/已不存在/)).toBeTruthy();
+    // 定位失败触发一次重新扫描（该条残留可能已被清掉）
+    await waitFor(() => expect(callsOf("residual_scan")).toHaveLength(2));
+  });
+
+  it("注册表残留 tab 不提供「定位」按钮（失效路径按定义已不存在）", async () => {
+    mockInvoke();
+    render(<Residual />);
+    await screen.findByText("文件残留（2）");
+
+    fireEvent.click(screen.getByText("注册表残留（1）"));
+    await screen.findByText("Google Chrome");
+
+    expect(screen.queryByRole("button", { name: /定位/ })).toBeNull();
+  });
+
   it("扫描失败时展示原因，不留旧列表", async () => {
     mockedInvoke.mockImplementation(((cmd: string) => {
       if (cmd === "residual_scan") return Promise.reject("注册表读取失败：拒绝访问");

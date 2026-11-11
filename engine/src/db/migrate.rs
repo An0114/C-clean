@@ -25,6 +25,8 @@ use crate::db::DbError;
 /// - v3（task-077）：`cleanup_item` 加 `drive_letter` 派生列（盘符）+ 组合索引；
 /// - v4（task-078）：新增 `user_rules` 表（用户自定义清理规则）；
 /// - v5（task-083）：新增 `software_inventory` 表（软件清单缓存，B1 落地）。
+/// - v6（task-084）：新增 `bigfiles_target_space` + `duplicate_files` 表（大文件地图 v2 缓存）。
+/// - v7（task-084）：新增 `draft_selections` 表（草稿暂存，用户勾选跨会话恢复）。
 ///
 /// # 为什么 v3 不是任务书说的 v2
 ///
@@ -37,6 +39,8 @@ static MIGRATIONS: &[(u32, &str)] = &[
     (3, include_str!("migrations/v3__drive_letter.sql")),
     (4, include_str!("migrations/v4__user_rules.sql")),
     (5, include_str!("migrations/v5__software_awareness.sql")),
+    (6, include_str!("migrations/v6__bigfiles_v2.sql")),
+    (7, include_str!("migrations/v7__draft.sql")),
 ];
 
 /// 对连接执行所有「版本号 > 当前 user_version」的迁移，返回迁移后的最新版本号。
@@ -96,8 +100,8 @@ mod tests {
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
         assert_eq!(
-            v, 5,
-            "最新版本应为 v5（v2 safe_box / v3 drive_letter / v4 user_rules / v5 software_inventory）"
+            v, 7,
+            "最新版本应为 v7（v5 software_inventory / v6 bigfiles_v2 / v7 draft_selections）"
         );
     }
 
@@ -115,6 +119,44 @@ mod tests {
         assert!(
             cols.iter().any(|c| c == "drive_letter"),
             "cleanup_item 应有 drive_letter 列，实际: {cols:?}"
+        );
+    }
+
+    #[test]
+    fn v6_adds_bigfiles_tables() {
+        let conn = migrated();
+        let names: Vec<String> = conn
+            .prepare(
+                "SELECT name FROM sqlite_master WHERE type='table' \
+                 AND name IN ('bigfiles_target_space','duplicate_files') ORDER BY name",
+            )
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "bigfiles_target_space".to_string(),
+                "duplicate_files".to_string()
+            ],
+            "v6 应建 bigfiles_target_space + duplicate_files 两张表"
+        );
+
+        // duplicate_files 的 is_keep 默认 0（保守策略，不自动删）。
+        // pragma_table_info.dflt_value 以字符串形式返回默认值（如 "0" / "1"）。
+        let dflt: Option<String> = conn
+            .query_row(
+                "SELECT dflt_value FROM pragma_table_info('duplicate_files') WHERE name='is_keep'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            dflt.as_deref(),
+            Some("0"),
+            "duplicate_files.is_keep 默认值应为 0"
         );
     }
 
@@ -190,10 +232,11 @@ mod tests {
 
     #[test]
     fn migrate_is_idempotent() {
-        // 重复打开同一库不该重复执行迁移（ALTER TABLE 第二次会报「列已存在」）
+        // 重复打开同一库不该重复执行迁移（ALTER TABLE 第二次会报「列已存在」）。
+        // task-084：v7 已加入（draft_selections），最新版本从 6 升到 7。
         let conn = migrated();
-        assert_eq!(migrate(&conn).unwrap(), 5);
-        assert_eq!(migrate(&conn).unwrap(), 5);
+        assert_eq!(migrate(&conn).unwrap(), 7);
+        assert_eq!(migrate(&conn).unwrap(), 7);
     }
 
     #[test]
@@ -327,5 +370,43 @@ mod tests {
         };
         assert!(ins("A").is_ok());
         assert!(ins("B").is_err(), "重复 registry_key 必须被唯一索引拒绝");
+    }
+
+    // ===== task-084 C2：v7 draft_selections =====
+
+    #[test]
+    fn v7_creates_draft_selections_table() {
+        let conn = migrated();
+        let mut stmt = conn
+            .prepare("PRAGMA table_xinfo(draft_selections)")
+            .unwrap();
+        let cols: Vec<String> = stmt
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        for want in ["id", "scan_id", "item_path", "selected_at"] {
+            assert!(
+                cols.iter().any(|c| c == want),
+                "draft_selections 缺列 {want}: {cols:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn v7_item_path_is_unique() {
+        // 同一路径只允许一行（upsert 语义），重复插入必须被唯一索引拒绝
+        let conn = migrated();
+        let ins = |p: &str| {
+            conn.execute(
+                "INSERT INTO draft_selections (item_path, selected_at) VALUES (?1, 1000)",
+                [p],
+            )
+        };
+        assert!(ins(r"C:\Users\A\Temp\x.tmp").is_ok());
+        assert!(
+            ins(r"C:\Users\A\Temp\x.tmp").is_err(),
+            "重复 item_path 必须被唯一索引拒绝"
+        );
     }
 }

@@ -34,7 +34,7 @@ use crate::progress::ProgressState;
 ///
 /// rules_dir 由 AppPaths 在 setup 时定位（prod 从 bundled 复制到 data_root，
 /// dev 回退仓库根 rules/）。加载失败一律保守返回 Err，由调用方转 5001。
-fn load_external_deny(rules_dir: &Path) -> Result<Vec<String>, String> {
+pub(crate) fn load_external_deny(rules_dir: &Path) -> Result<Vec<String>, String> {
     let loaded = load_rules(rules_dir).map_err(|e| format!("rules load failed: {e}"))?;
     Ok(external_deny_list(&loaded))
 }
@@ -196,14 +196,14 @@ pub async fn cleanup_dry_run(
     ))
 }
 
-/// 定位提权 exe（task-062）。
+/// 定位提权 exe（task-062）。`pub(crate)` 供 task-084 B1 的 auto_scan 复用。
 ///
 /// 三个候选，按优先级：
 /// 1. **安装态**：`bundle.resources` 把 `cclean-elevation.exe` 映射到安装目录**根**，
 ///    而 `scripts_dir` 就是 `<resource>/scripts`，所以 `parent()` 就是 resource 根；
 /// 2. **本机打包后**：workspace 根的 `target/release/`；
 /// 3. **dev**：`target/debug/`。
-fn locate_elevation_exe(paths: &AppPaths) -> Option<std::path::PathBuf> {
+pub(crate) fn locate_elevation_exe(paths: &AppPaths) -> Option<std::path::PathBuf> {
     if let Some(root) = paths.scripts_dir.parent() {
         let p = root.join("cclean-elevation.exe");
         if p.is_file() {
@@ -861,6 +861,22 @@ pub async fn set_prefs(
         eprintln!("[set_prefs] write auto_scan_interval: {e}");
         return Ok(Envelope::err(INTERNAL));
     }
+    // task-084 B1：自动扫描完成后自动清理 L1。bool，与 auto_scan_enabled 同层。
+    if let Err(e) = engine::prefs::set_auto_clean_l1(&conn, prefs.auto_clean_l1) {
+        eprintln!("[set_prefs] write auto_clean_l1: {e}");
+        return Ok(Envelope::err(INTERNAL));
+    }
+    // B1 附表：预估释放阈值。≤0 由 get 回退默认，这里直接落库原值。
+    if let Err(e) = engine::prefs::set_auto_clean_l1_threshold(&conn, prefs.auto_clean_l1_threshold)
+    {
+        eprintln!("[set_prefs] write auto_clean_l1_threshold: {e}");
+        return Ok(Envelope::err(INTERNAL));
+    }
+    // task-084 B5：dev_cache 是否识别 Gradle/Maven 依赖缓存。bool，默认 false。
+    if let Err(e) = engine::prefs::set_dev_cache_gradle_maven(&conn, prefs.dev_cache_gradle_maven) {
+        eprintln!("[set_prefs] write dev_cache_gradle_maven: {e}");
+        return Ok(Envelope::err(INTERNAL));
+    }
     Ok(Envelope::ok(engine::prefs::Prefs::load(&conn)))
 }
 
@@ -1053,6 +1069,72 @@ pub async fn user_rules_delete(
     Ok(Envelope::ok(removed))
 }
 
+/// 用户规则导出目录：`<data_root>/user_rules/exports/`。
+///
+/// 与 [`plans_export_dir`] 同样的固定目录模式：本项目没引 `tauri-plugin-dialog`，
+/// 没有系统文件选择框，导出写固定目录、把完整路径返回给界面，导入时让用户把
+/// 路径粘回来。
+fn user_rules_exports_dir(paths: &AppPaths) -> std::path::PathBuf {
+    paths.data_root.join("user_rules").join("exports")
+}
+
+/// `user_rules_export`：把全部用户规则导成一个 JSON 文件，返回落盘绝对路径。
+///
+/// 导出的文件带格式标记 `cclean-user-rules` + 版本号，导入侧据此校验，防止把
+/// 方案或其他 JSON 当规则导进来。空规则库也照常导出（前端用「N 条」提示）——
+/// 空的导出文件在下一次导入时是合法的（0 条新增，不算错误）。
+#[tauri::command]
+pub async fn user_rules_export(
+    paths: tauri::State<'_, AppPaths>,
+) -> Result<Envelope<String>, String> {
+    let conn = engine::db::conn::open(&paths.data_root).map_err(|e| e.to_string())?;
+    let json = engine::ipc::commands::user_rules::export_to_json(
+        &conn,
+        engine::ipc::commands::plan::now_secs(),
+    )
+    .map_err(|e| e.to_string())?;
+
+    let dir = user_rules_exports_dir(&paths);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("创建导出目录失败: {e}"))?;
+    let filename = format!(
+        "user-rules-{}.json",
+        engine::ipc::commands::plan::now_secs()
+    );
+    let path = dir.join(filename);
+    std::fs::write(&path, json).map_err(|e| format!("写导出文件失败: {e}"))?;
+
+    let p = path.display().to_string();
+    eprintln!("[user_rules_export] 已导出 → {p}");
+    Ok(Envelope::ok(p))
+}
+
+/// `user_rules_import`：从用户给出的 JSON 文件路径导入规则，返回合并结果。
+///
+/// `policy` 控制撞车（库里已有同 pattern）时的行为：`"overwrite"` 用文件里的
+/// 新值覆盖，其余（含缺省）一律 `"skip"`——保守，永不覆盖用户已有数据。
+/// 新增的规则仍走完整校验（L1/L2、静态根、红线），不因导入而绕过。
+#[tauri::command]
+pub async fn user_rules_import(
+    file_path: String,
+    policy: String,
+    paths: tauri::State<'_, AppPaths>,
+) -> Result<Envelope<engine::ipc::commands::user_rules::ImportResult>, String> {
+    let policy = match policy.to_ascii_lowercase().as_str() {
+        "overwrite" => engine::ipc::commands::user_rules::ConflictPolicy::Overwrite,
+        _ => engine::ipc::commands::user_rules::ConflictPolicy::Skip,
+    };
+    let conn = engine::db::conn::open(&paths.data_root).map_err(|e| e.to_string())?;
+    let raw =
+        std::fs::read_to_string(&file_path).map_err(|e| format!("读文件 {file_path} 失败: {e}"))?;
+    let result = engine::ipc::commands::user_rules::import_from_json(&conn, &raw, policy)
+        .map_err(|e| e.to_string())?;
+    eprintln!(
+        "[user_rules_import] added={} skipped={} overwritten={} rejected={}",
+        result.added, result.skipped, result.overwritten, result.rejected
+    );
+    Ok(Envelope::ok(result))
+}
+
 // ===================== task-062：托盘 / 开机自启 =====================
 
 /// `quit_app`：真正退出进程。
@@ -1203,50 +1285,65 @@ pub async fn winsxs_cleanup(
 
 // ===================== task-066：大文件地图（E 模块） =====================
 
-/// 系统盘根路径，形如 `C:/`。
-///
-/// **不写死 `C:/`**：系统装在 D 盘的机器上，写死会让扫描永远返回空。
-/// `SystemDrive` 是 Windows 安装时就定好的环境变量（值形如 `C:`），最可靠。
-fn system_drive_root() -> std::path::PathBuf {
-    let drive = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".to_string());
-    std::path::PathBuf::from(format!("{drive}\\"))
-}
-
-/// `big_files_scan`：大文件地图（task-066）。
+/// `big_files_scan`：大文件地图（task-066；task-084 B3 跨盘）。
 ///
 /// # 只读
 ///
-/// 扫 hiberfil.sys / Windows.old / 回收站 / Top100，**一个字节都不删**。
-/// 这四类的正规处理方式各不相同（`powercfg /h off`、磁盘清理、清空回收站、
+/// 扫 hiberfil.sys / Windows.old / 回收站 / 各盘 Top 大文件，**一个字节都不删**。
+/// 这几类的正规处理方式各不相同（`powercfg /h off`、磁盘清理、清空回收站、
 /// 用户自己判断），所以本命令只负责「量出来 + 给建议」。
+///
+/// # task-084 B3 跨盘
+///
+/// v0.5.0 起覆盖所有**固定盘**：系统盘沿用用户目录语义（三分类卡 + 目标空间 + Top），
+/// 非系统盘扫盘顶一级目录的 Top 大文件。每个条目带 `drive_letter`，前端据此分组展示。
 ///
 /// # 为什么是 async
 ///
-/// Top100 要遍历系统盘的用户目录，几万到几十万条目，同步跑会卡住 IPC 线程池。
+/// 大文件要遍历多盘，几万到几十万条目，同步跑会卡住 IPC 线程池。
 /// async 让它跑在 Tauri 的异步执行器上，UI 不受影响。
 ///
 /// # 耗时保护
 ///
-/// engine 侧有「20 万条目 / 20 秒」双上限，撞到就返回 `truncated: true`——
+/// engine 侧有「20 万条目 / 20 秒」双上限（每盘独立），撞到就返回 `truncated: true`——
 /// 宁可少列几条，也不能让一次点击变成「转圈几分钟」。
 #[tauri::command]
 pub async fn big_files_scan() -> Result<Envelope<engine::scan::big_files::BigFilesReport>, String> {
-    let root = system_drive_root();
-    let env = engine::ipc::commands::big_files::handle_big_files_scan(&root);
+    let env = engine::ipc::commands::big_files::handle_big_files_scan_all_drives();
 
     // 只打一行摘要：扫描结果的明细可能有 100 条，全打出来日志没法看。
     if let Some(r) = &env.data {
         eprintln!(
-            "[big_files_scan] root={} total={}B top={} scanned={} truncated={} {}ms",
-            root.display(),
-            r.total_bytes,
+            "[big_files_scan] drives top={} total={}B scanned={} truncated={} {}ms",
             r.top_files.len(),
+            r.total_bytes,
             r.scanned_entries,
             r.truncated,
             r.elapsed_ms
         );
     }
     Ok(env)
+}
+
+// ===================== task-066：大文件地图（E 模块） =====================
+
+/// `big_files_folder_stats`：用户目录 Top20 文件夹分布（task-084 A3）。
+///
+/// 纯只读扫描 `Downloads/Documents/Desktop/AppData`，按子树总大小倒序输出 Top20。
+/// 页面改造后作为「文件夹分布」tab 的数据源。
+#[tauri::command]
+pub async fn big_files_folder_stats(
+) -> Result<Envelope<Vec<engine::scan::modules::folder_stats::FolderStat>>, String> {
+    Ok(engine::ipc::commands::big_files::handle_big_files_folder_stats())
+}
+
+/// `big_files_duplicates`：>10MB 文件的 SHA-256 重复检测（task-084 A2）。
+///
+/// 纯只读报告，不删除；每组保留最新修改时间那份（`isKeep=true`）。
+#[tauri::command]
+pub async fn big_files_duplicates(
+) -> Result<Envelope<Vec<engine::scan::modules::dup_files::DupGroup>>, String> {
+    Ok(engine::ipc::commands::big_files::handle_big_files_duplicates())
 }
 
 // ===================== task-067：残留增强（D 模块） =====================
@@ -1307,6 +1404,32 @@ pub async fn residual_delete(
         for f in &r.failed {
             eprintln!("[residual_delete] 失败 {}: {}", f.path, f.reason);
         }
+    }
+    Ok(env)
+}
+
+/// `residual_locate`（task-084 A4）：调起资源管理器并**选中**目标路径。
+///
+/// 先用 engine 的 `handle_residual_locate` 做路径存在性校验：
+/// - 路径已不存在 → 返回 **2008**（`RESIDUAL_LOCATE_NOT_FOUND`），前端提示并刷新列表；
+/// - 路径存在 → `explorer.exe /select,<path>` 打开并选中该文件/目录。
+///
+/// `explorer` 是异步 UI 程序，`Command::spawn()` 不阻塞等待它退出（阻塞会卡住
+/// 调用它的 JS）。spawn 失败（例如路径处理不当）记日志，仍返回 ok——此时
+/// `handle_residual_locate` 已确认路径存在，val 承载的是待定位路径。
+#[tauri::command]
+pub async fn residual_locate(path: String) -> Result<Envelope<String>, String> {
+    let env = engine::ipc::commands::residual::handle_residual_locate(&path);
+    if env.code == engine::ipc::error_codes::RESIDUAL_LOCATE_NOT_FOUND.code {
+        return Ok(env);
+    }
+
+    // 路径校验已过（exists），真正调 explorer 打开并选中。
+    if let Err(e) = std::process::Command::new("explorer.exe")
+        .arg(format!("/select,{}", path))
+        .spawn()
+    {
+        eprintln!("[residual_locate] explorer 启动失败: {e}");
     }
     Ok(env)
 }
@@ -1583,4 +1706,45 @@ pub async fn auto_scan_status(
             Err(e)
         }
     }
+}
+
+// ===================== task-084 C2：草稿暂存 =====================
+//
+// 三条命令对应草稿的三条核心语义：
+//   - `draft_save`：勾选变更时**即时**覆盖写整张快照（重开 app 恢复的依据）；
+//   - `draft_load`：重开 app 时读回上次勾选（前端据此恢复勾选态）；
+//   - `draft_clear`：清理完成 / 用户手动取消勾选后清空。
+//
+// 出错一律走 `Err(String)`（信封的 code 会是 5001），草稿是用户低价值状态，
+// 读写失败不该让前端崩溃——前端会 fail-closed 丢一次勾选。
+
+/// `draft_save`：覆盖保存当前勾选快照。`item_paths` = 本轮选中的所有路径。
+#[tauri::command(rename_all = "camelCase")]
+pub async fn draft_save(
+    item_paths: Vec<String>,
+    scan_id: Option<i64>,
+    paths: tauri::State<'_, AppPaths>,
+) -> Result<Envelope<()>, String> {
+    let conn = engine::db::conn::open(&paths.data_root).map_err(|e| e.to_string())?;
+    engine::ipc::commands::draft::replace_selections(&conn, scan_id, &item_paths)
+        .map_err(|e| e.to_string())?;
+    Ok(Envelope::ok(()))
+}
+
+/// `draft_load`：读回全部草稿勾选（按勾选时间升序）。
+#[tauri::command]
+pub async fn draft_load(
+    paths: tauri::State<'_, AppPaths>,
+) -> Result<Envelope<Vec<engine::ipc::commands::draft::DraftSelection>>, String> {
+    let conn = engine::db::conn::open(&paths.data_root).map_err(|e| e.to_string())?;
+    let list = engine::ipc::commands::draft::load_selections(&conn).map_err(|e| e.to_string())?;
+    Ok(Envelope::ok(list))
+}
+
+/// `draft_clear`：清空草稿（清理完成 / 手动取消后调用）。
+#[tauri::command]
+pub async fn draft_clear(paths: tauri::State<'_, AppPaths>) -> Result<Envelope<()>, String> {
+    let conn = engine::db::conn::open(&paths.data_root).map_err(|e| e.to_string())?;
+    engine::ipc::commands::draft::clear_selections(&conn).map_err(|e| e.to_string())?;
+    Ok(Envelope::ok(()))
 }

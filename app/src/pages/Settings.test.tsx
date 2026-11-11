@@ -22,6 +22,14 @@ const mockedCheck = vi.mocked(check);
 
 const ok = (data: unknown) => ({ code: 0, message: "ok", data });
 
+// task-084 B1/B5：get_prefs 未给这三项时，前端按 Settings.tsx 的默认值兜底；
+// set_prefs 是整体覆盖，提交体会带上这些默认值。断言需与之一致。
+const DEFAULT_EXTRA_PREFS = {
+  autoCleanL1: false,
+  autoCleanL1Threshold: 500 * 1024 * 1024,
+  devCacheGradleMaven: false,
+};
+
 function makeUpdate(version = "0.1.7") {
   return {
     version,
@@ -202,7 +210,7 @@ describe("Settings 行为偏好（task-057）", () => {
     // task-058：set_prefs 是「整体覆盖」，前端必须连当前白名单一起提交，
     // 否则会把用户已配好的白名单清空。这里 get_prefs 没给白名单 → 空数组。
     expect(setPrefsPayload).toEqual({
-      prefs: { autoRestartOnClose: true, restartWhitelist: [], theme: "system", autoScanEnabled: false, autoScanInterval: "daily" },
+      prefs: { autoRestartOnClose: true, restartWhitelist: [], theme: "system", autoScanEnabled: false, autoScanInterval: "daily", ...DEFAULT_EXTRA_PREFS },
     });
   });
 });
@@ -269,7 +277,7 @@ describe("Settings 重启白名单（task-058）", () => {
 
     await waitFor(() => expect(setPayload).not.toBeNull());
     expect(setPayload).toEqual({
-      prefs: { autoRestartOnClose: true, restartWhitelist: ["notepad.exe", "code.exe"], theme: "system", autoScanEnabled: false, autoScanInterval: "daily" },
+      prefs: { autoRestartOnClose: true, restartWhitelist: ["notepad.exe", "code.exe"], theme: "system", autoScanEnabled: false, autoScanInterval: "daily", ...DEFAULT_EXTRA_PREFS },
     });
     // 保存后用后端返回值回填（去空白后的真实生效内容）
     await waitFor(() => expect(ta.value).toBe("notepad.exe\ncode.exe"));
@@ -292,7 +300,7 @@ describe("Settings 重启白名单（task-058）", () => {
 
     await waitFor(() => expect(setPayload).not.toBeNull());
     expect(setPayload).toEqual({
-      prefs: { autoRestartOnClose: false, restartWhitelist: [], theme: "system", autoScanEnabled: false, autoScanInterval: "daily" },
+      prefs: { autoRestartOnClose: false, restartWhitelist: [], theme: "system", autoScanEnabled: false, autoScanInterval: "daily", ...DEFAULT_EXTRA_PREFS },
     });
     expect(await screen.findByText("白名单已清空（不限制重启）")).toBeInTheDocument();
     expect(await screen.findByText("当前：不限制")).toBeInTheDocument();
@@ -390,7 +398,7 @@ describe("Settings 外观（task-061）", () => {
     await waitFor(() => expect(payload).not.toBeNull());
     // 整体覆盖语义：其它字段必须一起带上，否则会被清空
     expect(payload).toEqual({
-      prefs: { autoRestartOnClose: false, restartWhitelist: [], theme: "dark", autoScanEnabled: false, autoScanInterval: "daily" },
+      prefs: { autoRestartOnClose: false, restartWhitelist: [], theme: "dark", autoScanEnabled: false, autoScanInterval: "daily", ...DEFAULT_EXTRA_PREFS },
     });
     expect(onThemeChange).toHaveBeenCalledWith("dark");
   });
@@ -446,7 +454,7 @@ describe("Settings 自动扫描（task-061）", () => {
     expect(intervals.length).toBe(3);
     expect(intervals.every((r) => r.disabled)).toBe(true);
 
-    expect(screen.getByText(/先开启上面的开关/)).toBeInTheDocument();
+    expect(screen.getByText(/先开启上面的开关，间隔选择才会生效/)).toBeInTheDocument();
   });
 
   it("开启后间隔可选；切换间隔提交 set_prefs 且带全字段", async () => {
@@ -511,6 +519,7 @@ describe("Settings 自动扫描（task-061）", () => {
         theme: "system",
         autoScanEnabled: true,
         autoScanInterval: "weekly",
+        ...DEFAULT_EXTRA_PREFS,
       },
     });
   });

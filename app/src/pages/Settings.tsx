@@ -47,6 +47,12 @@ interface Prefs {
   // task-061：自动扫描（只扫描不删除）。默认关闭 + daily。
   autoScanEnabled: boolean;
   autoScanInterval: ScanInterval;
+  // task-084 B1：自动扫描完成后是否自动清理 L1 安全项。默认关闭（fail-closed）。
+  autoCleanL1: boolean;
+  // task-084 B1：自动清理 L1 的预估释放阈值（字节）。默认 500 MB。
+  autoCleanL1Threshold: number;
+  // task-084 B5：dev_cache 是否同时识别 Gradle/Maven 依赖缓存。默认关闭（fail-closed）。
+  devCacheGradleMaven: boolean;
 }
 
 /** task-061：自动扫描间隔，与 `engine::prefs::{SCAN_DAILY, SCAN_WEEKLY, SCAN_MONTHLY}` 对齐。 */
@@ -69,6 +75,9 @@ const SCAN_OPTIONS: { value: ScanInterval; label: string }[] = [
   { value: "weekly", label: "每周" },
   { value: "monthly", label: "每月" },
 ];
+
+/** task-084 B1：自动清理阈值默认 500 MB，与 `engine::prefs::DEFAULT_AUTO_CLEAN_L1_THRESHOLD` 对齐。 */
+const DEFAULT_AUTO_CLEAN_THRESHOLD = 500 * 1024 * 1024;
 
 /** task-061：主题三态。与 `engine::prefs::{THEME_SYSTEM, THEME_LIGHT, THEME_DARK}` 对齐。 */
 type ThemeMode = "system" | "light" | "dark";
@@ -145,6 +154,11 @@ export default function Settings({ onUpdateFound, onThemeChange }: SettingsProps
     theme: "system",
     autoScanEnabled: false,
     autoScanInterval: "daily",
+    // task-084 B1：默认关闭自动清理 + 默认 500 MB 阈值（fail-closed）。
+    autoCleanL1: false,
+    autoCleanL1Threshold: DEFAULT_AUTO_CLEAN_THRESHOLD,
+    // task-084 B5：默认关闭（fail-closed）——删错要重下几百 MB 依赖。
+    devCacheGradleMaven: false,
   });
   const [prefsSaving, setPrefsSaving] = useState<boolean>(false);
   // task-058：白名单编辑框的原始文本（每行一个进程名），提交时才解析成数组。
@@ -242,8 +256,16 @@ export default function Settings({ onUpdateFound, onThemeChange }: SettingsProps
           theme: th === "light" || th === "dark" || th === "system" ? th : "system",
           autoScanEnabled: Boolean(p?.autoScanEnabled),
           autoScanInterval:
-            si === "weekly" || si === "monthly" || si === "daily" ? si : "daily",
-        });
+          si === "weekly" || si === "monthly" || si === "daily" ? si : "daily",
+        // task-084 B1：布尔 `Boolean()` 兜 null；阈值 <1 由后端兜成默认，这里也做一道防御。
+        autoCleanL1: Boolean(p?.autoCleanL1),
+        autoCleanL1Threshold:
+          typeof p?.autoCleanL1Threshold === "number" && p.autoCleanL1Threshold > 0
+            ? p.autoCleanL1Threshold
+            : DEFAULT_AUTO_CLEAN_THRESHOLD,
+        // task-084 B5：布尔 `Boolean()` 兜 null；缺行默认 false。
+        devCacheGradleMaven: Boolean(p?.devCacheGradleMaven),
+      });
         setWhitelistText(wl.join("\n"));
       } catch {
         // 读失败保持默认（fail-closed），不打扰用户。
@@ -339,6 +361,70 @@ export default function Settings({ onUpdateFound, onThemeChange }: SettingsProps
       }
     },
     [prefs.autoScanInterval, savePrefs]
+  );
+
+  // task-084 B1：自动清理 L1 开关。默认关，开启前明确告诉用户会做什么。
+  const onToggleAutoCleanL1 = useCallback(
+    async (next: boolean) => {
+      // 开启前说明影响：仅在自动扫描完成后、且预估释放达到阈值才触发。
+      if (next && !window.confirm("开启后将由程序在自动扫描后自动清理 L1 安全缓存" +
+        "（会创建系统还原点、文件移入保险箱，不永久删除）。是否继续？")) {
+        return;
+      }
+      setPrefs((p) => ({ ...p, autoCleanL1: next }));
+      setPrefsSaving(true);
+      try {
+        await savePrefs({ autoCleanL1: next });
+      } catch (e) {
+        setPrefs((p) => ({ ...p, autoCleanL1: !next }));
+        setToast({ ok: false, text: `保存设置失败：${String(e)}` });
+      } finally {
+        setPrefsSaving(false);
+      }
+    },
+    [savePrefs]
+  );
+
+  // task-084 B5：Gradle/Maven 依赖缓存开关。开启前说明影响——这些条目是 L2，
+  // 删除会触发 re-download 全部依赖（几百 MB）。
+  const onToggleDevCacheGradleMaven = useCallback(
+    async (next: boolean) => {
+      if (next && !window.confirm("开启后扫描会同时识别 Gradle（~/.gradle/caches）和 " +
+        "Maven（~/.m2/repository）的依赖缓存。它们列为「需逐项确认」的 L2 项，" +
+        "删除将导致下次构建重新下载全部依赖（可能几百 MB）。是否继续？")) {
+        return;
+      }
+      setPrefs((p) => ({ ...p, devCacheGradleMaven: next }));
+      setPrefsSaving(true);
+      try {
+        await savePrefs({ devCacheGradleMaven: next });
+      } catch (e) {
+        setPrefs((p) => ({ ...p, devCacheGradleMaven: !next }));
+        setToast({ ok: false, text: `保存设置失败：${String(e)}` });
+      } finally {
+        setPrefsSaving(false);
+      }
+    },
+    [savePrefs]
+  );
+
+  // task-084 B1：阈值保存（字节）。先把 MB 数值 ×1MB 落库。
+  const onChangeAutoCleanThreshold = useCallback(
+    async (mb: number) => {
+      const next = Math.max(1, Math.round(mb)) * 1024 * 1024;
+      if (next === prefs.autoCleanL1Threshold) return;
+      setPrefs((p) => ({ ...p, autoCleanL1Threshold: next }));
+      setPrefsSaving(true);
+      try {
+        await savePrefs({ autoCleanL1Threshold: next });
+      } catch (e) {
+        setPrefs((p) => ({ ...p, autoCleanL1Threshold: prefs.autoCleanL1Threshold }));
+        setToast({ ok: false, text: `保存设置失败：${String(e)}` });
+      } finally {
+        setPrefsSaving(false);
+      }
+    },
+    [prefs.autoCleanL1Threshold, savePrefs]
   );
 
   // task-058：保存白名单。按行切分 → 去空白 → 丢空行；空结果 = 清空（不限制）。
@@ -1008,6 +1094,124 @@ export default function Settings({ onUpdateFound, onThemeChange }: SettingsProps
         </div>
       </div>
 
+      {/* task-084 B1：自动清理 L1（task-100 拍板）。在「自动扫描」之上叠加——
+          需要先开启自动扫描，这个才有触发时机。默认关，fail-closed。 */}
+      <h2 style={{ margin: "24px 0 12px", fontSize: 16 }}>自动清理</h2>
+      <div style={cardStyle}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 600 }}>自动清理 L1 安全缓存</div>
+            <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 4, lineHeight: 1.5 }}>
+              每次自动扫描完成后，若本次预估释放达到下面的阈值，就自动把 L1
+              安全缓存移入保险箱并通知你。L2/L3 <b>绝不自动处理</b>——L2 需要逐项确认，
+              L3 受保护禁止删除。清理前会<b>创建系统还原点</b>（需管理员授权，一次弹窗）。
+              <b>默认关闭。</b>
+            </div>
+          </div>
+          <label
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              cursor: prefsSaving || !prefs.autoScanEnabled ? "not-allowed" : "pointer",
+              whiteSpace: "nowrap",
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={prefs.autoCleanL1}
+              disabled={prefsSaving || !prefs.autoScanEnabled}
+              onChange={(e) => onToggleAutoCleanL1(e.target.checked)}
+              aria-label="自动清理 L1"
+            />
+            <span style={{ fontSize: 12, color: "var(--text)" }}>
+              {prefs.autoCleanL1 ? "已开启" : "已关闭"}
+            </span>
+          </label>
+        </div>
+
+        <div
+          style={{
+            marginTop: 14,
+            borderTop: "1px solid var(--border)",
+            paddingTop: 14,
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            flexWrap: "wrap",
+          }}
+        >
+          <span style={{ fontSize: 12, color: "var(--text)" }}>触发阈值（预估释放 ≥）：</span>
+          {/* 阈值用 MB 单位展示/编辑，落库时 ×1MB 还原成字节。 */}
+          <input
+            type="number"
+            min={1}
+            step={100}
+            value={Math.round(prefs.autoCleanL1Threshold / (1024 * 1024))}
+            disabled={prefsSaving || !prefs.autoCleanL1}
+            onChange={(e) => {
+              const v = Number(e.target.value);
+              if (!Number.isNaN(v)) onChangeAutoCleanThreshold(v);
+            }}
+            style={{
+              width: 90,
+              padding: "5px 8px",
+              borderRadius: 4,
+              border: "1px solid var(--border)",
+              fontSize: 12,
+            }}
+          />
+          <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
+            MB（低于此量就跳过本轮，不值得为它弹 UAC 建还原点）
+          </span>
+        </div>
+
+        {!prefs.autoCleanL1 && (
+          <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 8 }}>
+            先开启上面的开关，阈值才会生效。
+          </div>
+        )}
+        {!prefs.autoScanEnabled && (
+          <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 8 }}>
+            自动清理依赖自动扫描，请先开启「定期在后台扫描」。
+          </div>
+        )}
+      </div>
+
+      {/* task-084 B5：Gradle/Maven 依赖缓存开关（独立开关，fail-closed）。 */}
+      <h2 style={{ margin: "24px 0 12px", fontSize: 16 }}>开发者缓存</h2>
+      <div style={cardStyle}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 600 }}>识别 Gradle / Maven 依赖缓存</div>
+            <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 4, lineHeight: 1.5 }}>
+              开启后，扫描会额外识别 <code>~/.gradle/caches</code> 与 <code>~/.m2/repository</code>
+              （dev_cache 模块的补充项）。它们列为「需逐项确认」的 L2 项，不会参与「一键全选」；
+              删除将导致下次构建<strong>重新下载全部依赖</strong>（可能几百 MB）。<b>默认关闭</b>。
+            </div>
+          </div>
+          <label
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              cursor: prefsSaving ? "wait" : "pointer",
+              whiteSpace: "nowrap",
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={prefs.devCacheGradleMaven}
+              disabled={prefsSaving}
+              onChange={(e) => onToggleDevCacheGradleMaven(e.target.checked)}
+            />
+            <span style={{ fontSize: 12, color: "var(--text)" }}>
+              {prefs.devCacheGradleMaven ? "已开启" : "已关闭"}
+            </span>
+          </label>
+        </div>
+      </div>
+
       {/* task-062：开机自启。状态真实来源是系统注册表（autostart 插件），不存 prefs。 */}
       <h2 style={{ margin: "24px 0 12px", fontSize: 16 }}>启动</h2>
       <div style={cardStyle}>
@@ -1104,6 +1308,13 @@ function UserRulesSection() {
   const [draft, setDraft] = useState<RuleDraft | null>(null);
   const [saving, setSaving] = useState(false);
   const [busyId, setBusyId] = useState<number | null>(null);
+  // task-084 B4：规则导出 / 导入状态。
+  const [exporting, setExporting] = useState(false);
+  const [exportPath, setExportPath] = useState("");
+  const [importPath, setImportPath] = useState("");
+  const [importing, setImporting] = useState(false);
+  // 冲突策略：默认「跳过」——保守，永不覆盖本地已有规则。
+  const [importPolicy, setImportPolicy] = useState<"skip" | "overwrite">("skip");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -1198,6 +1409,55 @@ function UserRulesSection() {
     },
     [load],
   );
+
+  // task-084 B4：导出全部规则为 JSON 文件，展示落盘路径（固定导出目录，无系统文件框）。
+  const doExport = useCallback(async () => {
+    setExporting(true);
+    setErr("");
+    try {
+      const p = await api<string>("user_rules_export", {});
+      setExportPath(p ?? "");
+      setNotice("规则已导出");
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setExporting(false);
+    }
+  }, []);
+
+  // task-084 B4：从用户粘贴的路径导入规则，展示合并结果。
+  const doImport = useCallback(async () => {
+    const path = importPath.trim();
+    if (!path) {
+      setErr("请先输入要导入的规则文件完整路径");
+      return;
+    }
+    setImporting(true);
+    setErr("");
+    try {
+      const r = await api<{
+        added: number;
+        skipped: number;
+        overwritten: number;
+        rejected: number;
+        errors: string[];
+      }>("user_rules_import", { filePath: path, policy: importPolicy });
+      const parts = [
+        `新增 ${r?.added ?? 0}`,
+        importPolicy === "overwrite" ? `覆盖 ${r?.overwritten ?? 0}` : `跳过 ${r?.skipped ?? 0}`,
+        `拒绝 ${r?.rejected ?? 0}`,
+      ].join("，");
+      setNotice(`导入完成：${parts}`);
+      if (r?.rejected) {
+        setErr((r.errors ?? []).join("\n"));
+      }
+      await load();
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setImporting(false);
+    }
+  }, [importPath, importPolicy, load]);
 
   return (
     <>
@@ -1308,6 +1568,55 @@ function UserRulesSection() {
         >
           新增规则
         </button>
+
+        {/* task-084 B4：规则导入/导出（固定目录模式，无系统文件选择框） */}
+        <div style={{ marginTop: 14, borderTop: "1px solid var(--border)", paddingTop: 12 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <button
+              onClick={() => void doExport()}
+              disabled={exporting}
+              style={{ padding: "6px 14px", borderRadius: 6, cursor: exporting ? "not-allowed" : "pointer" }}
+            >
+              {exporting ? "导出中…" : "导出全部规则"}
+            </button>
+            <div style={{ fontSize: 11, color: "var(--text-muted)", fontFamily: "monospace", wordBreak: "break-all" }}>
+              {exportPath ? (
+                <>
+                  已导出 → <span style={{ color: "var(--text)" }}>{exportPath}</span>
+                </>
+              ) : (
+                "导出的文件写到固定目录，路径会显示在这里，可直接复制。"
+              )}
+            </div>
+          </div>
+
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 10, flexWrap: "wrap" }}>
+            <input
+              aria-label="规则导入文件路径"
+              value={importPath}
+              onChange={(e) => setImportPath(e.target.value)}
+              placeholder="粘贴要导入的规则文件完整路径（如 D:\...\user-rules-....json）"
+              style={{ ...inputStyle, maxWidth: 420, fontFamily: "monospace" }}
+            />
+            <select
+              aria-label="冲突处理"
+              value={importPolicy}
+              onChange={(e) => setImportPolicy(e.target.value as "skip" | "overwrite")}
+              style={{ ...inputStyle, width: 130 }}
+              title="路径模式相同时的处理方式"
+            >
+              <option value="skip">冲突时跳过（保守）</option>
+              <option value="overwrite">冲突时覆盖</option>
+            </select>
+            <button
+              onClick={() => void doImport()}
+              disabled={importing}
+              style={{ padding: "6px 14px", borderRadius: 6, cursor: importing ? "not-allowed" : "pointer" }}
+            >
+              {importing ? "导入中…" : "导入规则"}
+            </button>
+          </div>
+        </div>
       </div>
 
       {draft && (

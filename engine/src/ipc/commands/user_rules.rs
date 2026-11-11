@@ -391,6 +391,237 @@ pub fn delete(conn: &Connection, id: i64) -> Result<bool, RuleError> {
     Ok(n > 0)
 }
 
+// ===================== task-084 B4：导入 / 导出 JSON =====================
+//
+// # 为什么还要一层「格式标记」
+//
+// 方案模板（`plan.rs`）已经有一套 export/import，但那是给「清理方案」用的、
+// 带 `cclean-plan` 标记。用户规则是**不同的东西**，导入侧必须能区分——
+// 把一份规则 JSON 误当方案导入，或反过来，都只会得到一条「看起来对了但毫无
+// 作用」的空记录。所以这里用自己的 `cclean-user-rules` 标记，与方案互不相认。
+//
+// # 冲突合并策略（`ConflictPolicy`）
+//
+// `user_rules` 的 pattern 有唯一索引（`idx_user_rules_pattern`），导入时撞车是
+// 常态（用户导出后改了名字再导回，或两台机器合并）。两种策略：
+// - `Skip`：撞车的整条跳过，保留库里的原样（保守，永远不会覆盖用户已有数据）；
+// - `Overwrite`：用文件里的新值覆盖同名（同 pattern）的旧记录。
+//
+// 无论哪种，新增的条目仍走 [`add`] → 完整校验（L1/L2、静态根、红线），
+// 不合格的条目不会被「跳过冲突」绕过。
+
+/// 导入导出文件的格式标记。导入时校验，防止把方案或其他 JSON 当规则导进来。
+pub const USER_RULE_FORMAT: &str = "cclean-user-rules";
+/// 导出文件格式版本。字段不兼容时递增，导入侧拒绝未知版本。
+pub const USER_RULE_FORMAT_VERSION: u32 = 1;
+
+/// 一条规则的导出形态（去掉 `id` / 时间戳等库内字段）。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuleFileEntry {
+    pub name: String,
+    pub pattern: String,
+    /// `"L1"` / `"L2"`。
+    pub risk_level: String,
+    pub enabled: bool,
+}
+
+/// 导出/导入用的文件内容。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuleFile {
+    pub format: String,
+    pub version: u32,
+    /// 导出时间（unix 秒），仅作说明，导入时忽略。
+    /// `serde(default)`：手工构造 / 旧版文件缺该字段按 0 处理，不因这个说明性
+    /// 字段拒绝整份导入——否则无法走到下面真正的 format 校验。
+    #[serde(default)]
+    pub exported_at: i64,
+    /// `serde(default)`：缺该字段按空列表处理，先用 format/version 决定接受与否，
+    /// 不因一个空的规则数组拒绝整个文件。
+    #[serde(default)]
+    pub rules: Vec<RuleFileEntry>,
+}
+
+/// 导入冲突策略。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConflictPolicy {
+    /// 撞车（pattern 已存在）整条跳过。
+    Skip,
+    /// 用文件里的新值覆盖已存在的同名记录。
+    Overwrite,
+}
+
+/// 导入结果汇总。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportResult {
+    /// 新写入的条数。
+    pub added: usize,
+    /// 因冲突被跳过的条数。
+    pub skipped: usize,
+    /// 因冲突被覆盖的条数。
+    pub overwritten: usize,
+    /// 校验失败被拒的条数（错误明细在 `errors`）。
+    pub rejected: usize,
+    /// 每条被拒原因（`第 N 条：原因`）。
+    pub errors: Vec<String>,
+}
+
+/// 从 lib 层「读全部规则」后导出为一个 JSON 字符串。
+///
+/// 与 `plan::export_plan` 的分工一致：数据库读写 + 序列化在 engine 完成，
+/// 落盘路径由调用方（Tauri 命令层）传入 `export_dir`。返回可写盘的文件内容。
+pub fn export_to_json(conn: &Connection, exported_at: i64) -> Result<String, RuleError> {
+    let rules = list(conn)?;
+    let entries: Vec<RuleFileEntry> = rules
+        .into_iter()
+        .map(|r| RuleFileEntry {
+            name: r.name,
+            pattern: r.pattern,
+            risk_level: r.risk_level,
+            enabled: r.enabled,
+        })
+        .collect();
+    let file = RuleFile {
+        format: USER_RULE_FORMAT.to_string(),
+        version: USER_RULE_FORMAT_VERSION,
+        exported_at,
+        rules: entries,
+    };
+    serde_json::to_string_pretty(&file)
+        .map_err(|e| RuleError::Db(format!("规则序列化为 JSON 失败: {e}")))
+}
+
+/// 从 JSON 字符串导入规则，按 [`ConflictPolicy`] 合并。
+///
+/// - 文件头 `format` / `version` 不符 → 整个拒绝（不是部分导入）；
+/// - 每条规则仍走 [`add`] 的完整校验，`errors` 记录被拒明细；
+/// - 冲突判定用 pattern（唯一索引所在列）：库里已有同 pattern → 跳过或覆盖。
+pub fn import_from_json(
+    conn: &Connection,
+    json: &str,
+    policy: ConflictPolicy,
+) -> Result<ImportResult, RuleError> {
+    let file: RuleFile = serde_json::from_str(json)
+        .map_err(|e| RuleError::Db(format!("规则 JSON 解析失败: {e}")))?;
+    if file.format != USER_RULE_FORMAT {
+        return Err(RuleError::Db(format!(
+            "不是用户规则文件（format={:?}），请导出后再导入或选对文件",
+            file.format
+        )));
+    }
+    if file.version > USER_RULE_FORMAT_VERSION {
+        return Err(RuleError::Db(format!(
+            "规则文件版本过新（v{}，当前支持 v{}），请升级后再导入",
+            file.version, USER_RULE_FORMAT_VERSION
+        )));
+    }
+
+    // 一次取出现有 pattern 集合，冲突判定 O(1)。用小写归一化而非原样比较：
+    // Windows 路径大小写不敏感，`D:\MyCache` 与 `d:\mycache` 撞的是同一条规则。
+    let existing = existing_patterns_lower(conn)?;
+
+    let mut result = ImportResult {
+        added: 0,
+        skipped: 0,
+        overwritten: 0,
+        rejected: 0,
+        errors: Vec::new(),
+    };
+
+    for (idx, entry) in file.rules.iter().enumerate() {
+        let no = idx + 1;
+        // 名称/风险等级允许 trim；pattern 不得被改为别的意思trim不能动斜杠，只 trim 首尾空白。
+        let pattern = entry.pattern.trim();
+        let key = pattern.to_ascii_lowercase();
+        if existing.contains(&key) {
+            match policy {
+                ConflictPolicy::Skip => result.skipped += 1,
+                ConflictPolicy::Overwrite => {
+                    // 库里已有同 pattern 的规则 → 用文件里的新值更新它。
+                    // 需取到那条记录的 id；用 pattern 精确查询（唯一索引保底）。
+                    match update_by_pattern(
+                        conn,
+                        pattern,
+                        &entry.name,
+                        &entry.risk_level,
+                        entry.enabled,
+                    ) {
+                        Ok(()) => {
+                            result.overwritten += 1;
+                        }
+                        Err(e) => {
+                            result.rejected += 1;
+                            result.errors.push(format!("第 {no} 条覆盖失败: {e}"));
+                        }
+                    }
+                }
+            }
+            // 无论覆盖成功与否，该 pattern 仍占用，无需重复 add
+            continue;
+        }
+        match add(conn, &entry.name, pattern, &entry.risk_level) {
+            Ok(added) => {
+                // add 成功后启用状态恒为 true；若文件里要求停用，切换一下。
+                if !entry.enabled {
+                    let _ = set_enabled(conn, added.id, false);
+                }
+                // 已用 match 绑定 added，避免在 Ok(_) 里再做一次查询
+                let _ = added;
+                result.added += 1;
+            }
+            Err(e) => {
+                result.rejected += 1;
+                result
+                    .errors
+                    .push(format!("第 {no} 条（{}）被拒: {e}", entry.name));
+            }
+        }
+    }
+    Ok(result)
+}
+
+/// 取现有全部 pattern 的小写集合（导入冲突判定用）。
+fn existing_patterns_lower(
+    conn: &Connection,
+) -> Result<std::collections::HashSet<String>, RuleError> {
+    let mut stmt = conn
+        .prepare("SELECT pattern FROM user_rules")
+        .map_err(|e| RuleError::Db(e.to_string()))?;
+    let mut set = std::collections::HashSet::new();
+    let rows = stmt
+        .query_map([], |r| r.get::<_, String>(0))
+        .map_err(|e| RuleError::Db(e.to_string()))?;
+    for row in rows {
+        set.insert(
+            row.map_err(|e| RuleError::Db(e.to_string()))?
+                .to_ascii_lowercase(),
+        );
+    }
+    Ok(set)
+}
+
+/// 按 pattern（唯一索引列）精确更新一条规则。返回更新行数（0 = 不存在）。
+///
+/// 复用 [`update`] 的校验逻辑——先把库里那条读出来拿 id，再走 `update`。
+fn update_by_pattern(
+    conn: &Connection,
+    pattern: &str,
+    name: &str,
+    risk_level: &str,
+    enabled: bool,
+) -> Result<(), RuleError> {
+    let id: i64 = conn
+        .query_row(
+            "SELECT id FROM user_rules WHERE pattern = ?1",
+            params![pattern],
+            |r| r.get(0),
+        )
+        .map_err(|_| RuleError::NotFound(0))?;
+    update(conn, id, name, pattern, risk_level, enabled).map(|_| ())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -590,5 +821,213 @@ mod tests {
         let conn = db();
         assert!(add(&conn, "n", r"D:\**", "L1").is_err());
         assert!(list(&conn).unwrap().is_empty(), "校验失败不该落库");
+    }
+
+    // ===== task-084 B4：导入 / 导出 JSON =====
+
+    #[test]
+    fn export_to_json_round_trips_all_rules() {
+        let conn = db();
+        add(&conn, "缓存A", r"D:\MyCache\*", "L1").unwrap();
+        let b = add(&conn, "缓存B", r"D:\Other\**", "L2").unwrap();
+        set_enabled(&conn, b.id, false).unwrap();
+
+        let json = export_to_json(&conn, 123).unwrap();
+        let file: RuleFile = serde_json::from_str(&json).unwrap();
+        assert_eq!(file.format, USER_RULE_FORMAT);
+        assert_eq!(file.version, USER_RULE_FORMAT_VERSION);
+        assert_eq!(file.exported_at, 123);
+        assert_eq!(file.rules.len(), 2);
+        // 名称/模式/等级启用都要带上（id 与时间戳不该出现）
+        let a = file
+            .rules
+            .iter()
+            .find(|r| r.pattern == r"D:\MyCache\*")
+            .unwrap();
+        assert_eq!(a.name, "缓存A");
+        assert_eq!(a.risk_level, "L1");
+        assert!(a.enabled);
+        let bb = file
+            .rules
+            .iter()
+            .find(|r| r.pattern == r"D:\Other\**")
+            .unwrap();
+        assert!(!bb.enabled, "停用状态要随导出带走");
+    }
+
+    #[test]
+    fn export_empty_rules_yields_empty_file() {
+        let conn = db();
+        let json = export_to_json(&conn, 0).unwrap();
+        let file: RuleFile = serde_json::from_str(&json).unwrap();
+        assert!(file.rules.is_empty(), "空规则库导出也该是合法文件");
+    }
+
+    #[test]
+    fn import_adds_new_rules_preserving_enabled() {
+        let conn = db();
+        let json = r#"{
+            "format": "cclean-user-rules",
+            "version": 1,
+            "exportedAt": 1,
+            "rules": [
+                {"name": "N1", "pattern": "D:\\A\\*", "riskLevel": "L1", "enabled": true},
+                {"name": "N2", "pattern": "D:\\B\\*", "riskLevel": "L2", "enabled": false}
+            ]
+        }"#;
+        let r = import_from_json(&conn, json, ConflictPolicy::Skip).unwrap();
+        assert_eq!(r.added, 2);
+        assert_eq!(r.skipped, 0);
+        assert_eq!(r.rejected, 0);
+
+        let all = list(&conn).unwrap();
+        assert_eq!(all.len(), 2);
+        let n2 = all.iter().find(|x| x.name == "N2").unwrap();
+        assert!(!n2.enabled, "文件里 enabled=false 要落到库");
+        let n1 = all.iter().find(|x| x.name == "N1").unwrap();
+        assert!(n1.enabled);
+    }
+
+    #[test]
+    fn import_skip_keeps_existing() {
+        let conn = db();
+        add(&conn, "旧名", r"D:\Same\*", "L1").unwrap();
+
+        let json = r#"{
+            "format": "cclean-user-rules",
+            "version": 1,
+            "exportedAt": 1,
+            "rules": [
+                {"name": "新名", "pattern": "D:\\Same\\*", "riskLevel": "L2", "enabled": false}
+            ]
+        }"#;
+        let r = import_from_json(&conn, json, ConflictPolicy::Skip).unwrap();
+        assert_eq!(r.added, 0);
+        assert_eq!(r.skipped, 1, "撞车 → 跳过");
+
+        let all = list(&conn).unwrap();
+        assert_eq!(all.len(), 1);
+        let old = &all[0];
+        assert_eq!(old.name, "旧名", "Skip 策略必须保留库里原样");
+        assert_eq!(old.risk_level, "L1");
+        assert!(old.enabled);
+    }
+
+    #[test]
+    fn import_overwrite_updates_existing() {
+        let conn = db();
+        add(&conn, "旧名", r"D:\Same\*", "L1").unwrap();
+
+        let json = r#"{
+            "format": "cclean-user-rules",
+            "version": 1,
+            "exportedAt": 1,
+            "rules": [
+                {"name": "新名", "pattern": "D:\\Same\\*", "riskLevel": "L2", "enabled": true}
+            ]
+        }"#;
+        let r = import_from_json(&conn, json, ConflictPolicy::Overwrite).unwrap();
+        assert_eq!(r.added, 0);
+        assert_eq!(r.overwritten, 1, "撞车 → 覆盖");
+
+        let all = list(&conn).unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].name, "新名", "Overwrite 策略要写入文件里的新值");
+        assert_eq!(all[0].risk_level, "L2");
+    }
+
+    #[test]
+    fn import_rejects_wrong_format() {
+        let conn = db();
+        // 与方案文件区分的关键：format 不是 cclean-user-rules 必须整个拒绝
+        let json = r#"{"format": "cclean-plan", "version": 1, "name": "x", "itemRefs": []}"#;
+        let e = import_from_json(&conn, json, ConflictPolicy::Skip).unwrap_err();
+        assert!(
+            matches!(e, RuleError::Db(_)) && e.to_string().contains("不是用户规则文件"),
+            "实际: {e:?}"
+        );
+    }
+
+    #[test]
+    fn import_rejects_unknown_version() {
+        let conn = db();
+        let json = r#"{
+            "format": "cclean-user-rules",
+            "version": 999,
+            "exportedAt": 1,
+            "rules": []
+        }"#;
+        let e = import_from_json(&conn, json, ConflictPolicy::Skip).unwrap_err();
+        assert!(e.to_string().contains("版本过新"), "实际: {e:?}");
+    }
+
+    #[test]
+    fn import_rejects_invalid_entries_without_partial_write() {
+        let conn = db();
+        // 一条合法 + 一条「模式太宽泛」：合法的要写入，非法的记进 errors
+        let json = r#"{
+            "format": "cclean-user-rules",
+            "version": 1,
+            "exportedAt": 1,
+            "rules": [
+                {"name": "好", "pattern": "D:\\Good\\*", "riskLevel": "L1", "enabled": true},
+                {"name": "坏", "pattern": "D:\\**", "riskLevel": "L1", "enabled": true}
+            ]
+        }"#;
+        let r = import_from_json(&conn, json, ConflictPolicy::Skip).unwrap();
+        assert_eq!(r.added, 1);
+        assert_eq!(r.rejected, 1);
+        assert_eq!(r.errors.len(), 1);
+        assert!(
+            r.errors[0].contains("坏"),
+            "错误的明细要指向被拒条目: {:?}",
+            r.errors
+        );
+        assert_eq!(list(&conn).unwrap().len(), 1, "只有合法条目落库");
+    }
+
+    #[test]
+    fn import_conflict_is_case_insensitive() {
+        let conn = db();
+        add(&conn, "原样", r"D:\Same\*", "L1").unwrap();
+        // 文件里写成小写盘符，应仍判定为撞车（Windows 路径大小写不敏感）
+        let json = r#"{
+            "format": "cclean-user-rules",
+            "version": 1,
+            "exportedAt": 1,
+            "rules": [
+                {"name": "小写", "pattern": "d:\\same\\*", "riskLevel": "L1", "enabled": true}
+            ]
+        }"#;
+        let r = import_from_json(&conn, json, ConflictPolicy::Skip).unwrap();
+        assert_eq!(r.skipped, 1, "大小写不同也算同一条规则");
+        assert_eq!(list(&conn).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn import_and_export_round_trip() {
+        // 导出 → 清库 → 导入 → 内容一致，端到端验证格式自洽
+        let conn = db();
+        add(&conn, "A", r"D:\MyCache\*", "L1").unwrap();
+        let b = add(&conn, "B", r"D:\Other\**", "L2").unwrap();
+        set_enabled(&conn, b.id, false).unwrap();
+
+        let json = export_to_json(&conn, 1).unwrap();
+        let clean = db();
+        let r = import_from_json(&clean, &json, ConflictPolicy::Skip).unwrap();
+        assert_eq!(r.added, 2);
+        assert_eq!(r.rejected, 0);
+
+        let src = list(&conn).unwrap();
+        let dst = list(&clean).unwrap();
+        assert_eq!(src.len(), dst.len());
+        assert_eq!(
+            src.iter()
+                .map(|x| (&x.pattern, &x.risk_level, x.enabled))
+                .collect::<Vec<_>>(),
+            dst.iter()
+                .map(|x| (&x.pattern, &x.risk_level, x.enabled))
+                .collect::<Vec<_>>()
+        );
     }
 }
