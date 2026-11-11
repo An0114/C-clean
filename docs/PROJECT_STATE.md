@@ -16,6 +16,13 @@
 历史决策不变：代码签名不做、品牌图标不做、G6 不修；跨盘恢复 fallback / RmShutdown 连带兄弟进程 / RmShutdown 30s 无进度三项维持现状。
 
 ## 最近一次变更
+2026-11-11：**task-085 发版 v0.5.0（release-prep）开发完成，状态 `testing`**（`feature/task-085-release-v0.5.0`），3 个单元提交 + 1 docs 提交：
+  - **① 版本号六处升级（`b1861d4`，`chore(release)`）**：`app/src-tauri/tauri.conf.json` / `app/src-tauri/Cargo.toml` / `app/package.json` / 根 `package.json` / `cli/Cargo.toml` → `0.5.0`，`Cargo.lock` 由 `cargo build` 自动同步（仅 2 行版本变更）；`c-clean-cli --version` 实测输出 `c-clean-cli 0.5.0`。
+  - **② CHANGELOG v0.5.0（`cec591a`，`docs(changelog)`）**：新增 / 架构优化 / 测试 / 已知问题四段，覆盖 task-082 UI 批量优化 + task-083 软件感知地基 + task-084 大文件地图与决策补全。
+  - **③ README / USER_GUIDE 同步（`595f331`，`docs(readme)`）**：README 版本号 → v0.5.0、功能列表新增软件感知 / 大文件深化 / 自动清理 / 规则导入导出 / 多用户 / 草稿 / ARM64、安装表加 ARM64 行；USER_GUIDE 版本号 → v0.5.0、新增「17. v0.5.0 新增能力」6 小节 + 目录交叉引用。
+  - **门禁**：`cargo build --workspace`（cdisk-cleaner 0.5.0 / c-clean-cli 0.5.0）、`cargo check --workspace --all-targets` 0、`cargo build --release -p c-clean-cli` + `--version` = 0.5.0、`pnpm --filter app build` 成功（270.39 kB）、`pnpm --filter app lint` 0 error（4 条 react-refresh 既有 warning）。
+  - **未做**：真机 / NSIS / MSI / 便携版 / ARM64 冒烟 + CI 由测试 Agent 在提示词 9 L4/L5 产出；本任务不改任何源代码；tag 由 DocsKeeper 在 PR 合并后手动打。
+
 2026-11-10：**task-084 开发完成（= backlog 批次五六七 12 项合并大收官）**——实际为 6 个功能原子提交 + 1 docs 提交（`feature/task-084-v050-wrapup-batch567`）：
   - **① 批次五 A1/A2/A3（`15cbb4b`，096/097/098）**：目标空间模式（`targetspace` 命令 + 容量输入 + 推荐组合 + 达成度 + 差额提示）、重复文件检测（分桶 + 采样哈希 + 组列表 + 保留一份）、文件夹占用分布（递归汇总 + 下钻 + 只读）。
   - **② 批次五 A4 + B3 残留部分（`bff2b05`，099 + 多盘扩展）**：残留「一键定位」补全（关联最近卸载记录显软件名/卸载时间 + 打开所在文件夹直达 + 按风险分级 + 走保险箱）。
@@ -683,6 +690,7 @@
 - [x] 初始化项目状态白板 PROJECT_STATE.md（本次提交）
 
 ## 待办事项
+- [x] 085：**发版 v0.5.0（版本号六处 + CHANGELOG + README/USER_GUIDE 同步）** ✅（2026-11-11，task-085）
 - [x] 088/089/090/091/092/093/094/095：**软件感知地基大合并（批次二三四 8 项）** ✅（2026-11-09，task-083）
 - [x] 001：初始化 monorepo 目录骨架（app/ Tauri+React+Vite、engine/ Rust workspace、elevation/、rules/、scripts/），跑通最小空窗口
 - [x] 002：落地公共数据层——SQLite 单文件 schema（settings/scan_session/cleanup_item/cleanup_task/safe_box/audit_log/rules_meta/registry_backup/cleanup_plan）与 rusqlite 连接、迁移
@@ -1022,17 +1030,8 @@
 - [B 中] **installer 未做代码签名（评估结论当前不做）**：未购 EV/OV 证书，SmartScreen 警告需手动「更多信息→仍要运行」。详见 `docs/research/code-signing-evaluation.md` 的三个触发条件。
 - [B 低] **品牌图标（决策不做）**：沿用 Tauri 默认占位，待后续有设计出 1024×1024 源 PNG 后再跑 `tauri icon`。
 ## 下一步计划
-1. **v0.4.0 已发布 + 真机体验通过**。R5 脚本删除仍维持原判断：先让 v0.4.0 跑一个版本周期再删 ps1，回退开关（`CCLEAN_RUST_*=0`）是唯一兜底。
-2. **v0.5.0 执行顺序（2026-11-08 重排，新编号 082~107）**：
-   - **批次一（UI，最先做，整体合并为一个任务派发）**：✅ 完成（task-082）。
-   - **批次二（P0 地基）**：✅ 完成（task-083，088 双份真值源收敛 + 089 `matches`）。
-   - **批次三（软件感知核心）**：✅ 完成（task-083，090 枚举器 + 091 扩展清单 + 092 L3 反向断言）。
-   - **批次四（软件感知收尾）**：✅ 完成（task-083，093 多 Profile + 094 UI 软件识别 + 095 规则去重联调）。
-   - **批次五（大文件地图与差异化）**：096 目标空间 / 097 重复文件 / 098 文件夹分布 / 099 残留一键定位。**下一阶段 = 本批**。
-   - **批次六（决策与 P1/P2 补全）**：100 自动清理拍板 / 101 L0 拍板 / 102 非系统盘产出 / 103 规则导入导出 / 104 Gradle&Maven。
-   - **批次七（P2 长尾）**：105 多用户 Profile / 106 草稿暂存 / 107 ARM64。
-3. **两条待拍板**：100（自动清理 vs 仅自动扫描）、101（L0 只读候选目录）。拍板后再进批次六。
-4. **遗留边界不变**：Top100 截断、残留"文件残留"误报无法归零、计划任务扫描非管理员恒空、DISM 15 分钟上限、跨盘恢复不支持、未做代码签名、品牌图标不做。
+**v0.5.0 发版完成**（版本号 0.5.0 + CHANGELOG + README/USER_GUIDE 已同步；PR 合并后由 DocsKeeper 手动打 tag `v0.5.0` 触发 Release workflow，产出 x64 + ARM64）。**下一阶段：由用户拍板下一里程碑（v0.6.0 / 架构债 / 体验深化）**。
+- 遗留边界不变：Top100 截断、残留"文件残留"误报无法归零、计划任务扫描非管理员恒空、DISM 15 分钟上限、跨盘恢复不支持、未做代码签名、品牌图标不做、跨盘恢复 fallback / `RmShutdown` 三功能维持现状。
 
 ## 当前负责人 Agent
 **测试 Agent（提示词 9）**——`feature/task-083-software-awareness-batch234` 开发轮已完成、状态 `testing`（批次二三四软件感知地基大合并）。
@@ -1592,6 +1591,10 @@
 | ff95575 | #task-084 | feat(crossdrive): 非系统盘大文件产出（B3 大文件部分） |
 | f87e170 | #task-084 | feat(longtail): 多用户 Profile + 草稿暂存 + ARM64 产物（C1 + C2 + C3） |
 | （本次） | #task-084 | docs(state): 任务084完成，v0.5.0 批次五六七 12 项收官（大文件地图/决策/P2 长尾） |
+| b1861d4 | #task-085 | chore(release): 版本号升级至 v0.5.0（六处同步） |
+| cec591a | #task-085 | docs(changelog): v0.5.0 条目（UI 批量优化 + 软件感知地基 + 大文件地图收官） |
+| 595f331 | #task-085 | docs(readme): 功能列表同步（软件感知 + 大文件深化 + 自动清理 + ARM64） |
+| （本次） | #task-085 | docs(state): 任务085完成，v0.5.0 release-prep 就绪 |
 
 ---
 变更轨迹：
@@ -1742,3 +1745,5 @@
 - 2026-11-08  task-081（= backlog 095）  UI 深色适配补完（Items / SafeBox / History 三页）：**先纠正了任务书的两处前提**——① **本项目没有 theme context**，主题是 App 把 5 个 CSS 变量（`--bg/--surface/--text/--text-muted/--border`）作为 inline style 挂在根 div 上，页面用 `var()` 取值，所以「跟随主题」= 换变量，不需要 context/DOM 读取；② 任务书给的深色色值（`#1e1e1e`/`#e0e0e0`/`#3c3c3c`）与项目 token（`#0f172a`/`#f1f5f9`/`#334155`）**完全不同**，照抄会和已适配的 Dashboard/Settings 割裂。**中性色全部换变量**（浅色下取值几乎逐值相同，故不回归），逐处判断而非全局替换——`#fff` 有两种语义（卡片底 vs 彩色按钮白字），后者必须保留。**语义色改半透明**（`#fee2e2` 这类浅底在深色页上是刺眼亮斑；`rgba()` 叠在浅底是淡色、叠在深底是暗色，一个值适配两档），配套把语义文字提到 500 档（深红 `#b91c1c` 在暗底上对比度仅 1.6:1，不可读）。**红按钮 `#dc2626`→`#b91c1c`**：降亮度的同时白字对比度从 5.9 升到 6.5，一次改动满足两个目标；Items 的「清理已选」一并统一。**顺带修了两个既有缺陷**：① disabled 按钮是「半透明底 + 白字」，白字在浅蓝/浅红底上几乎看不见（浅色下更糟）→ 改 `var(--text-muted)`；② Items 行 hover 第一版用 `var(--bg)` **完全看不出**（表格透明，行背景等于页面背景，`--bg` 与之同色），截图验证时才发现，改用 `var(--surface)`。**取证方式**：本机 WebView2 崩（MEMORY 已记），改用 **headless Edge + CDP** 加载 `vite preview` 的**生产构建产物**（= 打包装进 exe 的 dist），打桩 `__TAURI_INTERNALS__.invoke` 喂真实数据，跑真实 React 组件截 10 张图，含浅色/深色三页 + hover + 变量热切换（改 5 个变量后整页即时换色，证明无硬编码残留）。**踩坑**：Edge headless 的相对路径按**进程工作目录**解析，`--screenshot=target/x.png` 会报「系统找不到指定的路径」，必须给绝对路径；React 的 `onMouseEnter` 是 `mouseover` 代理的，派发 `mouseenter` 不触发。门禁 lint 0 error（2 warning 均 SafeBox 既有）、vitest **197 passed（14 files）**、`pnpm build` 251.64 kB（+1.3）；**dev server 与 vitest 同跑会让 jsdom worker 抢资源出现「13/168 + 1 error」假失败，停掉 dev server 即 14/197 全绿**。**未做**：安装态 GUI 深色走查（WebView2 崩，归测试轮）；顶部更新 banner 深色仍是浅蓝亮块（在 App.tsx，任务书明确不改）。
 
 - 2026-11-08  task-082  UI 体验批量优化（= backlog 批次一 082/083/084/086/087）：**仪表盘按 backlog 82.1~82.3 重排**（磁盘空间卡上移通栏 → 统计卡 2×2 左置 `flex:11` ≈55% + 趋势图右置 `flex:9` ≈45%、`align-items:stretch` 顶部对齐、窄屏 flex-wrap 堆叠；间距 12px、主数字 28→32px、minHeight 90→100、柔和 boxShadow；**顺带修 task-081 漏掉的 `cardStyle.background:"#fff"` 白底**）。**单元格滚动**：`overflow-x` 写在 `<td>` 上**不生效**（table-cell 的 overflow 作用于整表），必须包 `div`（`max-width` 300/400 + `nowrap` + `title`），滚动条用标准属性 `scrollbar-color`/`scrollbar-width` 跟随主题；真机实测注册表溢出那条 `375>300`、清理页 **100 条中 49 条溢出**（最长 786px）。**顺带修真 bug**：注册表表格容器 `overflow:hidden` 会把超宽的「风险」「建议」列**直接裁掉且滚不到** → `overflowX:auto`。**托盘**：3 项扩到 5 项（+暂停/恢复自动扫描，读写 `settings.auto_scan_enabled`，后台 tick 重读即生效，两项互斥可用）、左键单击从「只显示」改 **toggle**（可见且聚焦才隐藏——只判可见会让「窗口被挡在后面」时点了没反应）、tooltip 显示「待清理 N 项 / 累计释放 X」启动给一次 + **每 60 秒轮询**（完成点在 `commands.rs`/`auto_scan.rs`，不在白名单）。**影响说明**：L1/L2/L3 hover 补「影响什么」的具体例子，保险箱补路径/精确字节/来源批次三处 hover，残留置信度徽标补判定依据；**`rules/` 元数据驱动未做**（与 088 同一件事，按 backlog「先静态落地」）。**消重复**：`auto_scan.rs` 已有 `human_bytes`，把可见性改 `pub(crate)` 共用而非在 lib.rs 再抄 20 行（**白名单外 1 行**）。门禁 check/fmt/clippy 全 0、`cargo test --workspace` **638 passed**（+6）、lint 0 error、vitest **206 passed（14 files，+9）**、`pnpm build` 252.58 kB（+1.30）、**tauri build NSIS 4.55 MiB + MSI 6.71 MiB**。真机量取：主数字 32px / gap 12px / 深色卡片 `rgb(30,41,59)` / console **0 红错**。**未做**：原生托盘菜单截图（CDP 截不到 DOM）、SafeBox hover 截图（真实库为空，用 4 条单测替代）、CI（开发轮不触发）。**环境坑**：vitest 并行写 `%TEMP%` 被沙箱拦（`EPERM`）会打断 Settings 测试表现为 13/162+1error，`--no-file-parallelism` 即 14/206 全绿。
+
+- 2026-11-11  task-085  发版 v0.5.0（UI + 软件感知 + 大文件地图收官）：**版本号六处**升 0.5.0（`tauri.conf.json` / `app/src-tauri/Cargo.toml` / `app/package.json` / 根 `package.json` / `cli/Cargo.toml` + `Cargo.lock` 自动同步），`c-clean-cli --version` 实测 `c-clean-cli 0.5.0`；**CHANGELOG v0.5.0** 四段（新增：UI 批量优化 / 软件感知 / 大文件深化 / 决策补全 / P2 长尾；架构优化：双份真值源收敛 / L3 反向断言 / 多 Profile；测试：≥30 新增，累计 Rust ≥668 + 前端 ≥214；已知问题：不签名 / 默认图标 / 三功能维持现状）；**README** 版本号 + 功能列表（软件感知 / 大文件深化 / 自动清理 / 规则导入导出 / 多用户 / 草稿 / ARM64）+ 安装表 ARM64 行；**USER_GUIDE** 版本号 + 新增「17. v0.5.0 新增能力」6 小节 + 目录交叉引用。**门禁**：check 0 / `cargo build --workspace` 成功（cdisk-cleaner 0.5.0、c-clean-cli 0.5.0）/ release CLI `--version` 0.5.0 / `pnpm build` 270.39 kB / lint 0 error（4 条 react-refresh 既有 warning）。**未做**：真机 / NSIS / MSI / 便携版 / ARM64 冒烟 + CI（归测试轮 L4/L5）、tag（归 DocsKeeper 在 PR 合并后打）；本任务不改任何源代码。
