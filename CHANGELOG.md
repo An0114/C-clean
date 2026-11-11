@@ -8,6 +8,36 @@
 > 本文件自 **v0.1.6** 起启用，更早版本（v0.1.0 ~ v0.1.5）未回溯补录，
 > 历史以 `docs/PROJECT_STATE.md` 的「变更轨迹」段与 `tasks/` 目录为准。
 
+## [0.5.0] - 2026-11-11
+
+> 版本线：v0.5.0 = UI 体验批量优化（task-082）+ 软件感知地基（task-083，批次二三四 8 项）+ 大文件地图与决策补全（task-084，批次五六七 12 项）。
+> **minor 发版**：新增软件感知能力线与大文件地图深化，架构级变更（双份真值源收敛）patch 承载不了。
+
+### 新增
+
+- **UI 体验批量优化**（task-082）：仪表盘布局重排（磁盘卡上移通栏、统计卡 2×2 左置 55%、趋势图右置 45%）；注册表命令列 / 清理路径列横向滚动；托盘菜单扩到 5 项（含暂停 / 恢复自动扫描）；清理列表逐项影响说明。
+- **软件感知地基**（task-083）：规则 schema 新增 `matches`（glob / regex / suffix）；内置 5 模块改读规则库；注册表软件枚举器；软件缓存识别（VSCode / Slack / Discord / Teams / WeChat 等）；L3 红线反向断言；Chrome / Edge / Firefox 多 Profile；清理页「软件」列 + 同软件折叠分组；规则路径去重。
+- **大文件地图深化**（task-084）：目标空间模式（Downloads / Documents / Desktop / Temp + 容量输入 + 达成度）；重复文件 SHA-256 检测；文件夹占用分布 Top20；残留一键定位（关联卸载记录 + 直达文件夹）。
+- **决策补全**（task-084）：自动清理 L1 拍板（默认关 + 阈值可配 + 走保险箱 + 通知）；L0 一键清理（只读候选 + 无删除入口）；非系统盘产出（`$Recycle.Bin` / 各盘 Top-N / `Windows.old`）；自定义规则导入导出；Gradle / Maven 缓存识别。
+- **P2 长尾**（task-084）：多用户 Profile 枚举；清理草稿「下次继续」（v7 迁移 `draft_selections`）；ARM64 构建产物（Release workflow matrix）。
+
+### 架构优化
+
+- **双份真值源收敛**（task-083 A2）：5 个内置模块硬编码路径全部迁入 `rules/cache_rules.json` 的 `system` 组，Rust 模块只作执行器，`CCLEAN_RUST_*` 回退开关保留。
+- **L3 红线反向断言**（task-083 B3）：规则加载时校验 L1/L2 不与 L3 红线冲突，冲突即 panic 并打印规则 id。
+- **多 Profile 浏览器缓存识别**（task-083 C1）：Chrome / Edge 枚举 `User Data\*` 全部 profile，Firefox 读 `profiles.ini`。
+
+### 测试
+
+- 新增 ≥30 条单测（规则 schema / 软件枚举 / 重复文件 / 文件夹分布 / 草稿 / 规则 IO 等）。
+- 累计 Rust ≥668 passed + 前端 ≥214 passed，全绿。
+
+### 已知问题
+
+- 代码签名不做（SmartScreen 警告可接受）。
+- 品牌图标不做（Tauri 默认占位）。
+- 跨盘恢复 fallback / `RmShutdown` 三功能维持现状。
+
 ## [0.4.0] - 2026-11-07
 
 > 版本线：R5 架构债（5 个扫描脚本全部 Rust 重写，task-074~076）+ P2 三项（多盘扫描 / 用户自定义规则 / 便携版 CLI，task-077~079）。
