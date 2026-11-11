@@ -235,3 +235,72 @@ DevAgent 交付物（后续执行结果）：
 4. 本任务文档本身**由 DocsKeeper 在派发时**单独提交一次：
    `docs(task): 新增任务085-发版v0.5.0（UI批量优化+软件感知+大文件地图收官） (#task-085)`，
    该提交只含 `tasks/085-release-v0.5.0.md` 一个文件，落在 `feature/task-085-release-v0.5.0` 分支最前端。
+
+## 实现备注
+
+> 执行：DevFullstackRustReact（2026-11-11）。本任务纯版本号 + 文档，无源代码改动。
+
+### 实际改动文件清单（与白名单一致）
+
+- `app/src-tauri/tauri.conf.json`（version → 0.5.0）
+- `app/src-tauri/Cargo.toml`（version → 0.5.0）
+- `app/package.json`（version → 0.5.0）
+- `package.json`（根，version → 0.5.0）
+- `cli/Cargo.toml`（version → 0.5.0）
+- `Cargo.lock`（cargo build 自动同步，仅 2 行版本变更）
+- `CHANGELOG.md`（新增 v0.5.0 条目）
+- `README.md`（版本号 + 功能列表 + ARM64 安装行）
+- `docs/USER_GUIDE.md`（版本号 + 第 17 章 6 小节 + 目录）
+- `docs/PROJECT_STATE.md`（状态同步，单独提交）
+
+未改动：根 `Cargo.toml` / `engine/Cargo.toml` / `elevation/Cargo.toml` / 所有源代码 / `.github/workflows/release.yml`。
+
+### 版本号六处确认
+
+| 文件 | 值 |
+|---|---|
+| `app/src-tauri/tauri.conf.json` | `0.5.0` |
+| `app/src-tauri/Cargo.toml` | `0.5.0` |
+| `app/package.json` | `0.5.0` |
+| `package.json`（根） | `0.5.0` |
+| `cli/Cargo.toml` | `0.5.0` |
+| `Cargo.lock`（cdisk-cleaner / c-clean-cli） | `0.5.0` |
+
+CLI 实测：`./target/release/c-clean-cli.exe --version` → `c-clean-cli 0.5.0`。
+
+### CHANGELOG v0.5.0 条目摘要
+
+新增（UI 批量优化 / 软件感知地基 / 大文件地图深化 / 决策补全 / P2 长尾）、架构优化（双份真值源收敛 / L3 反向断言 / 多 Profile）、测试（≥30 新增，累计 Rust ≥668 + 前端 ≥214）、已知问题（不签名 / 默认图标 / 三功能维持现状）。
+
+### README 功能列表更新摘要
+
+新增「软件感知与大文件深化」小节（软件感知 / 大文件深化 / 自动清理 / 规则导入导出 / 多用户 Profile / 草稿暂存 / ARM64 产物）；版本号 → v0.5.0；安装表加 ARM64 行。
+
+### USER_GUIDE 新增章节清单
+
+新增「17. v0.5.0 新增能力」：17.1 软件感知 / 17.2 大文件地图深化 / 17.3 自动清理设置 / 17.4 规则导入导出 / 17.5 多用户 Profile / 17.6 草稿暂存；目录同步加第 17 项。
+
+### 构建与门禁输出
+
+- `cargo build --workspace`：`Compiling cdisk-cleaner v0.5.0` / `Compiling c-clean-cli v0.5.0`，Finished dev。
+- `cargo check --workspace --all-targets`：exit 0。
+- `cargo build --release -p c-clean-cli`：Finished release；`--version` = `c-clean-cli 0.5.0`。
+- `pnpm --filter app build`：`✓ built in 5.17s`，`dist/assets/index-*.js 270.39 kB`。
+- `pnpm --filter app lint`：0 error（4 条 react-refresh 既有 warning）。
+
+### 真机 / 打包安装冒烟
+
+本机 WebView2 渲染进程创建即崩（项目 MEMORY 已记），开发轮不做 GUI 走查；真机 / NSIS / MSI / 便携版 / ARM64 冒烟按项目约定移交测试 Agent（提示词 9 L4/L5）。CLI 版本号已在开发轮实测。
+
+### CI
+
+开发轮按项目约定不触发 CI；PR + CI 由测试 Agent 在测试轮执行，tag 由 DocsKeeper 在 PR 合并后打 `v0.5.0`。
+
+### 与任务文档不符的偏差
+
+- 任务书要求「USER_GUIDE 新增 6 个章节」，实际合并为「第 17 章 + 6 个小节」——避免把既有 16 章整体重编号（易漏交叉引用），内容覆盖完全一致。
+- 任务书「4 个 commit」，实际 5 个：额外 1 个 `docs(task)` 提交用于本「实现备注」段（`docs(state)` 提交严格只动 `PROJECT_STATE.md`）。
+
+### 遗留问题
+
+v0.5.0 发版完成；下一阶段：由用户拍板下一里程碑（v0.6.0 / 架构债 / 体验深化）。
