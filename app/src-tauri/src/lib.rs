@@ -146,6 +146,8 @@ pub fn run() {
             commands::cleanup_stats_trend,
             commands::cleanup_list_pending,
             commands::report_export,
+            // task-086 1.3：目标空间推荐组合（PRD P1-8）
+            commands::recommend_plan,
             commands::drive_usage,
             // task-077：多盘扫描——固定磁盘枚举（Dashboard 多环形图数据源）
             commands::drive_list,

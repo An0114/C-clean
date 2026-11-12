@@ -809,6 +809,34 @@ pub async fn cleanup_list_pending(
     }
 }
 
+/// `recommend_plan`：目标空间推荐组合（task-086 1.3 / PRD P1-8）。
+///
+/// 输入用户想要的空闲空间（MB），返回「推荐勾选哪些清理项 + 预计达成度」——
+/// 纯推荐，不删任何东西，前端只负责预勾选、用户照旧手动确认后才执行。
+///
+/// `target_mb` 由前端把「GB 输入 ×1024」换算而来（如输入 20 → 传 20480）。
+#[tauri::command]
+pub async fn recommend_plan(
+    target_mb: i64,
+    paths: tauri::State<'_, AppPaths>,
+) -> Result<Envelope<engine::ipc::commands::recommend::RecommendPlan>, String> {
+    let conn = match engine::db::conn::open(&paths.data_root) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[recommend_plan] open db: {e}");
+            return Ok(Envelope::err(INTERNAL));
+        }
+    };
+    let target_bytes = target_mb.max(0).saturating_mul(1024 * 1024);
+    match engine::ipc::commands::recommend::recommend_plan(&conn, target_bytes) {
+        Ok(v) => Ok(Envelope::ok(v)),
+        Err(e) => {
+            eprintln!("[recommend_plan] compute: {e}");
+            Ok(Envelope::err(INTERNAL))
+        }
+    }
+}
+
 /// `get_prefs`：读用户偏好（task-057）。新用户缺行时默认 auto_restart_on_close=false。
 #[tauri::command]
 pub async fn get_prefs(
