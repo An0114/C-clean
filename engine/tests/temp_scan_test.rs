@@ -131,6 +131,64 @@ fn insert_batch_writes_rows_with_ps1_equivalent_shape() {
     assert_eq!(rows[0].3, 100);
 }
 
+/// task-086 3.3：影响说明从 ScanItem 透传到 cleanup_item 落库。
+#[test]
+fn insert_batch_persists_impact_notes() {
+    let (_dir, conn, sid) = setup();
+    let emitter = VecEmitter::default();
+    let runner = ScanRunner::new(sid, &conn, &emitter);
+
+    // 规则库语义：software_cache 扫到条目时用 with_impact 携带影响说明。
+    let items = vec![ScanItem::new(
+        "software_cache",
+        "software_cache_vscode",
+        r"C:\A\c.tmp".to_string(),
+        50,
+        1,
+    )
+    .with_impact("删除后下次启动重新下载", "重启软件自动重建")];
+    runner.insert_batch(&items).expect("入库应成功");
+
+    let (impact, rebuild): (Option<String>, Option<String>) = conn
+        .query_row(
+            "SELECT impact_note, rebuild_note FROM cleanup_item WHERE session_id=?1",
+            [sid],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(impact.as_deref(), Some("删除后下次启动重新下载"));
+    assert_eq!(rebuild.as_deref(), Some("重启软件自动重建"));
+}
+
+/// task-086 3.3：未携带影响说明的条目落库为 NULL（前端退回通用文案）。
+#[test]
+fn insert_batch_leaves_impact_notes_null_when_absent() {
+    let (_dir, conn, sid) = setup();
+    let emitter = VecEmitter::default();
+    let runner = ScanRunner::new(sid, &conn, &emitter);
+
+    // 内置模块（temp）不携带影响说明，落库应为 NULL 而非空串——
+    // 空串会覆盖前端「无说明时显示通用 L1/L2 文案」的兜底逻辑。
+    let items = vec![ScanItem::new(
+        "temp",
+        "user_temp",
+        r"C:\T\a.tmp".to_string(),
+        100,
+        1,
+    )];
+    runner.insert_batch(&items).expect("入库应成功");
+
+    let (impact, rebuild): (Option<String>, Option<String>) = conn
+        .query_row(
+            "SELECT impact_note, rebuild_note FROM cleanup_item WHERE session_id=?1",
+            [sid],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert!(impact.is_none(), "无影响说明时 impact_note 应为 NULL");
+    assert!(rebuild.is_none(), "无重建说明时 rebuild_note 应为 NULL");
+}
+
 #[test]
 fn insert_batch_emits_one_progress_per_item() {
     // 进度条不能「跳着走」：每条入库都要有一条进度事件，否则扫描大目录时

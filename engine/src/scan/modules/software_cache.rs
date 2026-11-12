@@ -210,7 +210,7 @@ pub fn scan(
                 if crate::rules::loader::covered_by_builtin(&item.path, builtin_prefixes) {
                     continue;
                 }
-                out.push(item);
+                out.push(item.with_impact(&rule.impact_note, &rule.rebuild_note));
                 taken += 1;
                 if taken >= MAX_ITEMS_PER_RULE {
                     eprintln!(

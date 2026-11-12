@@ -395,15 +395,21 @@ export default function App() {
       data-theme={resolvedTheme}
       style={{
         ...themeVars,
-        padding: 24,
+        padding: "clamp(12px, 1.6vw, 32px)", // task-086 3.4：高分屏下外边距随视口伸缩，避免 4K 下上下留白过大
         fontFamily: "system-ui, sans-serif",
+        // task-086 3.4：全局基准字号用 clamp 响应式。
+        // 以往是整除固定 px（13/12/24…），在 150%/200% 缩放下子元素 rem 基础值不放大、
+        // 而系统又把整个网页放大，导致字号相对区域显得偏小或偏大。这里给根设一个
+        // 随视口宽度平滑缩放的字号基准，`em` 派生子元素即可跟随（`rem` 以 html 为基准，
+        // 需要配合 injection 或根 rem 定义；本应用全内联样式，故用根 fontSize + em 兜底）。
+        fontSize: "clamp(13px, 0.8rem + 0.2vw, 16px)",
         background: tokens.bg,
         color: tokens.text,
         minHeight: "100vh",
         boxSizing: "border-box",
       }}
     >
-      <h1 style={{ margin: "0 0 16px" }}>C-Disk Cleaner</h1>
+      <h1 style={{ margin: "0 0 1em", fontSize: "clamp(18px, 2.2vw, 26px)" }}>C-Disk Cleaner</h1>
 
       {/* task-036：非阻塞更新 banner——有新版本才显示，不挡操作 */}
       {update && !dismissed && (

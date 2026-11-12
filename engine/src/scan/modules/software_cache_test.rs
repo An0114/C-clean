@@ -103,6 +103,24 @@ fn scan_collects_installed_software_cache() {
     assert_eq!(out[0].risk_level, 2, "L2 → 整数 2");
 }
 
+/// task-086 3.3：影响说明从规则库透传到 ScanItem。
+#[test]
+fn scan_passes_impact_notes_from_rule_to_item() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.tmp"), b"data").unwrap();
+    let mut r = rule(&[&dir.path().to_string_lossy()], "L2");
+    r.impact_note = "删除后下次启动重新构建缓存".to_string();
+    r.rebuild_note = "重启软件自动重建".to_string();
+    let out = scan(&[entry("TestSoft")], &rules_of(r), &[]);
+    assert_eq!(out.len(), 1);
+    assert_eq!(
+        out[0].impact_note.as_deref(),
+        Some("删除后下次启动重新构建缓存"),
+        "ScanItem 必须携带规则库的 impact_note"
+    );
+    assert_eq!(out[0].rebuild_note.as_deref(), Some("重启软件自动重建"));
+}
+
 #[test]
 fn category_slug_is_stable_and_ascii_only() {
     assert_eq!(category_slug("Visual Studio Code"), "visual_studio_code");
