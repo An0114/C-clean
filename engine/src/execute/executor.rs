@@ -14,7 +14,7 @@ use rusqlite::Connection;
 use crate::execute::delete::Deleter;
 use crate::execute::locking::{who_is_locking, LockingProcess};
 use crate::execute::normalize::normalize;
-use crate::execute::resolve::resolve_to_real;
+use crate::execute::resolve::{is_symlink_or_junction, long_path_name, resolve_to_real};
 use crate::execute::whitelist::classify_with_external;
 
 /// 单条 item 的执行结果（返回给 Tauri / 测试断言）。
@@ -203,7 +203,9 @@ where
         // 2. 再过白名单（规范化 → 真实路径解析 → 内置 L3 ∪ 外部红线）
         //    task-008：必须对 canonicalize 后的真实路径做 L3 判定，
         //    否则 junction/symlink 可把 Temp 里的指针重定向到 Desktop 而绕过红线。
-        let np = match normalize(&path) {
+        //    task-086 2.3：先经 GetLongPathNameW 把 8.3 短名（如 SYSTEM~1）展开成长名，
+        //    否则 `C:\Windows\SYSTEM~1\kernel32.dll` 匹配不上 system32 红线。
+        let np = match normalize(&long_path_name(&path)) {
             Ok(np) => np,
             Err(_) => {
                 summary.fail += 1;
@@ -220,6 +222,23 @@ where
                 continue;
             }
         };
+        // task-086 2.2：待删目标**本身**是 symlink / junction 即拒绝（code 2009）。
+        // 只检查最终组件本身（is_symlink_or_junction），不连坐中间层 junction
+        //（如 AppData\Local 常是 junction，需正常穿越）。
+        if is_symlink_or_junction(np.normalized()) {
+            summary.fail += 1;
+            write_audit(conn, now, &path, id, 0, "denied", "SymlinkRefused", false);
+            results.push(ExecResult {
+                item_id: id,
+                path,
+                deleted: false,
+                already_gone: false,
+                bytes_freed: 0,
+                error: Some("blocked by L3: symlink/junction refused (code 2009)".into()),
+                locking_processes: Vec::new(),
+            });
+            continue;
+        }
         // 解析真实路径；NotExists 时回退到输入路径分类（幂等重删已删文件）。
         let classify_target = match resolve_to_real(&np) {
             Ok(resolved) => match normalize(&resolved.real) {

@@ -45,6 +45,74 @@ pub enum ResolveError {
 #[cfg(windows)]
 const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
 
+/// 用 Windows `GetLongPathNameW` 把路径中的 8.3 短名（如 `SYSTEM~1`）展开为长名
+/// （如 `System32`）。task-086 2.3：短名转长名后再走 L3 匹配，否则
+/// `C:\Windows\SYSTEM~1\kernel32.dll` 绕不过 `system32` 红线检查。
+///
+/// # 失败语义
+///
+/// 展开失败（路径不存在 / 无短名 / 非 Windows）时**原样返回**输入，不阻断流程：
+/// 8.3 只是让 L3 判定更严格的增强项，不应因展开失败而拒绝合法清理。
+#[cfg(windows)]
+pub fn long_path_name(path: &str) -> String {
+    use windows::core::PCWSTR;
+    use windows::Win32::Storage::FileSystem::GetLongPathNameW;
+
+    // 转 UTF-16（Windows 文件名 API 用 wide 字符串），末尾补 NUL。
+    let mut wide: Vec<u16> = path.encode_utf16().collect();
+    wide.push(0);
+
+    // 第一次调用拿所需缓冲区长度（含结尾 NUL）；0 表示失败（路径不存在等）。
+    let needed = unsafe { GetLongPathNameW(PCWSTR(wide.as_ptr()), None) };
+    if needed == 0 {
+        return path.to_owned();
+    }
+
+    // 分配足够空间再展开（windows crate 的第二个参数是 Option<&mut [u16]> 切片，
+    // 切片长度即底层 cchbuffer；尾部多留一个 NUL 槽避免截断）。
+    let mut buf: Vec<u16> = vec![0u16; needed as usize + 1];
+    let written = unsafe { GetLongPathNameW(PCWSTR(wide.as_ptr()), Some(buf.as_mut_slice())) };
+    if written == 0 {
+        return path.to_owned();
+    }
+    String::from_utf16_lossy(&buf[..written as usize])
+}
+
+/// 非 Windows 占位（本项目 Windows-only，仅为编译通过）：不做任何转换。
+#[cfg(not(windows))]
+pub fn long_path_name(path: &str) -> String {
+    path.to_owned()
+}
+
+/// 判断**最终组件本身**是否为符号链接 / junction（reparse point）。
+///
+/// task-086 2.2：评审场景 `C:\Temp\link -> C:\Users\alice\Documents` 中
+/// `link` 本身是 symlink，词法上落在 Temp（不在红线）。保守策略是**直接拒绝**
+/// 删除这种重定向指针本身（code 2009「拒绝删除符号链接/Junction」）。
+///
+/// # 与 [`count_reparse_hops`] 的区别
+///
+/// - `count_reparse_hops` 统计整条路径里**所有**中间层 junction（如 `AppData\Local`
+///   常是 junction），用于 hop 数告警；
+/// - 本函数只关心**待删目标本身**是不是 symlink/junction——删除整个 link 指针
+///   而非其指向目标。中间层 junction 是被正常穿越的，不应连坐。
+///
+/// 用 [`std::fs::symlink_metadata`]（不跟随最终符号链接）取原文件属性，
+/// 检查 `FILE_ATTRIBUTE_REPARSE_POINT` 位。
+#[cfg(windows)]
+pub fn is_symlink_or_junction(path: &str) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    std::fs::symlink_metadata(path)
+        .map(|md| md.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0)
+        .unwrap_or(false)
+}
+
+/// 非 Windows 占位。
+#[cfg(not(windows))]
+pub fn is_symlink_or_junction(_path: &str) -> bool {
+    false
+}
+
 /// 逐级查 reparse point，统计路径里真正的 junction/symlink 数。
 ///
 /// `normalized` 形如 `C:\Users\runneradmin\AppData\Local\Temp\hello.txt`。
@@ -140,5 +208,68 @@ mod tests {
             Err(ResolveError::NotExists(_)) => {}
             other => panic!("expected NotExists, got {other:?}"),
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn long_path_name_roundtrips_short_to_long() {
+        use std::os::windows::ffi::OsStrExt;
+        use windows::core::PCWSTR;
+        use windows::Win32::Storage::FileSystem::GetShortPathNameW;
+
+        // 造一个真实存在的唯一目录，用它自己的 8.3 短名做还原测试。
+        let dir = std::env::temp_dir().join(format!("trae_longpath_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let short = {
+            let mut wide: Vec<u16> = dir.as_os_str().encode_wide().collect();
+            wide.push(0);
+            let needed = unsafe { GetShortPathNameW(PCWSTR(wide.as_ptr()), None) };
+            if needed == 0 {
+                return; // 系统未启用 8.3 别名时短名=长名，往返仍成立
+            }
+            let mut buf = vec![0u16; needed as usize + 1];
+            let written =
+                unsafe { GetShortPathNameW(PCWSTR(wide.as_ptr()), Some(buf.as_mut_slice())) };
+            String::from_utf16_lossy(&buf[..written as usize])
+        };
+
+        // 短名 → 长名展开：应还原为原来的长目录路径（大小写不敏感）。
+        let long = long_path_name(&short);
+        assert_eq!(
+            long.trim_end_matches('\\').to_lowercase(),
+            dir.to_string_lossy().to_lowercase()
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn long_path_name_identity_when_no_short_component() {
+        // 对不含 8.3 段的长路径，展开幂等（结果与原路径一致，大小写不敏感）。
+        let out = long_path_name(r"C:\Windows\System32");
+        assert_eq!(out.to_lowercase(), r"c:\windows\system32".to_lowercase());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn is_symlink_or_junction_flags_link_but_not_plain_dir() {
+        use std::os::windows::fs::symlink_dir;
+
+        let base = std::env::temp_dir().join(format!("trae_link_{}", std::process::id()));
+        let target = base.join("real");
+        let link = base.join("alias");
+        std::fs::create_dir_all(&target).unwrap();
+        // 普通目录不是 symlink。
+        assert!(!is_symlink_or_junction(&target.to_string_lossy()));
+
+        // 创建链接（Windows 上对目录 symlink_dir 即 soft link，同为 reparse point）。
+        if let Err(e) = symlink_dir(&target, &link) {
+            // 无开发者模式/权限时创建失败 → 跳过，避免 CI 误报。
+            eprintln!("skipping symlink detection fixture: {e}");
+            return;
+        }
+        assert!(is_symlink_or_junction(&link.to_string_lossy()));
+        // 删除时链接本身被拒，但真实目录不受影响。
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

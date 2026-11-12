@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use super::super::envelope::Envelope;
 use super::super::error_codes::{DRYRUN_EMPTY, WHITELIST_DENIED};
 use crate::execute::normalize::normalize;
+use crate::execute::resolve::{is_symlink_or_junction, long_path_name};
 use crate::execute::whitelist::classify_with_external;
 
 /// 解析后的条目（resolver 的输出）。
@@ -100,7 +101,19 @@ pub fn handle_dry_run(
     let mut blocked: Vec<BlockedItem> = Vec::new();
     let mut pass: Vec<&ResolvedItem> = Vec::new();
     for item in &resolved {
-        match normalize(&item.path) {
+        // task-086 2.3：先展开 8.3 短名成 8.3 长名，再做红线匹配。
+        let long_path = long_path_name(&item.path);
+        // task-086 2.2：待删目标本身是 symlink/junction → 预检即拦（code 2009），
+        // 与 execute 阶段的真实删除决策保持一致。
+        if is_symlink_or_junction(&long_path) {
+            blocked.push(BlockedItem {
+                item_id: item.item_id,
+                path: item.path.clone(),
+                denial_reason: "SymlinkRefused".to_string(),
+            });
+            continue;
+        }
+        match normalize(&long_path) {
             Ok(np) => match classify_with_external(&np, external_deny) {
                 Ok(()) => pass.push(item),
                 Err(reason) => blocked.push(BlockedItem {
@@ -152,4 +165,51 @@ pub fn handle_dry_run(
         breakdown,
         blocked_by_l3: vec![],
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn item(item_id: i64, path: &str) -> ResolvedItem {
+        ResolvedItem {
+            item_id,
+            path: path.to_string(),
+            module_code: "cache".to_string(),
+            category: "temp".to_string(),
+            size_bytes: 10,
+        }
+    }
+
+    #[test]
+    fn symlink_target_is_blocked_in_dry_run() {
+        // Windows + 有权限创建 symlink 时才真正断言；其他平台/环境跳过（逻辑仍覆盖）。
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::symlink_dir;
+
+            let base = std::env::temp_dir().join(format!("trae_drylink_{}", std::process::id()));
+            let target = base.join("real");
+            let link = base.join("alias");
+            std::fs::create_dir_all(&target).unwrap();
+            if symlink_dir(&target, &link).is_ok() {
+                let resolver = MockResolver::new(vec![item(1, &link.to_string_lossy())]);
+                let resp = handle_dry_run(DryRunReq { item_ids: vec![1] }, &resolver, &[]);
+                assert_ne!(resp.code, 0);
+                assert_eq!(resp.code, 2002);
+                let data = resp.data.expect("blocked list attached");
+                assert_eq!(data.blocked_by_l3.len(), 1);
+                assert_eq!(data.blocked_by_l3[0].denial_reason, "SymlinkRefused");
+            }
+            let _ = std::fs::remove_dir_all(&base);
+        }
+    }
+
+    #[test]
+    fn plain_temp_path_passes_dry_run() {
+        let resolver = MockResolver::new(vec![item(1, r"C:\Windows\Temp\update.log")]);
+        let resp = handle_dry_run(DryRunReq { item_ids: vec![1] }, &resolver, &[]);
+        assert_eq!(resp.code, 0);
+        assert_eq!(resp.data.map(|d| d.total_items), Some(1));
+    }
 }
