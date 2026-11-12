@@ -171,7 +171,10 @@ fn dry_run_l3_path_returns_2002() {
         data.blocked_by_l3[0].path,
         r"C:\Users\alice\Desktop\secret.docx"
     );
-    assert_eq!(data.blocked_by_l3[0].denial_reason, "L3PersonalDir");
+    assert_eq!(
+        data.blocked_by_l3[0].denial_reason,
+        "BuiltinRedline(L3PersonalDir)"
+    );
 }
 
 #[test]

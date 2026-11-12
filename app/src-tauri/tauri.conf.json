@@ -29,11 +29,6 @@
     "resources": {
       "../../rules/cache_rules.json": "rules/cache_rules.json",
       "../../rules/rules_meta.json": "rules/rules_meta.json",
-      "../../scripts/scan_temp.ps1": "scripts/scan_temp.ps1",
-      "../../scripts/scan_windows_update.ps1": "scripts/scan_windows_update.ps1",
-      "../../scripts/scan_prefetch.ps1": "scripts/scan_prefetch.ps1",
-      "../../scripts/scan_browser_cache.ps1": "scripts/scan_browser_cache.ps1",
-      "../../scripts/scan_dev_cache.ps1": "scripts/scan_dev_cache.ps1",
       "binaries/cclean-elevation.exe": "cclean-elevation.exe"
     },
     "icon": [

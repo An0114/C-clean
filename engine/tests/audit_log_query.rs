@@ -1,6 +1,6 @@
 //! task-024 集成测试：audit_log.list 只读查询。
 
-use engine::audit_log::{list_audit_log, AuditLogFilter};
+use engine::audit_log::{list_audit_log, list_scan_sessions, AuditLogFilter};
 use engine::db::conn::open;
 
 fn insert_row(conn: &rusqlite::Connection, ts: i64, action: &str, target: &str, result: &str) {
@@ -43,8 +43,7 @@ fn list_all_returns_desc_order() {
 }
 
 #[test]
-fn list_by_action_filters() {
-    // 真实 schema 无 session_id 列，本用例改为按 action 语义验证（见 query.rs 注释）。
+fn list_by_action_returns_all_rows() {
     let dir = tempfile::tempdir().unwrap();
     let conn = open(dir.path()).unwrap();
     insert_row(&conn, 1, "permanent_delete", "/a", "success");
@@ -53,7 +52,6 @@ fn list_by_action_filters() {
     insert_row(&conn, 4, "restore", "/d", "success");
     insert_row(&conn, 5, "restore", "/e", "success");
 
-    // list_audit_log 当前不支持 WHERE action=，全量返回 5 条（按 ts DESC）。
     let v = list_audit_log(
         &conn,
         &AuditLogFilter {
@@ -65,6 +63,47 @@ fn list_by_action_filters() {
     .unwrap();
     assert_eq!(v.len(), 5);
     assert_eq!(v[0].created_at, 5);
+}
+
+#[test]
+fn list_filters_by_scan_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let conn = open(dir.path()).unwrap();
+    for id in [1, 2] {
+        conn.execute(
+            "INSERT INTO scan_session (id, started_at, status, scope) VALUES (?1, ?1, 'finished', 'full')",
+            [id],
+        )
+        .unwrap();
+    }
+    for (ts, session) in [(1, 1), (2, 2), (3, 1)] {
+        conn.execute(
+            "INSERT INTO audit_log (ts, actor, action, target, result, session_id)
+             VALUES (?1, 'user', 'permanent_delete', '/f', 'success', ?2)",
+            rusqlite::params![ts, session],
+        )
+        .unwrap();
+    }
+    insert_row(&conn, 4, "restore", "/legacy", "success");
+
+    let rows = list_audit_log(
+        &conn,
+        &AuditLogFilter {
+            session_id: Some(1),
+            limit: 100,
+            offset: 0,
+        },
+    )
+    .unwrap();
+    assert_eq!(rows.len(), 2);
+    assert!(rows.iter().all(|r| r.session_id == Some(1)));
+    assert_eq!(rows[0].created_at, 3);
+
+    let sessions = list_scan_sessions(&conn).unwrap();
+    assert_eq!(
+        sessions.iter().map(|s| s.id).collect::<Vec<_>>(),
+        vec![2, 1]
+    );
 }
 
 #[test]

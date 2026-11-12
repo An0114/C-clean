@@ -11,7 +11,8 @@
 use std::path::Path;
 
 use engine::audit_log::{
-    cleanup_stats, list_audit_log, AuditLogEntry, AuditLogFilter, CleanupStats,
+    cleanup_stats, list_audit_log, list_scan_sessions, AuditLogEntry, AuditLogFilter, CleanupStats,
+    ScanSessionOption,
 };
 use engine::execute::list_pending::{list_pending_page_by_drive, PendingPage, DEFAULT_PAGE_SIZE};
 use engine::ipc::commands::dry_run::{handle_dry_run, DryRunReq, DryRunResp};
@@ -718,6 +719,27 @@ pub async fn audit_log_list(
         Ok(v) => Ok(Envelope::ok(v)),
         Err(e) => {
             eprintln!("[audit_log_list] list: {e}");
+            Ok(Envelope::err(INTERNAL))
+        }
+    }
+}
+
+/// `scan_session.list`：History 按扫描会话筛选的下拉选项（只读）。
+#[tauri::command]
+pub async fn scan_session_list(
+    paths: tauri::State<'_, AppPaths>,
+) -> Result<Envelope<Vec<ScanSessionOption>>, String> {
+    let conn = match engine::db::conn::open(&paths.data_root) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[scan_session_list] open db: {e}");
+            return Ok(Envelope::err(INTERNAL));
+        }
+    };
+    match list_scan_sessions(&conn) {
+        Ok(v) => Ok(Envelope::ok(v)),
+        Err(e) => {
+            eprintln!("[scan_session_list] list: {e}");
             Ok(Envelope::err(INTERNAL))
         }
     }

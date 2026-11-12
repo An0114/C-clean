@@ -768,7 +768,6 @@ C-DiskCleaner_0.4.0_portable/
 ├── c-clean-cli.exe            ← 命令行
 ├── cclean-elevation.exe       ← 提权助手（还原点 / DISM 用）
 ├── rules/                     ← 出厂规则库
-├── scripts/                   ← ps1 回退脚本（正常用不到）
 └── portable_data/             ← 数据目录（数据库 / 保险箱 / 日志）
 ```
 

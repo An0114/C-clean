@@ -454,9 +454,17 @@ fn write_audit(
     } else {
         None
     };
+    // task-086 4.2：删除审计继承条目所属扫描会话；条目已被清理时保留 NULL。
+    let session_id: Option<i64> = conn
+        .query_row(
+            "SELECT session_id FROM cleanup_item WHERE id = ?1",
+            [item_id],
+            |r| r.get(0),
+        )
+        .ok();
     let _ = conn.execute(
-        "INSERT INTO audit_log (ts, actor, action, target, detail, result, denial_reason)
-         VALUES (?1, 'user', 'permanent_delete', ?2, ?3, ?4, ?5)",
-        params![ts, target, detail, result, denial_param],
+        "INSERT INTO audit_log (ts, actor, action, target, detail, result, denial_reason, session_id)
+         VALUES (?1, 'user', 'permanent_delete', ?2, ?3, ?4, ?5, ?6)",
+        params![ts, target, detail, result, denial_param, session_id],
     );
 }

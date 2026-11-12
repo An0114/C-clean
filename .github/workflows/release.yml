@@ -13,7 +13,7 @@
 # task-084 C3：ARM64 产物。
 #   原来只打 windows-latest（x64）。现在 build 用一个 matrix，两个 runner 各自出包：
 #     - windows-latest   → x86_64-pc-windows-msvc  → x64 安装包（含 NSIS/MSI + 签名）；
-#     - windows-11-arm64 → aarch64-pc-windows-msvc → arm64 安装包（含 NSIS/MSI + 签名）。
+#     - windows-11-arm   → aarch64-pc-windows-msvc → arm64 安装包（含 NSIS/MSI + 签名）。
 #   为什么拆成 build + publish 两个 job：两个 arch 各自 `softprops/action-gh-release`
 #   直接上传会并发抢着 create release，有 422 竞态。改成 build 各自产出并上传
 #   workflow artifact，publish 汇总后再创建一次 Release 统一上传——每次发版只建一次。
@@ -59,7 +59,7 @@ jobs:
           - platform: windows-latest
             target: x86_64-pc-windows-msvc
             arch: x64
-          - platform: windows-11-arm64
+          - platform: windows-11-arm
             target: aarch64-pc-windows-msvc
             arch: arm64
     env:
@@ -192,14 +192,12 @@ jobs:
           if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
 
-          # 布局必须与 bundle.resources 的映射一致：rules/ 与 scripts/ 在 exe 同级，
-          # 提权 exe 也在同级。AppPaths::pick_resource_root 找的就是「同时含 rules/
-          # 与 scripts/ 的目录」，而 release 下它只会看 resource_dir()（= exe 目录）。
+          # 布局必须与 bundle.resources 的映射一致：rules/ 与提权 exe 在 exe 同级。
+          # 扫描已全量 Rust 化，不再分发 scripts/；release 只从 exe 目录定位 rules/。
           Copy-Item "target/release/cdisk-cleaner.exe" $stage
           Copy-Item "target/release/c-clean-cli.exe" $stage
           Copy-Item "app/src-tauri/binaries/cclean-elevation.exe" $stage
           Copy-Item "rules" (Join-Path $stage "rules") -Recurse
-          Copy-Item "scripts" (Join-Path $stage "scripts") -Recurse
 
           # portable_data 必须**存在且非空**：
           #   - 存在：CLI 用 `portable_data 是否 is_dir()` 判断便携布局；

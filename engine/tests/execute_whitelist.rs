@@ -2,7 +2,11 @@
 //! 对典型 L1 缓存路径做放行验证。全部纯内存，不碰真实文件系统。
 
 use engine::execute::delete::{execute, ExecuteOutcome, ExecuteRequest, NoopDeleter, REJECT_CODE};
-use engine::execute::whitelist::DenialReason;
+use engine::execute::whitelist::{BuiltinRedlineReason, DenialReason};
+
+fn builtin(reason: BuiltinRedlineReason) -> DenialReason {
+    DenialReason::BuiltinRedline(reason)
+}
 
 /// 跑 execute 并返回最后一条被拒决策的拒绝原因（无拒绝则 None）。
 fn last_denial(paths: Vec<String>, actions: Vec<String>) -> (bool, Option<DenialReason>) {
@@ -31,42 +35,42 @@ fn one(path: &str) -> Vec<String> {
 fn blocks_personal_desktop() {
     let (allowed, reason) = last_denial(one(r"C:\Users\alice\Desktop\secret.docx"), vec![]);
     assert!(!allowed);
-    assert_eq!(reason, Some(DenialReason::L3PersonalDir));
+    assert_eq!(reason, Some(builtin(BuiltinRedlineReason::L3PersonalDir)));
 }
 
 #[test]
 fn blocks_personal_documents() {
     let (allowed, reason) = last_denial(one(r"C:\Users\alice\Documents\tax.pdf"), vec![]);
     assert!(!allowed);
-    assert_eq!(reason, Some(DenialReason::L3PersonalDir));
+    assert_eq!(reason, Some(builtin(BuiltinRedlineReason::L3PersonalDir)));
 }
 
 #[test]
 fn blocks_personal_downloads() {
     let (allowed, reason) = last_denial(one(r"D:\Users\bob\Downloads\installer.exe"), vec![]);
     assert!(!allowed);
-    assert_eq!(reason, Some(DenialReason::L3PersonalDir));
+    assert_eq!(reason, Some(builtin(BuiltinRedlineReason::L3PersonalDir)));
 }
 
 #[test]
 fn blocks_personal_pictures() {
     let (allowed, reason) = last_denial(one(r"C:\Users\alice\Pictures\birthday.jpg"), vec![]);
     assert!(!allowed);
-    assert_eq!(reason, Some(DenialReason::L3PersonalDir));
+    assert_eq!(reason, Some(builtin(BuiltinRedlineReason::L3PersonalDir)));
 }
 
 #[test]
 fn blocks_personal_videos() {
     let (allowed, reason) = last_denial(one(r"C:\Users\alice\Videos\clip.mp4"), vec![]);
     assert!(!allowed);
-    assert_eq!(reason, Some(DenialReason::L3PersonalDir));
+    assert_eq!(reason, Some(builtin(BuiltinRedlineReason::L3PersonalDir)));
 }
 
 #[test]
 fn blocks_personal_music() {
     let (allowed, reason) = last_denial(one(r"C:\Users\alice\Music\song.mp3"), vec![]);
     assert!(!allowed);
-    assert_eq!(reason, Some(DenialReason::L3PersonalDir));
+    assert_eq!(reason, Some(builtin(BuiltinRedlineReason::L3PersonalDir)));
 }
 
 #[test]
@@ -76,7 +80,10 @@ fn blocks_browser_user_data() {
         vec![],
     );
     assert!(!allowed);
-    assert_eq!(reason, Some(DenialReason::L3BrowserProfile));
+    assert_eq!(
+        reason,
+        Some(builtin(BuiltinRedlineReason::L3BrowserProfile))
+    );
 }
 
 #[test]
@@ -86,7 +93,10 @@ fn blocks_browser_edge_user_data() {
         vec![],
     );
     assert!(!allowed);
-    assert_eq!(reason, Some(DenialReason::L3BrowserProfile));
+    assert_eq!(
+        reason,
+        Some(builtin(BuiltinRedlineReason::L3BrowserProfile))
+    );
 }
 
 #[test]
@@ -94,49 +104,58 @@ fn blocks_browser_bookmarks_file() {
     // 刻意放在 User Data 之外：精确文件名规则命中 L3BrowserSensitive。
     let (allowed, reason) = last_denial(one(r"C:\Temp\stolen\Bookmarks"), vec![]);
     assert!(!allowed);
-    assert_eq!(reason, Some(DenialReason::L3BrowserSensitive));
+    assert_eq!(
+        reason,
+        Some(builtin(BuiltinRedlineReason::L3BrowserSensitive))
+    );
 }
 
 #[test]
 fn blocks_browser_login_data() {
     let (allowed, reason) = last_denial(one(r"C:\Temp\stolen\Login Data"), vec![]);
     assert!(!allowed);
-    assert_eq!(reason, Some(DenialReason::L3BrowserSensitive));
+    assert_eq!(
+        reason,
+        Some(builtin(BuiltinRedlineReason::L3BrowserSensitive))
+    );
 }
 
 #[test]
 fn blocks_browser_history() {
     let (allowed, reason) = last_denial(one(r"C:\Temp\stolen\History"), vec![]);
     assert!(!allowed);
-    assert_eq!(reason, Some(DenialReason::L3BrowserSensitive));
+    assert_eq!(
+        reason,
+        Some(builtin(BuiltinRedlineReason::L3BrowserSensitive))
+    );
 }
 
 #[test]
 fn blocks_system32() {
     let (allowed, reason) = last_denial(one(r"C:\Windows\System32\kernel32.dll"), vec![]);
     assert!(!allowed);
-    assert_eq!(reason, Some(DenialReason::L3SystemPath));
+    assert_eq!(reason, Some(builtin(BuiltinRedlineReason::L3SystemPath)));
 }
 
 #[test]
 fn blocks_windows_installer() {
     let (allowed, reason) = last_denial(one(r"C:\Windows\Installer\{GUID}.msi"), vec![]);
     assert!(!allowed);
-    assert_eq!(reason, Some(DenialReason::L3SystemPath));
+    assert_eq!(reason, Some(builtin(BuiltinRedlineReason::L3SystemPath)));
 }
 
 #[test]
 fn blocks_pagefile() {
     let (allowed, reason) = last_denial(one(r"C:\pagefile.sys"), vec![]);
     assert!(!allowed);
-    assert_eq!(reason, Some(DenialReason::L3SystemPath));
+    assert_eq!(reason, Some(builtin(BuiltinRedlineReason::L3SystemPath)));
 }
 
 #[test]
 fn blocks_swapfile() {
     let (allowed, reason) = last_denial(one(r"C:\swapfile.sys"), vec![]);
     assert!(!allowed);
-    assert_eq!(reason, Some(DenialReason::L3SystemPath));
+    assert_eq!(reason, Some(builtin(BuiltinRedlineReason::L3SystemPath)));
 }
 
 #[test]
@@ -159,14 +178,14 @@ fn blocks_path_traversal() {
 fn blocks_case_insensitive() {
     let (allowed, reason) = last_denial(one(r"c:\wInDoWs\sYsTeM32\x.dll"), vec![]);
     assert!(!allowed);
-    assert_eq!(reason, Some(DenialReason::L3SystemPath));
+    assert_eq!(reason, Some(builtin(BuiltinRedlineReason::L3SystemPath)));
 }
 
 #[test]
 fn blocks_mixed_separators() {
     let (allowed, reason) = last_denial(one("C:/Windows/System32/x.dll"), vec![]);
     assert!(!allowed);
-    assert_eq!(reason, Some(DenialReason::L3SystemPath));
+    assert_eq!(reason, Some(builtin(BuiltinRedlineReason::L3SystemPath)));
 }
 
 // ---------- 放行 / 行为用例 ----------
@@ -191,7 +210,10 @@ fn allows_simple_cache_is_rejected_as_profile_prefix() {
         vec![],
     );
     assert!(!allowed);
-    assert_eq!(reason, Some(DenialReason::L3BrowserProfile));
+    assert_eq!(
+        reason,
+        Some(builtin(BuiltinRedlineReason::L3BrowserProfile))
+    );
 }
 
 #[test]

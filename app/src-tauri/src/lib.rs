@@ -45,7 +45,7 @@ pub fn run() {
         ))
         .manage(std::sync::Mutex::new(0_i64))
         // task-007：在 setup 闭包里拿 AppHandle，构造全局进度 State 并注入。
-        // debt-cleanup-003：构造 AppPaths（data_root/rules_dir/scripts_dir/box_dir）并注入。
+        // debt-cleanup-003：构造 AppPaths（数据、规则、资源定位与保险箱目录）并注入。
         .setup(move |app| {
             let paths = paths::AppPaths::from_app(app.handle())?;
             app.manage(paths);
@@ -142,6 +142,7 @@ pub fn run() {
             commands::rules_has_backup,
             commands::rules_rollback,
             commands::audit_log_list,
+            commands::scan_session_list,
             commands::audit_log_stats,
             commands::cleanup_stats_trend,
             commands::cleanup_list_pending,

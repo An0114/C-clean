@@ -4,14 +4,10 @@
 //! orchestrator 在 engine 层把 5 个模块按固定顺序串起来，汇总 item/byte 数，
 //! 记录成功/失败模块名。失败模块不中断整体，5 个全失败才返回 `AllScriptsFailed`。
 //!
-//! # R5 架构债收官（task-076）
+//! # task-086：Rust 唯一扫描路径
 //!
-//! 5 个模块原本都是 `.ps1`（spawn `powershell.exe` + stdout NDJSON）。task-074~076
-//! 逐个迁到 Rust 之后，**默认路径不再 spawn 任何解释器进程**；`.ps1` 只在
-//! 环境变量显式关掉某个模块时作为回退使用。
-//!
-//! 迁移顺序与理由见 `crate::scan::modules` 的模块文档。回退开关：
-//! `CCLEAN_RUST_ALL=0`（全回退）或 `CCLEAN_RUST_<MODULE>=0`（单个回退）。
+//! 5 个内置模块全部由 Rust 实现；ps1 文件与 `CCLEAN_RUST_*` 回退开关已删除，
+//! 编排器不再 spawn PowerShell 解释器。
 
 use std::path::Path;
 
@@ -25,8 +21,7 @@ use crate::scan::runner::ScanRunner;
 
 /// task-083：软件感知扫描开关（`CCLEAN_SOFTWARE_AWARE=1` 启用）。
 ///
-/// 与项目既有的 `CCLEAN_RUST_*` / `CCLEAN_ENUM_WMI` 同一套路，便于真机排查时
-/// 单独关掉这一步对比结果。
+/// 独立进程级开关，便于真机排查时对比结果。
 pub fn software_awareness_enabled() -> bool {
     std::env::var("CCLEAN_SOFTWARE_AWARE").as_deref() == Ok("1")
 }
@@ -50,14 +45,10 @@ fn load_software_rules(scripts_dir: &Path) -> SoftwareRules {
         .expect("内嵌 software_rules.json 必须能被解析")
 }
 
-/// 扫描顺序表（task-011 产出，task-076 起 5 个模块全部 Rust 优先）。
+/// 内置模块扫描顺序表。
 ///
-/// **它现在管的是「顺序」，不是「跑 ps1」**：task-074~076 把 5 个模块逐个迁到
-/// Rust 之后，默认路径根本不 spawn 解释器；这张表的每一项只是一个**模块标识**
-/// （同时也是 ps1 回退时的脚本文件名）。
-///
-/// 保留 ps1 文件名而不是另造一套模块 ID，是因为回退路径要用它拼
-/// `scripts_dir.join(name)`，而且「哪个模块对应哪个脚本」写在两处迟早有一处改漏。
+/// 保留既有 `.ps1` 形态的模块 ID，避免改变扫描汇总、进度标签和历史统计协议；
+/// 这些字符串不再用于定位或执行脚本文件。
 const SCRIPTS: &[&str] = &[
     "scan_temp.ps1",
     "scan_windows_update.ps1",
@@ -66,123 +57,16 @@ const SCRIPTS: &[&str] = &[
     "scan_dev_cache.ps1",
 ];
 
-/// 走 Rust 实现的五个模块对应的 ps1 文件名。
-///
-/// 单独提出来是因为它们现在有两个身份：**Rust 实现的环境变量开关按它判断**，
-/// 以及 ps1 回退时的脚本文件名。写两处字符串迟早会有一处改漏——
-/// 而改漏的表现是「Rust 实现静默失效」，没有任何报错。
 const TEMP_SCRIPT: &str = "scan_temp.ps1";
 const WINDOWS_UPDATE_SCRIPT: &str = "scan_windows_update.ps1";
 const PREFETCH_SCRIPT: &str = "scan_prefetch.ps1";
 const BROWSER_CACHE_SCRIPT: &str = "scan_browser_cache.ps1";
 const DEV_CACHE_SCRIPT: &str = "scan_dev_cache.ps1";
 
-/// 读一个「开关型」环境变量。
-///
-/// **默认开启**；值为 `0` / `false` / `off` / `no`（不区分大小写、允许前后空格）
-/// 时关闭。
-///
-/// # 总开关 `CCLEAN_RUST_ALL`
-///
-/// 优先于模块级开关：设成假值即**一次性回退所有模块到 ps1**。两个用途：
-///
-/// 1. **排障**：用户报「扫描结果不对」时，支持人员一条命令全回退，比记五个
-///    变量名靠谱；也能快速二分「是不是 Rust 实现的问题」；
-/// 2. **测试稳定**：测 ps1 编排路径的用例原本要逐个设 `CCLEAN_RUST_TEMP=0`，
-///    每迁一个模块就得改一次测试（task-075 就踩了：加了 prefetch/browser_cache
-///    后 `scan_orchestrator.rs` 的 4 个用例全红）。用总开关一次搞定。
-///
-/// # 为什么默认开启
-///
-/// Rust 实现是等价重写、有单测覆盖。默认关闭等于「写了但不用」——回退开关的
-/// 价值也没了（不会有人主动去开一个从没跑过的新实现）。
-///
-/// # 为什么用环境变量而不是配置文件
-///
-/// 它是**排障用的临时开关**，不是用户偏好：用户不需要知道这个选项，出问题时
-/// 支持人员能一条命令回退。写进 prefs 反而要加 UI、加迁移、加文档。
-fn env_flag(name: &str) -> bool {
-    env_flag_from(
-        std::env::var(ENV_ALL).ok().as_deref(),
-        std::env::var(name).ok().as_deref(),
-    )
-}
-
-/// [`env_flag`] 的纯函数内核：**总开关与模块开关都必须为真**。
-///
-/// 抽出来可测的理由同 [`flag_enabled_from`]——「总开关优先」写错成「模块开关
-/// 优先」，表现就是「`CCLEAN_RUST_ALL=0` 设了却回退不了」，而这类问题在真实
-/// 环境里很难复现（要同时设两个变量）。
-fn env_flag_from(all: Option<&str>, module: Option<&str>) -> bool {
-    flag_enabled_from(all) && flag_enabled_from(module)
-}
-
-/// [`env_flag`] 的纯函数内核。
-///
-/// 抽出来是为了可测：`std::env::set_var` 在多线程测试里会污染同进程的其他
-/// 用例（Rust 2024 起还变成了 `unsafe`），而这条判断恰恰是最容易写错的地方
-/// ——「`0` 是关」写反成「`0` 是开」，回退开关就彻底失效了。
-///
-/// **五个模块共用这一份**：task-074 时它叫 `rust_temp_enabled_from`，只有 temp
-/// 一个调用方；task-075 加 prefetch / browser_cache 后如果各写一份，迟早会有
-/// 一处把 `off` 漏掉。task-076 补齐最后两个模块时同样没有新增判断逻辑——
-/// 开关语义始终只有这一处。
-fn flag_enabled_from(val: Option<&str>) -> bool {
-    match val {
-        // 空串按「开启」处理：`set CCLEAN_RUST_TEMP=` 是最常见的清空写法，
-        // 用户的意图是「恢复默认」，不是「关掉」。
-        Some(v) => !matches!(
-            v.trim().to_ascii_lowercase().as_str(),
-            "0" | "false" | "off" | "no"
-        ),
-        None => true,
-    }
-}
-
-/// 五个模块级回退开关的环境变量名。
-///
-/// 抽成常量而不是在函数里写字面量：这样「一共有几个开关、分别叫什么」只有
-/// 一份清单，能直接对着 [`SCRIPTS`] 断言；写死字面量时漏写一个模块的开关，
-/// 表现是那个模块**永远回退不了**，而没有任何报错。
-const ENV_TEMP: &str = "CCLEAN_RUST_TEMP";
-const ENV_WINDOWS_UPDATE: &str = "CCLEAN_RUST_WINDOWS_UPDATE";
-const ENV_PREFETCH: &str = "CCLEAN_RUST_PREFETCH";
-const ENV_BROWSER_CACHE: &str = "CCLEAN_RUST_BROWSER_CACHE";
-const ENV_DEV_CACHE: &str = "CCLEAN_RUST_DEV_CACHE";
-
-/// 总开关：设成假值即一次性回退全部模块到 ps1。
-const ENV_ALL: &str = "CCLEAN_RUST_ALL";
-
-/// temp 模块是否走 Rust 实现（`CCLEAN_RUST_TEMP=0` 回退 ps1）。
-pub fn rust_temp_enabled() -> bool {
-    env_flag(ENV_TEMP)
-}
-
-/// prefetch 模块是否走 Rust 实现（`CCLEAN_RUST_PREFETCH=0` 回退 ps1）。
-pub fn rust_prefetch_enabled() -> bool {
-    env_flag(ENV_PREFETCH)
-}
-
-/// browser_cache 模块是否走 Rust 实现（`CCLEAN_RUST_BROWSER_CACHE=0` 回退 ps1）。
-pub fn rust_browser_cache_enabled() -> bool {
-    env_flag(ENV_BROWSER_CACHE)
-}
-
-/// dev_cache 模块是否走 Rust 实现（`CCLEAN_RUST_DEV_CACHE=0` 回退 ps1）。
-pub fn rust_dev_cache_enabled() -> bool {
-    env_flag(ENV_DEV_CACHE)
-}
-
-/// windows_update 模块是否走 Rust 实现（`CCLEAN_RUST_WINDOWS_UPDATE=0` 回退 ps1）。
-pub fn rust_windows_update_enabled() -> bool {
-    env_flag(ENV_WINDOWS_UPDATE)
-}
-
 /// 一个盘的扫描统计（task-077）。
 ///
 /// **数据来源是 DB 而不是内存累加**：`run_all` 结束时按 `session_id` 查一次
-/// `cleanup_item`，这样 Rust 路径和 ps1 回退路径都能覆盖到——内存累加只能覆盖
-/// Rust 路径（ps1 的条目由 `ScanRunner` 直接入库，编排层看不到）。
+/// `cleanup_item`，与五个 Rust 模块的入库结果保持一致。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DriveStat {
@@ -313,7 +197,7 @@ impl<'conn, 'emitter> ScanOrchestrator<'conn, 'emitter> {
         cancel_requested(&self.cancel)
     }
 
-    /// 按 [`SCRIPTS`] 的顺序跑 5 个模块（默认走 Rust，环境变量可回退 ps1）。
+    /// 按 [`SCRIPTS`] 的顺序跑 5 个 Rust 模块。
     ///
     /// - 单个模块失败不中断；
     /// - 计划内的模块全失败才返回 `Err(AllScriptsFailed)`；
@@ -384,45 +268,10 @@ impl<'conn, 'emitter> ScanOrchestrator<'conn, 'emitter> {
             let from = (idx * 100 / total) as u8;
             let to = ((idx + 1) * 100 / total) as u8;
 
-            let path = scripts_dir.join(name);
-
-            // task-074~076：Rust 实现优先，环境变量可回退 ps1。
-            // task-076 起 5 个模块全部走这条分支，ps1 只在显式回退时才被 spawn。
-            //
-            // **必须放在「脚本是否存在」检查之前**：走 Rust 就不需要 ps1 文件。
-            // 放在后面的话，将来正式删掉某个 `.ps1` 时，那个模块会被判
-            // `missing script` 失败——而它其实跑得好好的。
-            if let Some(items) = self.rust_module_items(name) {
-                // task-077：条目级过滤——只保留落在选中盘上的条目。
-                let items = self.filter_by_selected_drives(name, items);
-                self.run_rust_module(name, items, from, to, &mut summary);
-                continue;
-            }
-
-            if !path.exists() {
-                eprintln!("[orchestrator] missing script: {name}");
-                summary.scripts_failed.push(name.to_string());
-                continue;
-            }
-            // ps1 路径没法在编排层过滤条目（`ScanRunner` 直接入库），所以盘过滤
-            // 只能靠「模块级跳过」兜住。这正是 ps1 回退路径的一个已知退化，
-            // 记在 `run_all` 的文档里，不在代码里假装它存在。
-            let runner = ScanRunner::new(self.session_id, self.conn, self.emitter)
-                .with_percent_span(from, to);
-            match runner.run_script(&path) {
-                Ok(s) => {
-                    summary.total_items += s.items_inserted;
-                    summary.total_bytes += s.total_bytes;
-                    summary.scripts_succeeded.push(name.to_string());
-                    // 槽位上界：让进度条在本脚本结束时精确落在 to 上，
-                    // 而不是停在插值的渐近值（永远差一点）。
-                    self.emit_progress(to, &self.progress_label(name), summary.total_items as u64);
-                }
-                Err(e) => {
-                    eprintln!("[orchestrator] script {name} failed: {e}");
-                    summary.scripts_failed.push(name.to_string());
-                }
-            }
+            // task-077：条目级过滤——只保留落在选中盘上的条目。
+            let items = self.rust_module_items(name);
+            let items = self.filter_by_selected_drives(name, items);
+            self.run_rust_module(name, items, from, to, &mut summary);
         }
 
         // task-078：用户自定义规则（DB 驱动，不是 ps1 模块，也不是 Rust 内置模块）。
@@ -489,8 +338,7 @@ impl<'conn, 'emitter> ScanOrchestrator<'conn, 'emitter> {
     /// # 为什么不算「脚本」
     ///
     /// 与 `run_user_rules` 同理：它是数据驱动追加步骤，不在 [`SCRIPTS`] 里，
-    /// 因此不占进度槽位、不影响 ps1/Rust 回退开关、也不会让 `module_runs`
-    /// 多一个特例。
+    /// 因此不占进度槽位，也不会让 `module_runs` 多一个特例。
     fn run_software_cache(&self, scripts_dir: &Path, summary: &mut OrchestratorSummary) {
         let rules = load_software_rules(scripts_dir);
         let inventory = crate::scan::software_enum::enumerate_installed();
@@ -542,7 +390,7 @@ impl<'conn, 'emitter> ScanOrchestrator<'conn, 'emitter> {
     ///
     /// # 为什么单独一个方法而不是塞进 [`SCRIPTS`] 循环
     ///
-    /// 5 个内置模块是「脚本 / Rust 二选一」的同构结构，而用户规则是**数据驱动**的：
+    /// 5 个内置模块是固定的 Rust 分发结构，而用户规则是**数据驱动**的：
     /// 规则来自 DB、条数随用户变化、盘归属由规则自己的静态根决定。硬塞进那个循环
     /// 会让 `module_runs` / `rust_module_items` 都要多一个特例分支。
     ///
@@ -865,10 +713,9 @@ impl<'conn, 'emitter> ScanOrchestrator<'conn, 'emitter> {
         out
     }
 
-    /// 如果 `name` 对应的模块走 Rust 实现，返回它的扫描结果；否则 `None`（走 ps1）。
+    /// 分发内置模块扫描；`SCRIPTS` 之外的模块 ID 属于编程错误。
     ///
-    /// 抽成一个方法而不是在 `run_all` 里写五个 `if`：这样「哪些模块已迁移」只有
-    /// 一处清单，加第六个模块时不会漏改某个分支。
+    /// 抽成一个方法而不是在 `run_all` 里写五个 `if`：模块分发只有一处清单。
     ///
     /// A2：内置模块扫描的分发——注入规则走规则驱动，否则退回环境变量兜底。
     ///
@@ -888,36 +735,36 @@ impl<'conn, 'emitter> ScanOrchestrator<'conn, 'emitter> {
     }
 
     /// **注意这里会真的执行扫描**（可能耗时：Firefox `cache2` 本机有 4569 个文件）。
-    /// 调用方在循环开头已经做过取消检查，与 ps1 路径的「脚本粒度取消」语义一致。
-    fn rust_module_items(&self, name: &str) -> Option<Vec<crate::scan::modules::ScanItem>> {
+    /// 调用方在循环开头已经做过模块粒度的取消检查。
+    fn rust_module_items(&self, name: &str) -> Vec<crate::scan::modules::ScanItem> {
         let rules = self.system_rules.as_ref();
         match name {
-            TEMP_SCRIPT if rust_temp_enabled() => Some(Self::builtin_scan(
+            TEMP_SCRIPT => Self::builtin_scan(
                 rules,
                 crate::scan::modules::temp::scan_from_rules,
                 crate::scan::modules::temp::scan,
-            )),
-            PREFETCH_SCRIPT if rust_prefetch_enabled() => Some(Self::builtin_scan(
+            ),
+            PREFETCH_SCRIPT => Self::builtin_scan(
                 rules,
                 crate::scan::modules::prefetch::scan_from_rules,
                 crate::scan::modules::prefetch::scan,
-            )),
-            BROWSER_CACHE_SCRIPT if rust_browser_cache_enabled() => Some(Self::builtin_scan(
+            ),
+            BROWSER_CACHE_SCRIPT => Self::builtin_scan(
                 rules,
                 crate::scan::modules::browser_cache::scan_from_rules,
                 crate::scan::modules::browser_cache::scan,
-            )),
-            DEV_CACHE_SCRIPT if rust_dev_cache_enabled() => Some(Self::builtin_scan(
+            ),
+            DEV_CACHE_SCRIPT => Self::builtin_scan(
                 rules,
                 crate::scan::modules::dev_cache::scan_from_rules,
                 crate::scan::modules::dev_cache::scan,
-            )),
-            WINDOWS_UPDATE_SCRIPT if rust_windows_update_enabled() => Some(Self::builtin_scan(
+            ),
+            WINDOWS_UPDATE_SCRIPT => Self::builtin_scan(
                 rules,
                 crate::scan::modules::windows_update::scan_from_rules,
                 crate::scan::modules::windows_update::scan,
-            )),
-            _ => None,
+            ),
+            _ => unreachable!("未知内置扫描模块: {name}"),
         }
     }
 
@@ -951,7 +798,7 @@ impl<'conn, 'emitter> ScanOrchestrator<'conn, 'emitter> {
                 self.emit_progress(to, &self.progress_label(name), summary.total_items as u64);
             }
             Err(e) => {
-                // DB 错在 ps1 路径里也是致命的，这里保持一致
+                // 单模块入库失败只记该模块失败，不中断其他模块。
                 eprintln!("[orchestrator] rust {name} failed: {e}");
                 summary.scripts_failed.push(name.to_string());
             }
@@ -1149,30 +996,7 @@ mod tests {
         assert!(cancel_requested(&opt), "置位后应立即读到 true");
     }
 
-    // ===== task-074：Rust / ps1 开关 =====
-
-    #[test]
-    fn flag_defaults_on_when_env_absent() {
-        // 没设环境变量 = 默认走 Rust。默认关闭等于「写了但不用」。
-        assert!(flag_enabled_from(None));
-    }
-
-    #[test]
-    fn flag_off_for_falsy_values() {
-        // 这四种写法都要能关掉。少认一种，用户按习惯写了却没生效，
-        // 会以为「回退开关是坏的」。
-        for v in ["0", "false", "FALSE", "off", "no", "  0  ", "Off"] {
-            assert!(!flag_enabled_from(Some(v)), "{v:?} 应关闭");
-        }
-    }
-
-    #[test]
-    fn flag_on_for_truthy_and_empty() {
-        // 空串按「恢复默认」处理（`set CCLEAN_RUST_TEMP=` 是最常见的清空写法）
-        for v in ["", "  ", "1", "true", "on", "yes", "anything-else"] {
-            assert!(flag_enabled_from(Some(v)), "{v:?} 应开启");
-        }
-    }
+    // ===== 内置模块 ID 契约 =====
 
     #[test]
     fn rust_script_names_are_in_scripts_list() {
@@ -1190,7 +1014,7 @@ mod tests {
                 "{const_name}={script} 不在 SCRIPTS 里，该模块的 Rust 分支永远不会命中"
             );
         }
-        // 覆盖完整性由 `every_script_has_an_own_switch` 断言（脚本 ↔ 开关配对）。
+        // 五个分发常量都必须登记在扫描顺序表中。
     }
 
     #[test]
@@ -1206,114 +1030,6 @@ mod tests {
         for (i, a) in names.iter().enumerate() {
             for b in &names[i + 1..] {
                 assert_ne!(a, b, "模块脚本名重复");
-            }
-        }
-    }
-
-    #[test]
-    fn master_switch_overrides_module_switch() {
-        // 总开关关掉时，模块开关设成什么都该回退 ps1。
-        // 写反（模块开关优先）的表现是「CCLEAN_RUST_ALL=0 设了却回退不了」，
-        // 而这种问题要同时设两个变量才能复现，真实环境里很难查。
-        for module in [None, Some("1"), Some("true"), Some("")] {
-            assert!(
-                !env_flag_from(Some("0"), module),
-                "CCLEAN_RUST_ALL=0 时必须全关，模块开关={module:?}"
-            );
-        }
-        // 总开关没设 / 设成真值时，由模块开关决定
-        assert!(env_flag_from(None, None));
-        assert!(env_flag_from(Some("1"), None));
-        assert!(!env_flag_from(Some("1"), Some("0")), "模块级关掉也要生效");
-        assert!(!env_flag_from(None, Some("off")), "off 是假值");
-    }
-
-    #[test]
-    fn all_five_module_switches_default_on() {
-        // 五个开关的默认值都必须是「开启」——否则 Rust 实现写了不用，
-        // 回退开关也就没有意义（不会有人主动去开一个从没跑过的新实现）。
-        //
-        // 若外部显式设了回退开关（排障现场 / 别的用例），这条跳过：
-        // 那种情况下它本来就该是 false，断言会变成假失败。
-        let envs = [
-            ENV_ALL,
-            ENV_TEMP,
-            ENV_WINDOWS_UPDATE,
-            ENV_PREFETCH,
-            ENV_BROWSER_CACHE,
-            ENV_DEV_CACHE,
-        ];
-        if envs.iter().any(|k| std::env::var(k).is_ok()) {
-            eprintln!("[跳过] 环境里已有回退开关，默认值断言不适用");
-            return;
-        }
-
-        assert!(rust_temp_enabled(), "temp 默认应走 Rust");
-        assert!(
-            rust_windows_update_enabled(),
-            "windows_update 默认应走 Rust"
-        );
-        assert!(rust_prefetch_enabled(), "prefetch 默认应走 Rust");
-        assert!(rust_browser_cache_enabled(), "browser_cache 默认应走 Rust");
-        assert!(rust_dev_cache_enabled(), "dev_cache 默认应走 Rust");
-    }
-
-    #[test]
-    fn every_script_has_an_own_switch() {
-        // 每个模块都必须「脚本名 + 回退开关 + 启用判断」三件配套。
-        // 漏一个的表现是那个模块**永远回退不了**，而且没有任何报错。
-        //
-        // 抽成 type alias 是为了过 clippy 的 `type_complexity`——
-        // 元组写进数组字面量时它算「过于复杂」。
-        type SwitchRow = (&'static str, &'static str, fn() -> bool);
-        let table: [SwitchRow; 5] = [
-            (TEMP_SCRIPT, ENV_TEMP, rust_temp_enabled),
-            (
-                WINDOWS_UPDATE_SCRIPT,
-                ENV_WINDOWS_UPDATE,
-                rust_windows_update_enabled,
-            ),
-            (PREFETCH_SCRIPT, ENV_PREFETCH, rust_prefetch_enabled),
-            (
-                BROWSER_CACHE_SCRIPT,
-                ENV_BROWSER_CACHE,
-                rust_browser_cache_enabled,
-            ),
-            (DEV_CACHE_SCRIPT, ENV_DEV_CACHE, rust_dev_cache_enabled),
-        ];
-
-        // R5 收官的硬断言：模块数 == SCRIPTS 项数，少一个说明迁移没收完
-        assert_eq!(
-            table.len(),
-            SCRIPTS.len(),
-            "模块数 {} 与 SCRIPTS 项数 {} 不一致：{SCRIPTS:?}",
-            table.len(),
-            SCRIPTS.len()
-        );
-        for (script, env, _) in table {
-            assert!(SCRIPTS.contains(&script), "{script} 不在 SCRIPTS 里");
-            assert!(env.starts_with("CCLEAN_RUST_"), "{env} 缺统一前缀");
-        }
-    }
-
-    #[test]
-    fn module_switch_env_names_are_distinct_and_scoped() {
-        // 五个开关名必须两两不同、且都带 CCLEAN_RUST_ 前缀、且都不等于总开关名。
-        // 写成重复名（比如两个都叫 CCLEAN_RUST_CACHE）的表现是「关一个把另一个
-        // 也关了」，真实环境里几乎不可能发现。
-        let names = [
-            ENV_TEMP,
-            ENV_WINDOWS_UPDATE,
-            ENV_PREFETCH,
-            ENV_BROWSER_CACHE,
-            ENV_DEV_CACHE,
-        ];
-        assert_eq!(names.len(), 5);
-        for (i, a) in names.iter().enumerate() {
-            assert!(a.starts_with("CCLEAN_RUST_"), "{a} 缺少统一前缀");
-            assert_ne!(*a, ENV_ALL, "{a} 与总开关同名");
-            for b in &names[i + 1..] {
-                assert_ne!(a, b, "开关名重复：{a}");
             }
         }
     }

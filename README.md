@@ -131,8 +131,8 @@ C-clean/
 ├── engine/               Rust 核心（db / scan / execute / ipc）
 ├── cli/                  命令行入口（c-clean-cli，不依赖 Tauri，复用 engine）
 ├── elevation/            独立提权 exe（按需 UAC，完成即退出）
-├── rules/                JSON 规则库（与 scripts/ 共用同一规则源）
-├── scripts/              扫描脚本的 ps1 回退实现（5 个 scan_*.ps1 + smoke_test.ps1）+ 发版工具（release-lib.mjs）
+├── rules/                JSON 规则库
+├── scripts/              发版与构建工具（release-lib.mjs 等；扫描已全量 Rust 化）
 ├── docs/                 设计文档、评审报告、测试报告、技术评估、项目状态白板
 ├── tasks/                任务文档（按编号拆分）
 ├── CHANGELOG.md          更新日志

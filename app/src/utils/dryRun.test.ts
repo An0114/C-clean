@@ -74,12 +74,26 @@ describe("formatBreakdownLine", () => {
 });
 
 describe("describeDenial", () => {
-  it("六个已知变体映射为中文", () => {
-    expect(describeDenial("L3PersonalDir")).toBe("个人目录（桌面/文档/下载等）");
-    expect(describeDenial("L3BrowserProfile")).toBe("浏览器用户数据目录");
-    expect(describeDenial("L3BrowserSensitive")).toBe("浏览器敏感文件（书签/密码/历史）");
-    expect(describeDenial("L3SystemPath")).toBe("系统关键路径");
-    expect(describeDenial("L3ReservedAction")).toBe("动作级禁令");
+  it("内置红线显示来源和具体原因", () => {
+    expect(describeDenial("BuiltinRedline(L3PersonalDir)")).toBe(
+      "内置红线：个人目录（桌面/文档/下载等）",
+    );
+    expect(describeDenial("BuiltinRedline(L3BrowserProfile)")).toBe(
+      "内置红线：浏览器用户数据目录",
+    );
+    expect(describeDenial("BuiltinRedline(L3BrowserSensitive)")).toBe(
+      "内置红线：浏览器敏感文件（书签/密码/历史）",
+    );
+    expect(describeDenial("BuiltinRedline(L3SystemPath)")).toBe("内置红线：系统关键路径");
+    expect(describeDenial("BuiltinRedline(L3ReservedAction)")).toBe("内置红线：动作级禁令");
+  });
+
+  it("外部红线和用户规则显示各自来源", () => {
+    expect(describeDenial("ExternalRedline")).toBe("外部红线：规则库拒绝路径");
+    expect(describeDenial("UserRule")).toBe("用户规则：自定义拒绝规则");
+  });
+
+  it("非红线变体保持独立文案", () => {
     expect(describeDenial("PathTraversal")).toBe("路径穿越/非法路径");
   });
 

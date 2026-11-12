@@ -68,7 +68,7 @@ pub struct BreakdownItem {
 pub struct BlockedItem {
     pub item_id: i64,
     pub path: String,
-    /// DenialReason 的 Debug 字符串，如 "L3PersonalDir"。
+    /// DenialReason 的 Debug 字符串，如 "BuiltinRedline(L3PersonalDir)"、"ExternalRedline"。
     pub denial_reason: String,
 }
 
