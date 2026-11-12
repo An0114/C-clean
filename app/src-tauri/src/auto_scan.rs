@@ -23,7 +23,8 @@ use std::time::Duration;
 
 use tauri::{AppHandle, Emitter, Manager};
 
-/// 轮询间隔：30 分钟。最小间隔是 daily，30 分钟精度足够。
+/// 轮询间隔：30 分钟。等于 UI 可选的最小档「每 30 分钟」（task-086 1.2 把
+/// half_hour / hourly 纳入了可选频率）——任何档位都能在 ≤30 分钟内被探测到。
 const TICK: Duration = Duration::from_secs(30 * 60);
 
 /// 启动后先等 60s：避开应用启动时的「检查更新 + 首屏加载」高峰，

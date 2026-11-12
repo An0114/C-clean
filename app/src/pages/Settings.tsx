@@ -55,8 +55,8 @@ interface Prefs {
   devCacheGradleMaven: boolean;
 }
 
-/** task-061：自动扫描间隔，与 `engine::prefs::{SCAN_DAILY, SCAN_WEEKLY, SCAN_MONTHLY}` 对齐。 */
-type ScanInterval = "daily" | "weekly" | "monthly";
+/** task-061：自动扫描间隔，与 `engine::prefs::{SCAN_HALF_HOUR, SCAN_HOURLY, SCAN_DAILY, SCAN_WEEKLY, SCAN_MONTHLY}` 对齐。 */
+type ScanInterval = "half_hour" | "hourly" | "daily" | "weekly" | "monthly";
 
 /**
  * task-073：系统级定时扫描的任务状态。
@@ -70,14 +70,16 @@ interface AutoScanTaskStatus {
   time: string;
 }
 
-const SCAN_OPTIONS: { value: ScanInterval; label: string }[] = [
-  { value: "daily", label: "每天" },
-  { value: "weekly", label: "每周" },
-  { value: "monthly", label: "每月" },
+const SCAN_OPTIONS: { value: ScanInterval; label: string; hint: string }[] = [
+  { value: "half_hour", label: "每 30 分钟", hint: "高频：适合最近在频繁清理的场景" },
+  { value: "hourly", label: "每小时", hint: "应用运行期间每小时检查一次" },
+  { value: "daily", label: "每天", hint: "推荐：默认频率，兼顾及时与低打扰" },
+  { value: "weekly", label: "每周", hint: "低打扰：适合不常清理的用户" },
+  { value: "monthly", label: "每月", hint: "最低打扰" },
 ];
 
-/** task-084 B1：自动清理阈值默认 500 MB，与 `engine::prefs::DEFAULT_AUTO_CLEAN_L1_THRESHOLD` 对齐。 */
-const DEFAULT_AUTO_CLEAN_THRESHOLD = 500 * 1024 * 1024;
+/** task-086 1.2：自动清理阈值默认 5 GB，与 `engine::prefs::DEFAULT_AUTO_CLEAN_L1_THRESHOLD` 对齐。 */
+const DEFAULT_AUTO_CLEAN_THRESHOLD = 5 * 1024 * 1024 * 1024;
 
 /** task-061：主题三态。与 `engine::prefs::{THEME_SYSTEM, THEME_LIGHT, THEME_DARK}` 对齐。 */
 type ThemeMode = "system" | "light" | "dark";
@@ -256,7 +258,14 @@ export default function Settings({ onUpdateFound, onThemeChange }: SettingsProps
           theme: th === "light" || th === "dark" || th === "system" ? th : "system",
           autoScanEnabled: Boolean(p?.autoScanEnabled),
           autoScanInterval:
-          si === "weekly" || si === "monthly" || si === "daily" ? si : "daily",
+            // task-086 1.2：五档全合法；其余（脏数据 / 旧档位）回落 daily。
+            si === "half_hour" ||
+            si === "hourly" ||
+            si === "weekly" ||
+            si === "monthly" ||
+            si === "daily"
+              ? si
+              : "daily",
         // task-084 B1：布尔 `Boolean()` 兜 null；阈值 <1 由后端兜成默认，这里也做一道防御。
         autoCleanL1: Boolean(p?.autoCleanL1),
         autoCleanL1Threshold:
@@ -989,6 +998,7 @@ export default function Settings({ onUpdateFound, onThemeChange }: SettingsProps
           {SCAN_OPTIONS.map((opt) => (
             <label
               key={opt.value}
+              title={opt.hint}
               style={{
                 display: "flex",
                 alignItems: "center",
