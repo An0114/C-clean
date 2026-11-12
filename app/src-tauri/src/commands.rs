@@ -888,12 +888,17 @@ pub async fn set_prefs(
 /// 行在删除后状态已变，重建不出「哪条失败、为什么」），所以由前端把结果原样传回。
 /// 这也让「导出」是纯函数式的——不依赖任何后端会话状态。
 ///
+/// **落盘位置**：`path` 给定时写到用户指定目录（目录不存在会自动创建），
+/// 这是 PRD P0-6「用户自选保存位置」的能力；不传时回落到 `data_root/reports`
+/// （早起版本固定目录的既有行为，前端仍可只依赖默认目录）。
+///
 /// 返回落盘后的**绝对路径**，前端可展示给用户「报告已保存到 …」。
 #[tauri::command]
 pub async fn report_export(
     format: String,
     summary: engine::execute::executor::ExecuteSummary,
     drive: Option<String>,
+    path: Option<String>,
     paths: tauri::State<'_, AppPaths>,
 ) -> Result<Envelope<String>, String> {
     let drive = drive.unwrap_or_else(|| "C".to_string());
@@ -920,13 +925,60 @@ pub async fn report_export(
     };
 
     let filename = format!("cleanup-report-{now}.{ext}");
-    let dir = paths.data_root.join("reports");
+    // task-086 1.1：用户指定路径优先；空白 / 未传回落默认 `data_root/reports`。
+    let dir = resolve_export_dir(path.as_deref(), &paths.data_root);
     match engine::report::write_report(&dir, &filename, &content) {
         Ok(p) => Ok(Envelope::ok(p.to_string_lossy().to_string())),
         Err(e) => {
             eprintln!("[report_export] {e}");
             Ok(Envelope::err(INTERNAL))
         }
+    }
+}
+
+/// task-086 1.1：解析报告导出目录。
+///
+/// 纯函数抽出是为了可单测：`path` 给非空目录时用它（自动 trim、忽略纯空白），
+/// 否则回落 `data_root/reports`（PRD P0-6 之前的固定目录行为）。
+fn resolve_export_dir(path: Option<&str>, data_root: &std::path::Path) -> std::path::PathBuf {
+    match path.map(str::trim).filter(|p| !p.is_empty()) {
+        Some(p) => std::path::PathBuf::from(p),
+        None => data_root.join("reports"),
+    }
+}
+
+#[cfg(test)]
+mod report_export_tests {
+    use super::resolve_export_dir;
+
+    fn mkdata() -> std::path::PathBuf {
+        std::env::temp_dir().join("cdisk-report-test")
+    }
+
+    #[test]
+    fn none_falls_back_to_default() {
+        let dir = resolve_export_dir(None, &mkdata());
+        assert_eq!(dir, mkdata().join("reports"));
+    }
+
+    #[test]
+    fn blank_and_whitespace_fall_back() {
+        let d1 = resolve_export_dir(Some("   "), &mkdata());
+        assert_eq!(d1, mkdata().join("reports"));
+        let d2 = resolve_export_dir(Some(""), &mkdata());
+        assert_eq!(d2, mkdata().join("reports"));
+    }
+
+    #[test]
+    fn custom_path_is_trimmed_and_used() {
+        let dir = resolve_export_dir(Some("  D:\\my\\exports  "), &mkdata());
+        assert_eq!(dir, std::path::PathBuf::from("D:\\my\\exports"));
+    }
+
+    #[test]
+    fn custom_relative_path_is_preserved() {
+        let dir = resolve_export_dir(Some("./out"), &mkdata());
+        assert_eq!(dir, std::path::PathBuf::from("./out"));
     }
 }
 

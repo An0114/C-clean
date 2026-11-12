@@ -317,6 +317,9 @@ export default function Items({
   // task-063：报告导出状态与提示。
   const [exporting, setExporting] = useState(false);
   const [exportMsg, setExportMsg] = useState("");
+  // task-086 1.1：用户自定义导出目录（PRD P0-6「用户自选保存位置」）。
+  // 空串 = 走后端默认 `data_root/reports`，与旧行为完全一致。
+  const [exportDir, setExportDir] = useState("");
   const [result, setResult] = useState<ResultState | null>(null);
   // task-040 预览态。
   const [previewing, setPreviewing] = useState(false);
@@ -682,6 +685,8 @@ export default function Items({
         const path = await api<string>("report_export", {
           format: fmt,
           summary: result.summary,
+          // task-086 1.1：用户填了目录就导出到那里；没填不传（后端回落默认目录）。
+          ...(exportDir.trim() !== "" ? { path: exportDir.trim() } : {}),
         });
         setExportMsg(`已保存：${path}`);
       } catch (e) {
@@ -690,7 +695,7 @@ export default function Items({
         setExporting(false);
       }
     },
-    [result],
+    [result, exportDir],
   );
 
   // task-049 C10/C11：确认 → 关闭占用进程 → 自动重试删除。
@@ -1094,6 +1099,25 @@ export default function Items({
               >
                 导出 CSV
               </button>
+              {/* task-086 1.1：PC/脚本没有原生右键「另存为」的系统对话框，
+                  这里用可编辑目录输入框让用户自选保存位置（空 = 默认目录）。 */}
+              <input
+                type="text"
+                value={exportDir}
+                onChange={(e) => setExportDir(e.target.value)}
+                placeholder="导出目录（留空 = 默认 reports 目录）"
+                disabled={exporting}
+                style={{
+                  flex: 1,
+                  minWidth: 160,
+                  padding: "4px 8px",
+                  borderRadius: 5,
+                  border: "1px solid var(--border)",
+                  background: "var(--bg)",
+                  color: "var(--text)",
+                  fontSize: 12,
+                }}
+              />
               {exportMsg && (
                 <span style={{ fontSize: 11, color: "var(--text-muted)", wordBreak: "break-all" }}>
                   {exportMsg}
