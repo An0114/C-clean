@@ -441,10 +441,7 @@ pub fn wildcard_match(pattern: &str, name: &str) -> bool {
     }
 
     // pattern 不以 * 结尾时，必须已经吃到字符串末尾
-    if !p.ends_with('*') && !rest.is_empty() {
-        return false;
-    }
-    true
+    p.ends_with('*') || rest.is_empty()
 }
 
 /// 判断「被关闭的可重启进程」是否**全部**落在白名单内。
