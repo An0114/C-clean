@@ -123,11 +123,13 @@ fn junction_resolves_to_fake_docs_and_is_allowed_when_not_on_builtin_redline() {
     );
 }
 
-/// resolve 失败（如 UNC）时 execute 整体拒绝且 NoopDeleter 绝不被调用（反证）。
+/// resolve 失败（非法文件名）时 execute 整体拒绝且 NoopDeleter 绝不被调用（反证）。
 #[test]
 fn resolve_error_blocks_delete_does_not_invoke_deleter() {
     let req = ExecuteRequest {
-        paths: vec![r"\\127.0.0.1\C$\share\file.txt".to_string()],
+        // task-086 5.4：UNC 不再「解析阶段一律拒」，改用**非法文件名**制造
+        // 非 NotFound 的解析错误（NotFound 按设计信任扫描器、会放行）。
+        paths: vec![r"C:\invalid|name\file.txt".to_string()],
         actions: vec![],
     };
     let deleter = NoopDeleter::default();
@@ -141,7 +143,7 @@ fn resolve_error_blocks_delete_does_not_invoke_deleter() {
                 deleter.recorded()
             );
         }
-        other => panic!("UNC 路径应被拒绝为 Rejected，实际: {other:?}"),
+        other => panic!("非法路径应被拒绝为 Rejected，实际: {other:?}"),
     }
 }
 
@@ -164,13 +166,14 @@ fn resolve_allowed_existing_file_delegates() {
     }
 }
 
-/// UNC 路径（\\server\share...）经 normalize 后 resolve 返回错误，execute 拒绝。
+/// task-086 5.4：UNC 路径可以规范化（用户规则可指向网络盘）。
+///
+/// 旧用例断言「UNC 被 resolve 拒绝」，新策略下这是**有意改变的行为**：
+/// 规范化层接受 `\\server\share\...`，红线判定交给 `whitelist::classify`
+/// （UNC 的个人目录 / 系统路径仍被拦，见 whitelist 单测）。
 #[test]
-fn unc_path_is_rejected_by_resolve() {
-    let (_, reason) = run(vec![r"\\127.0.0.1\C$\share\file.txt".to_string()], vec![]);
-    let reason = reason.expect("UNC 应被拒");
-    assert!(
-        reason.contains("ResolveFailed") || reason.contains("PathTraversal"),
-        "UNC 应被拒，原因: {reason}"
-    );
+fn unc_path_is_normalized_instead_of_rejected() {
+    let np = engine::execute::normalize::normalize(r"\\nas\backup\Games\cache\a.bin")
+        .expect("UNC 应可规范化");
+    assert_eq!(np.normalized(), r"\\nas\backup\Games\cache\a.bin");
 }

@@ -17,8 +17,7 @@
 //! 任务书写了「按文件大小 / 修改时间筛选」，但**现有 ps1 没有任何筛选**——
 //! 它扫描目录下全部文件。加上筛选会带来两个问题：
 //!
-//! 1. **两种模式结果不一致**：`CCLEAN_RUST_TEMP=1` 和 `=0` 扫出的条目数不同，
-//!    用户切换开关会看到「清理项变少了」，而不知道是阈值在起作用；
+//! 1. **清理范围被静默改变**：用户会看到「清理项变少了」，却不知道是阈值在起作用；
 //! 2. **阈值没有依据**：多小算「小」？多旧算「旧」？拍一个数字进代码，
 //!    等于替产品做了一个没论证的决定。
 //!
@@ -79,6 +78,25 @@ pub fn scan_from_rules(rules: &CacheRules) -> Vec<ScanItem> {
         .into_iter()
         // 本模块的薄包装 `scan_dir(root, category, risk)` 已固定 module_code = "temp"
         .flat_map(|r| scan_dir(Path::new(&r.root), &r.category, r.risk_level))
+        .collect()
+}
+
+/// task-086 5.5：规则驱动 + 增量缓存（生产主入口）。
+///
+/// 每个扫描根独立判断：根目录 `mtime` 未变则复用上次该根的条目清单。
+/// 近似与边界见 [`crate::scan::cache`] 模块文档。
+pub fn scan_from_rules_cached(rules: &CacheRules, conn: &rusqlite::Connection) -> Vec<ScanItem> {
+    crate::rules::schema::roots_for_categories(rules, OWN_CATEGORIES)
+        .into_iter()
+        .flat_map(|r| {
+            crate::scan::cache::scan_dir_cached(
+                conn,
+                Path::new(&r.root),
+                MODULE_CODE,
+                &r.category,
+                r.risk_level,
+            )
+        })
         .collect()
 }
 

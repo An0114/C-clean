@@ -3,19 +3,30 @@
 > **特别声明**：本文件是项目唯一真实数据源，也是「每次任务结束必更新、必单独提交」的文件。后续所有 Agent 必须遵守：任何任务完成后都要先更新本文件，再单独提交一次（commit message 形如 `docs(state): ... (#task-00X)`），不得与业务代码混在同一个 commit。
 
 ## 当前目标
-**v0.4.0 已发布并完成真机体验（通过）**：R5 架构债（task-074~076）+ P2 三项（task-077/078/079）已随 v0.4.0 交付；task-081（三页深色适配）开发轮完成、状态 `testing`。
-**下一阶段 = v0.5.0 能力线，2026-11-08 重排编号为 082~107，分 7 个批次**：
-- **批次一（UI）✅ 全部完成（2026-11-08）**：082 仪表盘布局 / 083 注册表命令列滚动 / 084 清理页路径列滚动 / 085 深色三页（=task-081）/ 086 托盘菜单 / 087 逐项影响说明（静态版，热更新待 088）。**下一阶段 = 批次二**。
-- **批次二（P0 地基）**：088 双份真值源收敛（内置模块改读规则库）+ 089 规则 schema 扩展 `matches`。
-- **批次三（软件感知核心，090/091 并行、092 随 091 并行）**：090 软件枚举器 + 091 扩展软件清单 + 092 L3 红线反向断言。
-- **批次四（软件感知收尾）**：093 多 Profile / 094 UI 软件识别展示 / 095 规则去重联调。
-- **批次五（大文件地图与差异化）✅ 全部完成（2026-11-09）**：096 目标空间 / 097 重复文件 / 098 文件夹分布 / 099 残留一键定位。
-- **批次六（决策与 P1/P2 补全）✅ 全部完成（2026-11-10）**：100 自动清理拍板 / 101 L0 拍板 / 102 非系统盘产出 / 103 规则导入导出 / 104 Gradle&Maven。
-- **批次七（P2 长尾）✅ 全部完成（2026-11-10）**：105 多用户 Profile / 106 草稿暂存 / 107 ARM64。
-**下一阶段 = v0.5.0 能力线（082~107）全部完成（2026-11-10）**，待真机/NSIS 冒烟 + CI 由测试 Agent 产出。
-历史决策不变：代码签名不做、品牌图标不做、G6 不修；跨盘恢复 fallback / RmShutdown 连带兄弟进程 / RmShutdown 30s 无进度三项维持现状。
+**v0.6.0 测试轮完成，状态 `awaiting_review`**（`feature/task-086-v060-prd-closure-hardening`）：task-086 的 29 项全部落地，版本号六处升 0.6.0、CHANGELOG v0.6.0、README / USER_GUIDE 已同步；独立测试轮复跑 769 passed / 233 passed，NSIS 干净目录安装+卸载冒烟、通知历史落库已真机闭环，右键人工点击 / 200% 全页截图登记第三档。
+**下一阶段 = 评审 Agent 重评 → 合并 main → 打 tag `v0.6.0` 触发 Release**（剩余第三档项留活动桌面机器补取证；CI 五道闸由 PR #51 触发）。
+历史决策不变：代码签名不做、品牌图标不做、G6 不修；跨盘恢复 fallback 与 RmShutdown 进度/兄弟进程提示已在 task-086 补齐。
 
 ## 最近一次变更
+2026-11-13：**v0.6.0 发版准备完成（release-prep）**，3 个单元提交 + `docs(state)`：
+  - **① 版本号六处升级（`ec92007`，`chore(release)`）**：`app/src-tauri/tauri.conf.json` / `app/src-tauri/Cargo.toml` / `app/package.json` / 根 `package.json` / `cli/Cargo.toml` → `0.6.0`，`Cargo.lock` 由 `cargo build` 自动同步；`c-clean-cli --version` 实测输出 `c-clean-cli 0.6.0`。
+  - **② CHANGELOG v0.6.0（`8952613`，`docs(changelog)`）**：新增 / 架构优化 / 测试 / 已知问题四段，覆盖 task-086 六组 29 项。
+  - **③ README / USER_GUIDE 同步（`9c8ce58`，`docs(readme)`）**：README 版本号 → v0.6.0，功能列表补增量扫描 / UNC / 跨盘恢复 / treemap / 自动扫描频率与阈值 / 多语言 / 右键菜单 / 通知中心；USER_GUIDE 版本号 → v0.6.0，新增「18. v0.6.0 新增能力」10 小节 + 目录。
+  - **门禁**：`cargo fmt --all -- --check` 0、`cargo clippy --workspace --all-targets -- -D warnings` 0、`cargo test --workspace` **769 passed / 0 failed / 15 ignored**、`pnpm lint` 0 error（4 条既有 warning）、`pnpm test` **233 passed**、`pnpm build` 成功（282.59 kB）、资源契约 6/6、`cargo build --release -p c-clean-cli` + `--version` = 0.6.0。
+  - **未做**：tag 与 push（等合并 main 后由 DocsKeeper 打 `v0.6.0`）、NSIS 冒烟、CI。
+
+2026-11-13：**task-086 v0.6.0 PRD 全闭环 + 安全加固 + 体验深化（29 项）开发完成，状态 `testing`**（`feature/task-086-v060-prd-closure-hardening`），8 个代码/文档提交 + `docs(state)` 收尾（`0c7f2da`）：
+  - **① 组 1 PRD 闭环**：`067dfd0` 报告导出支持用户指定目录（空白回落 `data_root/reports`）；`623ed2a` 自动扫描频率扩展 30min/1h/天/周/月 + 阈值默认 5GB（复用 `prefs` KV，未新增 v8 迁移）；`2e55560` 目标空间推荐组合（输入 GB → 贪心推荐 L1/L2 + 预计达成度 + 差额提示）。
+  - **② 组 2 安全加固**：`5b966e7` 符号链接/junction 拦截（`execute` 错误码 2009）+ `GetLongPathNameW` 8.3 短名解析；进度条百分比为 task-060 既有实现，本轮复核通过。
+  - **③ 组 3 体验深化**：`758f5d4` BigFiles 文件夹分布 treemap（`treemap.ts` 纯函数 + 6 条单测）+ 影响说明从规则库热取（`impact_note`/`rebuild_note` 入库）+ 高分屏 CSS clamp；折线图与更新进度为 task-073/055 既有实现。
+  - **④ 组 4 工程化清理**：`b7d6866` `audit_log` v8 迁移加 `session_id` + History 会话下拉；删除 5 个 `scan_*.ps1` 与回退链路；`DenialReason` 区分内置/外部/用户规则来源。`target_commitish` 为 task-054 既有。
+  - **⑤ 组 5 P2 长尾**：`d514e88` 跨盘恢复 `move_path`（rename → copy+remove，目录递归、拒绝 reparse point 穿透）；UNC 路径 normalize/resolve/白名单/用户规则 L2 全链路；v9 `scan_cache` 增量扫描（模块+根目录 mtime，`browser_cache`/`software_cache` 不缓存）；i18n（zh-CN/en-US + Settings 语言卡）；右键菜单 `HKCU\Software\Classes\Directory\shell\CClean` + `--scan-path` 启动扫描；v9 `notification_history` 通知历史。RmShutdown 进度/兄弟进程为 task-049b/060 既有。
+  - **⑥ 组 6 文档合规**：`3b461c5` 新增 `docs/SECURITY.md`（杀软误报说明 + 披露流程）、`CONTRIBUTING.md`（环境/风格/安全红线/PR 流程）、12 张真机截图（8 页核心 + 150%/200% 缩放 + 英文界面）、README 安全与贡献链接；`@vitest/coverage-v8` 为覆盖率测量新增 devDependency。
+  - **门禁**：`cargo fmt --all -- --check` 0、`cargo clippy --workspace --all-targets -- -D warnings` 0、`cargo test --workspace` **769 passed / 0 failed / 15 ignored**、`pnpm lint` 0 error（4 条既有 react-refresh warning）、`pnpm test` **233 passed（17 files）**、`pnpm build` 成功、`node --test scripts/tauri-resources.test.mjs` 6/6。
+  - **覆盖率**：Rust `engine` 行覆盖 **84.4%**（`engine+cli+elevation` 81.7%）；全 workspace 71.9%（`app/src-tauri/src/commands.rs` 的 `#[tauri::command]` 薄封装 2.0%）。前端 statements/lines **86.49%**、branches 82.74%、functions 74.21%。
+  - **性能**：GUI 全量扫描 **5 s / 2412 项**（Rust 进程峰值 51.1 MB，空闲 47.8 MB）；CLI 冷扫描 **11.6 s / 6772 项 / 16.1 MB**。WebView2 子进程树空闲约 435 MB，属 Chromium 固有开销，需在发版说明中明确 RSS 口径。
+  - **未做**：NSIS 干净目录安装冒烟（自动化环境安装器被拦截）、CI（分支未 push）、真实通知中心历史（未跑自动清理）、Explorer 右键菜单人工点击；详见任务文件「实现备注」。
+
 2026-11-11：**task-085 发版 v0.5.0（release-prep）开发完成，状态 `testing`**（`feature/task-085-release-v0.5.0`），3 个单元提交 + 1 docs 提交：
   - **① 版本号六处升级（`b1861d4`，`chore(release)`）**：`app/src-tauri/tauri.conf.json` / `app/src-tauri/Cargo.toml` / `app/package.json` / 根 `package.json` / `cli/Cargo.toml` → `0.5.0`，`Cargo.lock` 由 `cargo build` 自动同步（仅 2 行版本变更）；`c-clean-cli --version` 实测输出 `c-clean-cli 0.5.0`。
   - **② CHANGELOG v0.5.0（`cec591a`，`docs(changelog)`）**：新增 / 架构优化 / 测试 / 已知问题四段，覆盖 task-082 UI 批量优化 + task-083 软件感知地基 + task-084 大文件地图与决策补全。
@@ -690,6 +701,7 @@
 - [x] 初始化项目状态白板 PROJECT_STATE.md（本次提交）
 
 ## 待办事项
+- [x] 086：**v0.6.0 PRD 全闭环 + 安全加固 + 体验深化（29 项）+ 发版准备** ✅（2026-11-13，task-086）
 - [x] 085：**发版 v0.5.0（版本号六处 + CHANGELOG + README/USER_GUIDE 同步）** ✅（2026-11-11，task-085）
 - [x] 088/089/090/091/092/093/094/095：**软件感知地基大合并（批次二三四 8 项）** ✅（2026-11-09，task-083）
 - [x] 001：初始化 monorepo 目录骨架（app/ Tauri+React+Vite、engine/ Rust workspace、elevation/、rules/、scripts/），跑通最小空窗口
@@ -1018,35 +1030,35 @@
 
 
 - [B 中] **G6 设置页首调 `rules_check_update` 红错（已豁免，不修）**：Tauri 2.x `useCustomProtocol` 首调时序竞争，功能经 postMessage 回退可用。**发版门禁口径：排除 G6 后 Console 零红即过**。详见 `docs/test-reports/gui-walkthrough-round3-checklist.md` §六。
-- [B 中] **RmShutdown 30s 无进度反馈（2026-10-29 拍板：暂不修）**：占用进程不响应关闭请求时等 RM 超时，期间前端无进度。等开发任务基本结束后再决定是否改进。
-- [B 中] **RmShutdown 连带兄弟进程（2026-10-29 拍板：暂不修）**：RM 会话会连带关闭同 console / 进程组的兄弟进程，无法控制粒度。等开发任务基本结束后再决定是否改进。
-- [B 中] **跨盘恢复无 copy+remove fallback（2026-10-29 拍板：暂不修）**：`restore_from_safe_box` 跨盘直接返回 `RestoreError::Io`（保险箱与 `%TEMP%` 通常同在 C 盘，实际影响小）。等开发任务基本结束后再决定是否改进。
-- [B 中] **GUI 真机截图与 NSIS 安装态冒烟（第三档）**：自动化环境无活动桌面，WebView2 渲染进程创建即崩溃。补偿为 jsdom 组件用例 + 后端真实占用进程端到端 + NSIS 干净目录安装冒烟（task-050/054 已补）。需在有活动桌面的机器补做 GUI 点击证据。
-- [B 低] **UNC 路径（`\\server\share\...`）**：沿用保守拒绝（normalize 层 NotAbsolute + resolve 层 Io 双保险）；网络盘 L3 红线策略留待真实 NAS/企业盘场景出现时再开。
+- [B 中] **GUI 真机截图与 NSIS 安装态冒烟**：task-086 已补 8 页核心截图 + 150%/200% 缩放截图（`docs/screenshots/`）；NSIS 干净目录安装冒烟仍未执行，留待 v0.6.0 发版前在有活动桌面的机器补做。
 - [B 低] **task-007 WebView2 devtools console 截图**：`listen('scan://progress')` 真机截图未取得（自动化环境无法聚焦 console）。通道本身已由编译期类型 + engine 节流单测保证，留待 UI 联调任务补截图。
 - [B 低] **差量更新（已决策不做）**：评估结论 Tauri 2 不支持、自建 6-9 人日、4 MB 包省流量 <2 秒不划算。详见 `docs/research/delta-update-evaluation.md`。
-- [B 低] **外部红线 DenialReason 变体（留待后续）**：`whitelist.rs` 仅新增函数、不改枚举/常量；后续审计若需区分内置/外部红线来源，再拆 DenialReason 变体。
 - [B 低] **CI 未接 Dependabot / cargo audit / npm audit（不做）**：任务边界明确不做。CI 仅 windows-latest 单平台，跨平台矩阵不做。
 - [B 中] **installer 未做代码签名（评估结论当前不做）**：未购 EV/OV 证书，SmartScreen 警告需手动「更多信息→仍要运行」。详见 `docs/research/code-signing-evaluation.md` 的三个触发条件。
 - [B 低] **品牌图标（决策不做）**：沿用 Tauri 默认占位，待后续有设计出 1024×1024 源 PNG 后再跑 `tauri icon`。
 ## 下一步计划
-**v0.5.0 发版完成**（版本号 0.5.0 + CHANGELOG + README/USER_GUIDE 已同步；PR 合并后由 DocsKeeper 手动打 tag `v0.5.0` 触发 Release workflow，产出 x64 + ARM64）。**下一阶段：由用户拍板下一里程碑（v0.6.0 / 架构债 / 体验深化）**。
-- 遗留边界不变：Top100 截断、残留"文件残留"误报无法归零、计划任务扫描非管理员恒空、DISM 15 分钟上限、跨盘恢复不支持、未做代码签名、品牌图标不做、跨盘恢复 fallback / `RmShutdown` 三功能维持现状。
+**v0.6.0 发版准备完成，待测试轮验证与合并**（29 项全部落地；3 个发版单元提交 + `docs(state)`）。**下一阶段 = 真机/NSIS/CI 验证 → PR 合并 main → DocsKeeper 打 tag `v0.6.0` 触发 Release workflow**（x64 + ARM64）。
+- 待补验证：NSIS 干净目录安装冒烟、CI 五道闸、真实通知中心历史、Explorer 右键菜单点击。
+- 遗留边界不变：Top100 截断、残留"文件残留"误报无法归零、计划任务扫描非管理员恒空、DISM 15 分钟上限、未做代码签名、品牌图标不做。
+- 内存口径：PRD 的「空闲 ≤100MB / 峰值 ≤300MB」按 Rust 进程实测达标（47.8 / 51.1 MB）；WebView2 子进程树另有约 435–508 MB，发版说明需明确口径。
 
 ## 当前负责人 Agent
-**测试 Agent（提示词 9）**——`feature/task-083-software-awareness-batch234` 开发轮已完成、状态 `testing`（批次二三四软件感知地基大合并）。
+**测试 Agent（提示词 9）→ DocsKeeper（合并后打 tag）**——`feature/task-086-v060-prd-closure-hardening` 开发轮与 v0.6.0 发版准备已完成、状态 `testing`（v0.6.0 PRD 全闭环 29 项）。
 本次交付的核心验证点（真机/打包全必做）：
-① **软件枚举器**：`software_inventory` 命令真机返回 ≥5 款已装软件（HKLM 优先去重、系统组件过滤）。
-② **软件缓存识别**：装了 VSCode/Chrome/微信的机器，扫完能按软件名归类缓存；聊天/配置 一条不出现（L3 反向断言 092）。
-③ **多 Profile**：Chrome/Edge 双 Profile（Default + Profile 1）两个缓存都列出、大小分别统计；Guest 排除。
-④ **UI 软件列**：Items 页「软件」列显示软件名 + 同软件折叠分组 + hover 规则库逐项说明；浅/深色都看。
-⑤ **v5 迁移**：升级路径老库平滑升到 software_inventory 表、幂等。
+① **PRD 闭环**：清理完成页导出 HTML/CSV 到用户指定目录；Settings 频率/阈值改后自动扫描按新配置跑；输入 20GB 出推荐组合与差额。
+② **安全加固**：扫描进度随模块推进；符号链接/junction 删除被拒（2009）；`SYSTEM~1` 解析为 `System32` 并 L3 拦截。
+③ **体验**：BigFiles treemap、影响说明热更新、150%/200% 缩放、更新下载进度。
+④ **工程化**：History 按 session 筛选；`scripts/` 无 ps1；拒绝提示区分内置/外部/用户规则。
+⑤ **P2 长尾**：C→D 跨盘恢复、UNC 规则可加（L2）、二次扫描增量缓存、英文界面、右键菜单、通知中心历史。
+⑥ **文档/覆盖率/性能**：SECURITY.md / CONTRIBUTING.md / `docs/screenshots/` 8 页；Rust engine 84.4%、前端 86.49%；GUI 扫描 5s、Rust 峰值 51.1MB。
 **已知边界（别当 bug 报）**：
-- `execute_resolve.rs` 2 条 junction 用例在无符号链接权限环境失败（预存在，非本次回归）。
-- 017 相关：本项目无 theme context，软件列颜色走 `var(--xxx)`，不要按二进制的 hex 断言。
-- 真机 L3 反向断言防呆（故意在 JSON 写冲突规则应 panic）属本任务必做验证，见任务书 B3 验收。
+- 通知历史当前为空（本机未跑自动清理）；写入链路由单测覆盖。
+- `browser_cache` / `software_cache` 不启用增量缓存（正确性优先）；二次扫描不会显著变快。
+- 全 workspace Rust 覆盖率 71.9%（Tauri 命令薄封装 2.0%），达标口径为 engine 84.4%。
+- WebView2 子进程树内存约 435–508 MB，不属 Rust 进程 RSS；发版说明需明确口径。
+- 未做：NSIS 干净目录安装冒烟、CI、Explorer 右键菜单人工点击。
 
-上一手：DevFullstackRustReact（task-083 开发）。再上一手：DocsKeeper（task-083 派发）。
+上一手：DevFullstackRustReact（task-086 开发）。再上一手：DocsKeeper（task-086 派发）。
 
 
 ## Git 提交记录
@@ -1595,6 +1607,10 @@
 | cec591a | #task-085 | docs(changelog): v0.5.0 条目（UI 批量优化 + 软件感知地基 + 大文件地图收官） |
 | 595f331 | #task-085 | docs(readme): 功能列表同步（软件感知 + 大文件深化 + 自动清理 + ARM64） |
 | （本次） | #task-085 | docs(state): 任务085完成，v0.5.0 release-prep 就绪 |
+| ec92007 | #task-086 | chore(release): 版本号升级至 v0.6.0（六处同步） |
+| 8952613 | #task-086 | docs(changelog): v0.6.0 条目（PRD 全闭环 + 安全加固 + 体验深化） |
+| 9c8ce58 | #task-086 | docs(readme): 功能列表同步（v0.6.0 新能力） |
+| （本次） | #task-086 | docs(state): 任务086完成，v0.6.0 发版准备就绪 |
 
 ---
 变更轨迹：
@@ -1747,3 +1763,7 @@
 - 2026-11-08  task-082  UI 体验批量优化（= backlog 批次一 082/083/084/086/087）：**仪表盘按 backlog 82.1~82.3 重排**（磁盘空间卡上移通栏 → 统计卡 2×2 左置 `flex:11` ≈55% + 趋势图右置 `flex:9` ≈45%、`align-items:stretch` 顶部对齐、窄屏 flex-wrap 堆叠；间距 12px、主数字 28→32px、minHeight 90→100、柔和 boxShadow；**顺带修 task-081 漏掉的 `cardStyle.background:"#fff"` 白底**）。**单元格滚动**：`overflow-x` 写在 `<td>` 上**不生效**（table-cell 的 overflow 作用于整表），必须包 `div`（`max-width` 300/400 + `nowrap` + `title`），滚动条用标准属性 `scrollbar-color`/`scrollbar-width` 跟随主题；真机实测注册表溢出那条 `375>300`、清理页 **100 条中 49 条溢出**（最长 786px）。**顺带修真 bug**：注册表表格容器 `overflow:hidden` 会把超宽的「风险」「建议」列**直接裁掉且滚不到** → `overflowX:auto`。**托盘**：3 项扩到 5 项（+暂停/恢复自动扫描，读写 `settings.auto_scan_enabled`，后台 tick 重读即生效，两项互斥可用）、左键单击从「只显示」改 **toggle**（可见且聚焦才隐藏——只判可见会让「窗口被挡在后面」时点了没反应）、tooltip 显示「待清理 N 项 / 累计释放 X」启动给一次 + **每 60 秒轮询**（完成点在 `commands.rs`/`auto_scan.rs`，不在白名单）。**影响说明**：L1/L2/L3 hover 补「影响什么」的具体例子，保险箱补路径/精确字节/来源批次三处 hover，残留置信度徽标补判定依据；**`rules/` 元数据驱动未做**（与 088 同一件事，按 backlog「先静态落地」）。**消重复**：`auto_scan.rs` 已有 `human_bytes`，把可见性改 `pub(crate)` 共用而非在 lib.rs 再抄 20 行（**白名单外 1 行**）。门禁 check/fmt/clippy 全 0、`cargo test --workspace` **638 passed**（+6）、lint 0 error、vitest **206 passed（14 files，+9）**、`pnpm build` 252.58 kB（+1.30）、**tauri build NSIS 4.55 MiB + MSI 6.71 MiB**。真机量取：主数字 32px / gap 12px / 深色卡片 `rgb(30,41,59)` / console **0 红错**。**未做**：原生托盘菜单截图（CDP 截不到 DOM）、SafeBox hover 截图（真实库为空，用 4 条单测替代）、CI（开发轮不触发）。**环境坑**：vitest 并行写 `%TEMP%` 被沙箱拦（`EPERM`）会打断 Settings 测试表现为 13/162+1error，`--no-file-parallelism` 即 14/206 全绿。
 
 - 2026-11-11  task-085  发版 v0.5.0（UI + 软件感知 + 大文件地图收官）：**版本号六处**升 0.5.0（`tauri.conf.json` / `app/src-tauri/Cargo.toml` / `app/package.json` / 根 `package.json` / `cli/Cargo.toml` + `Cargo.lock` 自动同步），`c-clean-cli --version` 实测 `c-clean-cli 0.5.0`；**CHANGELOG v0.5.0** 四段（新增：UI 批量优化 / 软件感知 / 大文件深化 / 决策补全 / P2 长尾；架构优化：双份真值源收敛 / L3 反向断言 / 多 Profile；测试：≥30 新增，累计 Rust ≥668 + 前端 ≥214；已知问题：不签名 / 默认图标 / 三功能维持现状）；**README** 版本号 + 功能列表（软件感知 / 大文件深化 / 自动清理 / 规则导入导出 / 多用户 / 草稿 / ARM64）+ 安装表 ARM64 行；**USER_GUIDE** 版本号 + 新增「17. v0.5.0 新增能力」6 小节 + 目录交叉引用。**门禁**：check 0 / `cargo build --workspace` 成功（cdisk-cleaner 0.5.0、c-clean-cli 0.5.0）/ release CLI `--version` 0.5.0 / `pnpm build` 270.39 kB / lint 0 error（4 条 react-refresh 既有 warning）。**未做**：真机 / NSIS / MSI / 便携版 / ARM64 冒烟 + CI（归测试轮 L4/L5）、tag（归 DocsKeeper 在 PR 合并后打）；本任务不改任何源代码。
+
+- 2026-11-13  task-086  v0.6.0 PRD 全闭环 + 安全加固 + 体验深化（29 项）：8 个提交 `067dfd0`/`623ed2a`/`2e55560`/`5b966e7`/`758f5d4`/`b7d6866`/`d514e88`/`3b461c5`。**组 1** 报告导出用户路径 + 自动扫描频率 30min/1h/天/周/月 + 阈值默认 5GB（复用 `prefs`，未新增 v8 迁移）+ 目标空间推荐组合；**组 2** 符号链接/junction 拦截 2009 + 8.3 短名解析（进度条为 task-060 既有）；**组 3** treemap + 影响说明热更新 + 高分屏 clamp（折线图/更新进度为 task-073/055 既有）；**组 4** v8 `audit_log.session_id` + History 会话筛选 + 删 5 个 ps1 与回退 + DenialReason 来源拆分（target_commitish 为 task-054 既有）；**组 5** 跨盘 `move_path` copy+remove、UNC 全链路 L2、v9 `scan_cache` 增量扫描、i18n zh/en + Settings 语言卡、HKCU 右键菜单 + `--scan-path`、v9 `notification_history`（RmShutdown 进度/兄弟进程为既有）；**组 6** `docs/SECURITY.md` + `CONTRIBUTING.md` + 12 张真机截图 + `@vitest/coverage-v8` + README 链接。**门禁**：fmt/clippy 0、Rust **769 passed / 0 failed / 15 ignored**、前端 lint 0 error、**233 passed（17 files）**、build 成功、资源契约 6/6。**覆盖率**：engine 行 84.4%（engine+cli+elevation 81.7%，全 workspace 71.9%）、前端 statements 86.49%。**性能**：GUI 全量扫描 5s / 2412 项 / Rust 峰值 51.1MB、空闲 47.8MB；CLI 冷扫描 11.6s / 6772 项 / 16.1MB；WebView2 子进程树 435–508MB。**未做**：NSIS 安装冒烟、CI、真实通知中心历史、Explorer 右键点击；详见 `tasks/086-v060-prd-closure-hardening.md` 实现备注。
+
+- 2026-11-13  task-086  v0.6.0 发版准备（版本号六处升 0.6.0 + CHANGELOG v0.6.0 + README/USER_GUIDE 同步「18. v0.6.0 新增能力」），3 个发版提交 `ec92007`/`8952613`/`9c8ce58`；门禁全绿（Rust 769 passed / 前端 233 passed / lint 0 error / build 282.59 kB / CLI `--version` = 0.6.0）

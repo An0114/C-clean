@@ -91,7 +91,8 @@ fn resolver_dry_run_end_to_end() {
     let data = env.data.expect("2002 偏离 TRD 需回传 blocked 明细");
     assert_eq!(data.blocked_by_l3.len(), 1);
     assert_eq!(data.blocked_by_l3[0].item_id, 2);
-    assert!(data.blocked_by_l3[0]
-        .denial_reason
-        .contains("L3PersonalDir"));
+    assert_eq!(
+        data.blocked_by_l3[0].denial_reason,
+        "BuiltinRedline(L3PersonalDir)"
+    );
 }

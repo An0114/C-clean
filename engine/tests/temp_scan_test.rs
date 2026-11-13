@@ -1,16 +1,9 @@
-//! task-074：`scan_temp` Rust 重写的集成测试。
+//! task-086：`temp` 纯 Rust 扫描与 `ScanRunner` 入库集成测试。
 //!
-//! # 三层验证
-//!
-//! 1. **入库等价**：Rust 侧 `ScanItem` 经 `ScanRunner::insert_batch` 写进
-//!    `cleanup_item` 后，行内容必须与 ps1 路径产出的完全一致（risk 映射、
-//!    description 空串、session 绑定）——这是「两条路径共用一份入库逻辑」的证据。
-//! 2. **真实对比**：把 `TEMP` 指向一个受控目录，分别跑真实 `scan_temp.ps1` 和
-//!    Rust `scan_dir`，比对产出的路径 / 大小 / 风险等级集合。
-//!    **不 mock、不比对硬编码期望值**——脚本改坏了这条会直接红。
-//! 3. **模式切换**：`CCLEAN_RUST_TEMP` 的两种取值都真的能跑通编排。
+//! 覆盖受控目录的递归扫描、路径 / 大小 / 风险等级、空目录、模块字段，
+//! 以及 `ScanItem` 落库、影响说明和逐条进度事件。
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Mutex;
 
 use engine::db::conn::open;
@@ -52,8 +45,7 @@ fn setup() -> (tempfile::TempDir, rusqlite::Connection, i64) {
 }
 
 /// 造一个受控目录树，返回 (TempDir, 期望的相对路径集合)。
-///
-/// 不用随机文件名：对比 ps1 与 Rust 的产出时，路径必须能一一对上。
+/// 固定文件名让递归扫描结果可以逐条核对。
 fn make_temp_tree() -> (tempfile::TempDir, Vec<&'static str>) {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("a.tmp"), vec![b'x'; 11]).unwrap();
@@ -65,27 +57,11 @@ fn make_temp_tree() -> (tempfile::TempDir, Vec<&'static str>) {
     (dir, vec!["a.tmp", "b.tmp", "sub/c.log", "sub/deep/d.dat"])
 }
 
-/// 把路径规范化成长名小写形式再比对。
-///
-/// CI runner 用户名较长（如 `runneradmin`）会触发 8.3 短路径别名：
-/// `tempfile::tempdir()` 拿到的是 `C:\Users\RUNNER~1\...`，而 PowerShell
-/// `Get-ChildItem` 的 `FullName` 输出的是长名 `runneradmin`。两边指的是同一个文件，
-/// 仅字符串表示不同——用 `canonicalize` 解析到最终路径后再比，消除短/长名差异。
-fn norm_path(p: &str) -> String {
-    std::fs::canonicalize(p)
-        .map(|c| {
-            c.to_string_lossy()
-                .trim_start_matches(r"\\?\")
-                .to_lowercase()
-        })
-        .unwrap_or_else(|_| p.to_lowercase())
-}
-
-// ===================== ① 入库等价 =====================
+// ===================== ① ScanItem 入库 =====================
 
 #[test]
-fn insert_batch_writes_rows_with_ps1_equivalent_shape() {
-    // Rust 的 ScanItem 入库后，行的每个字段都要与 ps1 路径一致。
+fn insert_batch_writes_expected_row_shape() {
+    // ScanItem 入库后必须保留模块、分类、路径、大小与风险等级等字段。
     let (_dir, conn, sid) = setup();
     let emitter = VecEmitter::default();
     let runner = ScanRunner::new(sid, &conn, &emitter);
@@ -121,14 +97,72 @@ fn insert_batch_writes_rows_with_ps1_equivalent_shape() {
         .collect();
 
     assert_eq!(rows.len(), 2);
-    // risk 整数 → 文本映射必须与 ps1 路径一致（0/1/2 → L0/L1/L2）
+    // risk 整数按 0/1/2 → L0/L1/L2 映射为数据库文本。
     assert_eq!(rows[0].4, "L1");
     assert_eq!(rows[1].4, "L2");
-    // description 是 NOT NULL，ps1 协议没有该字段，两条路径都填空串
+    // description 是 NOT NULL，扫描条目未提供描述时写入空串。
     assert_eq!(rows[0].5, "");
     assert_eq!(rows[0].0, "temp");
     assert_eq!(rows[0].1, "user_temp");
     assert_eq!(rows[0].3, 100);
+}
+
+/// task-086 3.3：影响说明从 ScanItem 透传到 cleanup_item 落库。
+#[test]
+fn insert_batch_persists_impact_notes() {
+    let (_dir, conn, sid) = setup();
+    let emitter = VecEmitter::default();
+    let runner = ScanRunner::new(sid, &conn, &emitter);
+
+    // 规则库语义：software_cache 扫到条目时用 with_impact 携带影响说明。
+    let items = vec![ScanItem::new(
+        "software_cache",
+        "software_cache_vscode",
+        r"C:\A\c.tmp".to_string(),
+        50,
+        1,
+    )
+    .with_impact("删除后下次启动重新下载", "重启软件自动重建")];
+    runner.insert_batch(&items).expect("入库应成功");
+
+    let (impact, rebuild): (Option<String>, Option<String>) = conn
+        .query_row(
+            "SELECT impact_note, rebuild_note FROM cleanup_item WHERE session_id=?1",
+            [sid],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(impact.as_deref(), Some("删除后下次启动重新下载"));
+    assert_eq!(rebuild.as_deref(), Some("重启软件自动重建"));
+}
+
+/// task-086 3.3：未携带影响说明的条目落库为 NULL（前端退回通用文案）。
+#[test]
+fn insert_batch_leaves_impact_notes_null_when_absent() {
+    let (_dir, conn, sid) = setup();
+    let emitter = VecEmitter::default();
+    let runner = ScanRunner::new(sid, &conn, &emitter);
+
+    // 内置模块（temp）不携带影响说明，落库应为 NULL 而非空串——
+    // 空串会覆盖前端「无说明时显示通用 L1/L2 文案」的兜底逻辑。
+    let items = vec![ScanItem::new(
+        "temp",
+        "user_temp",
+        r"C:\T\a.tmp".to_string(),
+        100,
+        1,
+    )];
+    runner.insert_batch(&items).expect("入库应成功");
+
+    let (impact, rebuild): (Option<String>, Option<String>) = conn
+        .query_row(
+            "SELECT impact_note, rebuild_note FROM cleanup_item WHERE session_id=?1",
+            [sid],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert!(impact.is_none(), "无影响说明时 impact_note 应为 NULL");
+    assert!(rebuild.is_none(), "无重建说明时 rebuild_note 应为 NULL");
 }
 
 #[test]
@@ -176,125 +210,41 @@ fn insert_batch_with_empty_items_is_ok() {
     assert!(emitter.snapshot().is_empty());
 }
 
-// ===================== ② Rust vs ps1 真实对比 =====================
-
-/// 跑真实 `scan_temp.ps1`，返回它产出的 `(category, 小写路径, size, risk)` 集合。
-///
-/// `temp_dir` 通过**子进程环境变量**注入（`Command::env`），不影响本进程。
-///
-/// 返回 `None` 表示本机跑不了 ps1（没有 powershell / 脚本缺失），调用方跳过。
-fn run_ps1_scan(temp_dir: &Path) -> Option<Vec<(String, String, i64, i64)>> {
-    let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()?
-        .join("scripts")
-        .join("scan_temp.ps1");
-    if !script.exists() {
-        eprintln!(
-            "[跳过] 找不到 {}（scripts/ 不在预期位置）",
-            script.display()
-        );
-        return None;
-    }
-
-    let out = std::process::Command::new("powershell.exe")
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-        ])
-        .arg(&script)
-        .env("TEMP", temp_dir)
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        eprintln!("[跳过] ps1 退出码 {:?}", out.status.code());
-        return None;
-    }
-
-    let text = String::from_utf8_lossy(&out.stdout);
-    let mut rows = Vec::new();
-    for line in text.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
-            continue;
-        };
-        if v.get("type").and_then(|t| t.as_str()) != Some("item") {
-            continue;
-        }
-        // 只取 user_temp：windows_temp 指向真实系统目录，两边扫同一份磁盘，
-        // 但它的大小会随系统状态变，不适合做「集合相等」断言。
-        let category = v.get("category").and_then(|c| c.as_str()).unwrap_or("");
-        if category != temp::CATEGORY_USER_TEMP {
-            continue;
-        }
-        rows.push((
-            category.to_string(),
-            norm_path(v.get("path").and_then(|p| p.as_str()).unwrap_or("")),
-            v.get("size_bytes").and_then(|s| s.as_i64()).unwrap_or(-1),
-            v.get("risk_level").and_then(|r| r.as_i64()).unwrap_or(-1),
-        ));
-    }
-    Some(rows)
-}
+// ===================== ② Rust 扫描结果 =====================
 
 #[test]
-fn rust_scan_matches_ps1_output_on_same_directory() {
-    // 这是本任务「等价重写」的核心证据：同一个目录，两套实现产出必须一致。
-    let (tree, expected) = make_temp_tree();
+fn rust_scan_finds_expected_files_with_sizes_and_risk() {
+    let (tree, mut expected) = make_temp_tree();
+    let items = temp::scan_dir(tree.path(), temp::CATEGORY_USER_TEMP, temp::RISK_L1);
 
-    let ps1 = match run_ps1_scan(tree.path()) {
-        Some(r) => r,
-        None => return, // 本机跑不了 ps1，跳过（不是失败）
-    };
+    let mut paths: Vec<String> = items
+        .iter()
+        .map(|i| {
+            Path::new(&i.path)
+                .strip_prefix(tree.path())
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/")
+        })
+        .collect();
+    paths.sort();
+    expected.sort_unstable();
+    assert_eq!(paths, expected, "应递归扫到受控目录中的全部文件");
 
-    let rust: Vec<(String, String, i64, i64)> =
-        temp::scan_dir(tree.path(), temp::CATEGORY_USER_TEMP, temp::RISK_L1)
-            .into_iter()
-            .map(|i| {
-                (
-                    i.category.clone(),
-                    norm_path(&i.path),
-                    i.size_bytes,
-                    i.risk_level,
-                )
-            })
-            .collect();
-
-    // 两边都按路径排序后再比，顺序不参与断言
-    let mut a = ps1.clone();
-    let mut b = rust.clone();
-    a.sort();
-    b.sort();
-
-    assert_eq!(a.len(), expected.len(), "ps1 应扫到 4 个文件: {a:#?}");
-    assert_eq!(b.len(), expected.len(), "Rust 应扫到 4 个文件: {b:#?}");
-    assert_eq!(a, b, "两套实现的产出必须完全一致\nps1={a:#?}\nrust={b:#?}");
-
-    // 逐条核对大小（防「两边都错但错得一样」）
-    let total: i64 = rust.iter().map(|r| r.2).sum();
+    let total: i64 = items.iter().map(|i| i.size_bytes).sum();
     assert_eq!(total, 11 + 22 + 33 + 44);
-    assert!(rust.iter().all(|r| r.3 == temp::RISK_L1));
+    assert!(items.iter().all(|i| i.risk_level == temp::RISK_L1));
+    assert!(items.iter().all(|i| i.category == temp::CATEGORY_USER_TEMP));
 }
 
 #[test]
-fn rust_scan_agrees_with_ps1_on_empty_directory() {
-    // 空目录：两边都该产出 0 条。这条防的是「一边把空目录当错误、一边当正常」。
+fn rust_scan_empty_directory_returns_empty() {
     let empty = tempfile::tempdir().unwrap();
-    let ps1 = match run_ps1_scan(empty.path()) {
-        Some(r) => r,
-        None => return,
-    };
-    let rust = temp::scan_dir(empty.path(), temp::CATEGORY_USER_TEMP, temp::RISK_L1);
-    assert!(ps1.is_empty(), "ps1 应产出 0 条: {ps1:#?}");
-    assert!(rust.is_empty(), "Rust 应产出 0 条: {rust:#?}");
+    let items = temp::scan_dir(empty.path(), temp::CATEGORY_USER_TEMP, temp::RISK_L1);
+    assert!(items.is_empty(), "空目录应产出 0 条: {items:#?}");
 }
 
-// ===================== ③ 模式切换 =====================
+// ===================== ③ Rust 扫描字段与风险边界 =====================
 
 #[test]
 fn scan_items_never_carry_l3() {

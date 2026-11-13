@@ -61,6 +61,11 @@ pub const RESIDUAL_LOCATE_NOT_FOUND: ErrorCode = ErrorCode {
     code: 2008,
     message: "要定位的路径已不存在",
 };
+/// 拒绝删除符号链接/junction（task-086 2.2 稳定链接红线）。
+pub const SYMLINK_REFUSED: ErrorCode = ErrorCode {
+    code: 2009,
+    message: "拒绝删除符号链接/Junction（避免删除重定向本身）",
+};
 /// DISM 组件存储错误。
 pub const DISM_ERROR: ErrorCode = ErrorCode {
     code: 3001,
@@ -82,8 +87,8 @@ pub const INTERNAL: ErrorCode = ErrorCode {
     message: "内部错误（附日志 ID）",
 };
 
-/// 全部 14 个错误码（供遍历测试）。
-pub const ALL: [ErrorCode; 14] = [
+/// 全部错误码（供遍历测试）。
+pub const ALL: [ErrorCode; 15] = [
     OK,
     SCAN_CANCELLED,
     DRYRUN_EMPTY,
@@ -94,6 +99,7 @@ pub const ALL: [ErrorCode; 14] = [
     REG_BACKUP_FAILED,
     RESTOREPOINT_FAILED,
     RESIDUAL_LOCATE_NOT_FOUND,
+    SYMLINK_REFUSED,
     DISM_ERROR,
     RULE_CHECKSUM_MISMATCH,
     RULE_NETWORK_ERROR,

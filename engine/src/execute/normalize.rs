@@ -44,11 +44,17 @@ impl NormalizedPath {
     }
 }
 
-/// 把任意字符串规范化为 Windows 盘符绝对路径。
+/// 把任意字符串规范化为 Windows 绝对路径（盘符或 UNC）。
 ///
-/// 处理：正斜杠归一为反斜杠、剥离 `\\?\` 扩展前缀、大写盘符、
-/// 词法折叠 `.` / `..`；`..` 弹出盘符根即拒绝。
-/// 不解析符号链接、不触碰文件系统。
+/// 处理：正斜杠归一为反斜杠、剥离 `\\?\` / `\\?\UNC\` 扩展前缀、大写盘符、
+/// 词法折叠 `.` / `..`；`..` 弹出根即拒绝。不解析符号链接、不触碰文件系统。
+///
+/// # task-086 5.4：UNC 不再一律拒绝
+///
+/// 此前 `\\server\share\...` 直接返回 [`NormalizeError::NotAbsolute`]，导致
+/// 「网络盘用户规则」建得进去却永远扫不出条目。现在按「server + share + 至少
+/// 一级目录」接受 UNC，并在 [`NormalizedPath::lower_components`] 里剥掉
+/// `\\server\share` 前缀，让内置红线（个人目录 / 浏览器敏感文件）照常生效。
 pub fn normalize(raw: &str) -> Result<NormalizedPath, NormalizeError> {
     let input = raw.trim();
     if input.is_empty() {
@@ -60,17 +66,23 @@ pub fn normalize(raw: &str) -> Result<NormalizedPath, NormalizeError> {
 
     // 斜杠归一：Windows 同时接受 / 与 \，统一为 \。
     let s = input.replace('/', "\\");
-    // 剥离 Win32 扩展前缀 `\\?\`（任务文档示例输入之一）。
-    let s = match s.strip_prefix(r"\\?\") {
-        Some(rest) => rest,
-        None => &s,
+    // 剥离 Win32 扩展前缀：`\\?\C:\...` → `C:\...`；`\\?\UNC\server\share` → `\\server\share`。
+    let s = if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{rest}")
+    } else {
+        match s.strip_prefix(r"\\?\") {
+            Some(rest) => rest.to_string(),
+            None => s,
+        }
     };
+
+    if s.starts_with(r"\\") {
+        return normalize_unc(raw, &s);
+    }
 
     // 必须形如 `X:\...`：字母盘符 + 冒号 + 反斜杠。
     let bytes = s.as_bytes();
     if bytes.len() < 3 || !bytes[0].is_ascii_alphabetic() || bytes[1] != b':' || bytes[2] != b'\\' {
-        // UNC（\\server\share）等无盘符绝对路径：本任务保守拒绝，
-        // 留待 platform 任务按网络盘策略再开放。
         return Err(NormalizeError::NotAbsolute);
     }
     let drive = (bytes[0] as char).to_ascii_uppercase();
@@ -101,12 +113,52 @@ pub fn normalize(raw: &str) -> Result<NormalizedPath, NormalizeError> {
     })
 }
 
+/// UNC 分支：`\\server\share[\dir...]`。
+///
+/// 要求 server 与 share 非空；路径本身允许只有 share（`\\server\share`），
+/// 但**删除/规则校验**侧会要求至少多一级目录（见 `user_rules::static_root`）。
+fn normalize_unc(raw: &str, s: &str) -> Result<NormalizedPath, NormalizeError> {
+    let parts: Vec<&str> = s.trim_start_matches('\\').split('\\').collect();
+    if parts.len() < 2 || parts[0].trim().is_empty() || parts[1].trim().is_empty() {
+        return Err(NormalizeError::NotAbsolute);
+    }
+    let mut stack: Vec<&str> = Vec::new();
+    for comp in &parts[2..] {
+        match *comp {
+            "" | "." => continue,
+            ".." => return Err(NormalizeError::TraversalEscapes),
+            c => stack.push(c),
+        }
+    }
+
+    let mut normalized = format!(r"\\{}\{}", parts[0], parts[1]);
+    if !stack.is_empty() {
+        normalized.push('\\');
+        normalized.push_str(&stack.join("\\"));
+    }
+    Ok(NormalizedPath {
+        raw: raw.to_string(),
+        normalized,
+    })
+}
+
 impl NormalizedPath {
-    /// 大小写不敏感的组件列表（供白名单匹配器使用）：剥掉盘符根后按 `\` 切分。
+    /// 是否为 UNC 网络路径（`\\server\share\...`）。
+    pub fn is_unc(&self) -> bool {
+        self.normalized.starts_with(r"\\")
+    }
+
+    /// 大小写不敏感的组件列表（供白名单匹配器使用）：剥掉根前缀后按 `\` 切分。
+    ///
+    /// - 盘符路径：跳过 `C:`；
+    /// - UNC：跳过空的头两段与 `server` / `share`，让组件序列与盘符路径同构
+    ///   （`\\srv\share\Users\alice\Desktop` → `["users","alice","desktop"]`），
+    ///   内置红线的「users/<用户名>/<个人目录>」判定无需为 UNC 写第二套。
     pub fn lower_components(&self) -> Vec<String> {
+        let skip = if self.is_unc() { 4 } else { 1 };
         self.normalized
             .split('\\')
-            .skip(1) // 跳过 "C:" 段
+            .skip(skip)
             .map(|c| c.to_lowercase())
             .collect()
     }
@@ -152,5 +204,54 @@ mod tests {
         assert_eq!(normalize(r"Windows\Temp"), Err(NormalizeError::NotAbsolute));
         assert_eq!(normalize("   "), Err(NormalizeError::Empty));
         assert_eq!(normalize("C:\\\0x"), Err(NormalizeError::Nul));
+    }
+
+    // ===== task-086 5.4：UNC =====
+
+    #[test]
+    fn accepts_unc_and_builds_components_without_server_share() {
+        let p = normalize(r"\\nas\backup\Games\cache\a.bin").unwrap();
+        assert!(p.is_unc());
+        assert_eq!(p.normalized(), r"\\nas\backup\Games\cache\a.bin");
+        assert_eq!(
+            p.lower_components(),
+            vec![
+                "games".to_string(),
+                "cache".to_string(),
+                "a.bin".to_string()
+            ],
+            "组件序列应剥掉 server/share，与盘符路径同构"
+        );
+    }
+
+    #[test]
+    fn normalizes_unc_verbatim_prefix() {
+        let p = normalize(r"\\?\UNC\nas\backup\dir\a.bin").unwrap();
+        assert_eq!(p.normalized(), r"\\nas\backup\dir\a.bin");
+    }
+
+    #[test]
+    fn unc_rejects_traversal_and_incomplete_share() {
+        assert_eq!(
+            normalize(r"\\nas\backup\..\secret"),
+            Err(NormalizeError::TraversalEscapes)
+        );
+        assert_eq!(normalize(r"\\nas"), Err(NormalizeError::NotAbsolute));
+        assert_eq!(normalize(r"\\nas\\dir"), Err(NormalizeError::NotAbsolute));
+    }
+
+    #[test]
+    fn unc_personal_dir_components_match_drive_shape() {
+        // \\server\share\Users\alice\Desktop → components ["users","alice","desktop"]
+        let p = normalize(r"\\nas\backup\Users\alice\Desktop\a.docx").unwrap();
+        assert_eq!(
+            p.lower_components(),
+            vec![
+                "users".to_string(),
+                "alice".to_string(),
+                "desktop".to_string(),
+                "a.docx".to_string()
+            ]
+        );
     }
 }

@@ -16,6 +16,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { formatBytes } from "../utils/formatBytes";
 import { api } from "../utils/invoke";
+import { layoutTreemap, type TreemapDatum } from "../utils/treemap";
+import { t } from "../i18n";
 
 /** 与 engine BigFileItem（camelCase）对齐。 */
 interface BigFileItem {
@@ -268,7 +270,7 @@ export default function BigFiles() {
         }}
       >
         <div>
-          <h1 style={{ margin: "0 0 4px" }}>大文件地图</h1>
+          <h1 style={{ margin: "0 0 4px" }}>{t("page.bigfiles")}</h1>
           <p style={{ color: "var(--text-muted)", margin: 0, fontSize: 13 }}>
             系统盘上最占空间的几类东西。<strong>本页只读，不会删除任何文件。</strong>
           </p>
@@ -522,8 +524,9 @@ function DuplicatesPanel({ groups, loading }: { groups: DupGroup[] | null; loadi
   );
 }
 
-/** task-084 A3：文件夹分布 tab。Top20 按子树大小倒序，task-084 B3 按盘分组。 */
+/** task-084 A3：文件夹分布 tab。Top20 按子树大小倒序，task-084 B3 按盘分组。task-086 3.2：加 treemap 可视化切换。 */
 function FoldersPanel({ stats, loading }: { stats: FolderStat[] | null; loading: boolean }) {
+  const [view, setView] = useState<"table" | "treemap">("table");
   if (loading) {
     return <div style={{ marginTop: 16, fontSize: 13, color: "var(--text-muted)" }}>正在统计文件夹分布…</div>;
   }
@@ -534,50 +537,156 @@ function FoldersPanel({ stats, loading }: { stats: FolderStat[] | null; loading:
     return <div style={{ marginTop: 16, fontSize: 13, color: "var(--text-muted)" }}>没有可统计的文件夹。</div>;
   }
   const groups = groupByDrive(stats);
+  const hasData = groups.some((g) => g.items.length > 0);
+  const viewStyle = (active: boolean): React.CSSProperties => ({
+    padding: "5px 12px",
+    fontSize: 12,
+    border: "1px solid var(--border)",
+    borderRadius: 5,
+    background: active ? "var(--accent, #2563eb)" : "var(--surface, var(--bg))",
+    color: active ? "#fff" : "var(--text)",
+    cursor: "pointer",
+    fontWeight: active ? 600 : 400,
+  });
   return (
     <div style={{ marginTop: 16 }}>
-      <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 12 }}>
-        占用最多的文件夹（子树总大小，倒序）· 按盘分组
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
+        <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
+          占用最多的文件夹（子树总大小，倒序）· 按盘分组
+        </span>
+        <div style={{ display: "flex", gap: 4 }}>
+          <button onClick={() => setView("table")} style={viewStyle(view === "table")}>
+            列表
+          </button>
+          <button onClick={() => setView("treemap")} style={viewStyle(view === "treemap")}>
+            矩形树图
+          </button>
+        </div>
       </div>
-      {groups.map((g) => {
-        const sum = g.items.reduce((s, f) => s + f.sizeBytes, 0);
-        return (
-          <div key={g.drive || "__other"} style={{ ...cardStyle, marginBottom: 12, padding: 0, overflow: "hidden" }}>
-            <div
-              style={{
-                padding: "10px 16px",
-                borderBottom: "1px solid var(--border)",
-                background: "var(--surface, var(--bg))",
-              }}
-            >
-              <DriveHeader drive={g.drive} label={driveLabel(g.drive)} count={g.items.length} sum={sum} />
-            </div>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-              <thead>
-                <tr style={{ color: "var(--text-muted)", textAlign: "left" }}>
-                  <th style={{ padding: "8px 16px", fontWeight: 500 }}>文件夹</th>
-                  <th style={{ padding: "8px 16px", fontWeight: 500, width: 90, textAlign: "right" }}>占用</th>
-                  <th style={{ padding: "8px 16px", fontWeight: 500, width: 70, textAlign: "right" }}>文件数</th>
-                </tr>
-              </thead>
-              <tbody>
-                {g.items.map((f) => (
-                  <tr key={f.path} style={{ borderTop: "1px solid var(--border)" }}>
-                    <td style={{ padding: "8px 16px", wordBreak: "break-all" }} title={f.path}>
-                      {f.path}
-                    </td>
-                    <td style={{ padding: "8px 16px", textAlign: "right", whiteSpace: "nowrap" }}>
-                      {formatBytes(f.sizeBytes)}
-                    </td>
-                    <td style={{ padding: "8px 16px", textAlign: "right", whiteSpace: "nowrap" }}>{f.fileCount}</td>
+      {view === "table"
+        ? groups.map((g) => (
+            <div key={g.drive || "__other"} style={{ ...cardStyle, marginBottom: 12, padding: 0, overflow: "hidden" }}>
+              <div
+                style={{
+                  padding: "10px 16px",
+                  borderBottom: "1px solid var(--border)",
+                  background: "var(--surface, var(--bg))",
+                }}
+              >
+                <DriveHeader drive={g.drive} label={driveLabel(g.drive)} count={g.items.length} sum={sumOf(g.items)} />
+              </div>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                <thead>
+                  <tr style={{ color: "var(--text-muted)", textAlign: "left" }}>
+                    <th style={{ padding: "8px 16px", fontWeight: 500 }}>文件夹</th>
+                    <th style={{ padding: "8px 16px", fontWeight: 500, width: 90, textAlign: "right" }}>占用</th>
+                    <th style={{ padding: "8px 16px", fontWeight: 500, width: 70, textAlign: "right" }}>文件数</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        );
-      })}
+                </thead>
+                <tbody>
+                  {g.items.map((f) => (
+                    <tr key={f.path} style={{ borderTop: "1px solid var(--border)" }}>
+                      <td style={{ padding: "8px 16px", wordBreak: "break-all" }} title={f.path}>
+                        {f.path}
+                      </td>
+                      <td style={{ padding: "8px 16px", textAlign: "right", whiteSpace: "nowrap" }}>
+                        {formatBytes(f.sizeBytes)}
+                      </td>
+                      <td style={{ padding: "8px 16px", textAlign: "right", whiteSpace: "nowrap" }}>{f.fileCount}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ))
+        : hasData && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              {groups.map((g) => (
+                <div key={g.drive || "__other"} style={{ ...cardStyle, padding: 0, overflow: "hidden" }}>
+                  <div
+                    style={{
+                      padding: "10px 16px",
+                      borderBottom: "1px solid var(--border)",
+                      background: "var(--surface, var(--bg))",
+                    }}
+                  >
+                    <DriveHeader drive={g.drive} label={driveLabel(g.drive)} count={g.items.length} sum={sumOf(g.items)} />
+                  </div>
+                  <div style={{ padding: 12 }}>
+                    <FolderTreemap stats={g.items} />
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+      {view === "treemap" && !hasData && (
+        <div style={{ fontSize: 13, color: "var(--text-muted)" }}>没有可绘制的文件夹数据。</div>
+      )}
     </div>
+  );
+}
+
+function sumOf(items: FolderStat[]): number {
+  return items.reduce((s, f) => s + f.sizeBytes, 0);
+}
+
+/** task-086 3.2：把一批 FolderStat 渲染成手写 SVG 矩形树图。 */
+function FolderTreemap({ stats }: { stats: FolderStat[] }) {
+  const W = 760;
+  const H = 300;
+  // 稳定取色：按路径哈希到一组固定色板（避免深色主题下用错颜色变量）。
+  const palette = ["#6366f1", "#0891b2", "#d97706", "#059669", "#db2777", "#7c3aed", "#ea580c", "#0d9488"];
+  const hash = (s: string) => {
+    let h = 0;
+    for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+    return Math.abs(h);
+  };
+  const data: TreemapDatum[] = stats.map((s) => ({
+    key: s.path,
+    label: s.path.split(/[\\/]/).filter(Boolean).pop() || s.path,
+    size: s.sizeBytes,
+    color: palette[hash(s.path) % palette.length],
+  }));
+  const rects = layoutTreemap(data, W, H);
+
+  return (
+    <svg
+      width="100%"
+      viewBox={`0 0 ${W} ${H}`}
+      role="img"
+      aria-label="文件夹占用矩形树图"
+      style={{ display: "block", maxWidth: "100%", height: "auto" }}
+      data-testid="folder-treemap"
+    >
+      {rects.map((r) => (
+        <g key={r.datum.key}>
+          <rect
+            x={r.x}
+            y={r.y}
+            width={r.w}
+            height={r.h}
+            fill={r.datum.color}
+            fillOpacity={0.85 - Math.min(r.depth, 4) * 0.12}
+            stroke="var(--bg)"
+            strokeWidth={0.75}
+          >
+            <title>{`${r.datum.label} · ${formatBytes(r.datum.size)}`}</title>
+          </rect>
+          {r.w > 48 && r.h > 16 && (
+            <text
+              x={r.x + 3}
+              y={r.y + 11}
+              fontSize={r.w > 120 ? 11 : 9}
+              fill="#ffffff"
+              fillOpacity={0.92}
+              style={{ pointerEvents: "none" }}
+            >
+              {r.datum.label.length > 18 ? r.datum.label.slice(0, 17) + "…" : r.datum.label}
+            </text>
+          )}
+        </g>
+      ))}
+    </svg>
   );
 }
 

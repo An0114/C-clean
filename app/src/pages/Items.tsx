@@ -317,6 +317,13 @@ export default function Items({
   // task-063：报告导出状态与提示。
   const [exporting, setExporting] = useState(false);
   const [exportMsg, setExportMsg] = useState("");
+  // task-086 1.1：用户自定义导出目录（PRD P0-6「用户自选保存位置」）。
+  // 空串 = 走后端默认 `data_root/reports`，与旧行为完全一致。
+  const [exportDir, setExportDir] = useState("");
+  // task-086 1.3：目标空闲空间（GB 输入）+ 推荐方案状态（PRD P1-8）。
+  const [targetGb, setTargetGb] = useState("");
+  const [recommending, setRecommending] = useState(false);
+  const [recommendMsg, setRecommendMsg] = useState("");
   const [result, setResult] = useState<ResultState | null>(null);
   // task-040 预览态。
   const [previewing, setPreviewing] = useState(false);
@@ -682,6 +689,8 @@ export default function Items({
         const path = await api<string>("report_export", {
           format: fmt,
           summary: result.summary,
+          // task-086 1.1：用户填了目录就导出到那里；没填不传（后端回落默认目录）。
+          ...(exportDir.trim() !== "" ? { path: exportDir.trim() } : {}),
         });
         setExportMsg(`已保存：${path}`);
       } catch (e) {
@@ -690,8 +699,34 @@ export default function Items({
         setExporting(false);
       }
     },
-    [result],
+    [result, exportDir],
   );
+
+  // task-086 1.3：目标空间推荐（PRD P1-8）。输入 GB → 调后端推荐 → 预勾选。
+  //
+  // 只负责「预勾选」，绝不直接执行清理——勾选后用户仍要点「清理已选」走
+  // 既有带风险闸 + 还原点的 execute 链路。
+  const generateRecommend = useCallback(async () => {
+    const gb = Number(targetGb);
+    if (!Number.isFinite(gb) || gb <= 0) {
+      setRecommendMsg("请输入大于 0 的目标空间（GB）");
+      return;
+    }
+    setRecommending(true);
+    setRecommendMsg("");
+    try {
+      const resp = await api<{
+        itemIds: number[];
+        message: string;
+      }>("recommend_plan", { targetMb: Math.round(gb * 1024) });
+      setSelected(new Set(resp.itemIds));
+      setRecommendMsg(resp.message);
+    } catch (e) {
+      setRecommendMsg(`推荐失败：${String(e)}`);
+    } finally {
+      setRecommending(false);
+    }
+  }, [targetGb]);
 
   // task-049 C10/C11：确认 → 关闭占用进程 → 自动重试删除。
   // C12：与 cleanup / preview 共用 busy，重试按钮同样纳入三态互斥。
@@ -937,6 +972,51 @@ export default function Items({
         </div>
       )}
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
+        {/* task-086 1.3：目标空间推荐（PRD P1-8）。
+            输入目标空闲空间（GB）→ 后端贪心组合出「刚好逼近目标」的清理条目并预勾选。
+            只做预勾选，用户仍要点「清理已选」走带风险闸 + 还原点的 execute 链路。 */}
+        <label
+          style={{ fontSize: 13, color: "var(--text)", display: "flex", alignItems: "center", gap: 6 }}
+        >
+          目标
+          <input
+            type="number"
+            min="0.1"
+            step="0.1"
+            value={targetGb}
+            onChange={(e) => setTargetGb(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void generateRecommend();
+            }}
+            placeholder="GB"
+            disabled={busy}
+            style={{
+              width: 64,
+              padding: "4px 8px",
+              borderRadius: 6,
+              border: "1px solid var(--border)",
+              background: "var(--surface)",
+              color: "var(--text)",
+            }}
+            aria-label="目标空闲空间（GB）"
+          />
+        </label>
+        <button
+          onClick={() => void generateRecommend()}
+          disabled={busy || recommending}
+          title="按目标空闲空间推荐最优清理组合并预勾选"
+          style={{
+            padding: "6px 14px",
+            borderRadius: 6,
+            border: "1px solid #7c3aed",
+            background: recommending ? "rgba(124, 58, 237, 0.3)" : "#7c3aed",
+            color: recommending ? "var(--text-muted)" : "#fff",
+            cursor: recommending ? "not-allowed" : "pointer",
+            fontSize: 13,
+          }}
+        >
+          {recommending ? "推荐中…" : "推荐组合"}
+        </button>
         <button onClick={() => void load(page, pageSize)} disabled={busy}>
           刷新
         </button>
@@ -1094,6 +1174,25 @@ export default function Items({
               >
                 导出 CSV
               </button>
+              {/* task-086 1.1：PC/脚本没有原生右键「另存为」的系统对话框，
+                  这里用可编辑目录输入框让用户自选保存位置（空 = 默认目录）。 */}
+              <input
+                type="text"
+                value={exportDir}
+                onChange={(e) => setExportDir(e.target.value)}
+                placeholder="导出目录（留空 = 默认 reports 目录）"
+                disabled={exporting}
+                style={{
+                  flex: 1,
+                  minWidth: 160,
+                  padding: "4px 8px",
+                  borderRadius: 5,
+                  border: "1px solid var(--border)",
+                  background: "var(--bg)",
+                  color: "var(--text)",
+                  fontSize: 12,
+                }}
+              />
               {exportMsg && (
                 <span style={{ fontSize: 11, color: "var(--text-muted)", wordBreak: "break-all" }}>
                   {exportMsg}
@@ -1240,6 +1339,23 @@ export default function Items({
       )}
 
       {status === "loading" && <div style={{ color: "var(--text-muted)", fontSize: 13 }}>加载中...</div>}
+
+      {/* task-086 1.3：推荐结果提示条（紫色系，与「推荐组合」按钮同色）。 */}
+      {recommendMsg && (
+        <div
+          style={{
+            marginBottom: 10,
+            padding: "8px 10px",
+            borderRadius: 6,
+            fontSize: 13,
+            background: "rgba(124, 58, 237, 0.12)",
+            color: "var(--text)",
+            border: "1px solid rgba(124, 58, 237, 0.35)",
+          }}
+        >
+          {recommendMsg}
+        </div>
+      )}
 
       {status === "error" && (
         <div style={{ color: "#ef4444", fontSize: 13 }}>

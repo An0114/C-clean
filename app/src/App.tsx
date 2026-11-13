@@ -6,6 +6,7 @@ import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { listen } from "@tauri-apps/api/event";
 import { api } from "./utils/invoke";
+import { t, useLang } from "./i18n";
 import BigFiles from "./pages/BigFiles";
 import Dashboard from "./pages/Dashboard";
 import History from "./pages/History";
@@ -164,6 +165,8 @@ class ErrorBoundary extends Component<
 }
 
 export default function App() {
+  // task-086 5.6：订阅语言变化（App 重渲染时整棵子树跟着换文案）。
+  useLang();
   const [tab, setTab] = useState<Tab>("dashboard");
 
   // task-061：主题。
@@ -257,6 +260,24 @@ export default function App() {
       unScan?.();
       unQuit?.();
     };
+  }, []);
+
+  // task-086 5.7：右键菜单以 `--scan-path` 拉起时，挂载后取走目录并扫描。
+  // 取走是原子操作（后端 take），StrictMode 双挂载不会扫两次。
+  useEffect(() => {
+    (async () => {
+      try {
+        const pending = await api<string | null>("take_pending_scan_path", {});
+        // 单测 mock 可能返回对象 / undefined：只有非空字符串才算有效参数，
+        // 否则会误触发单目录扫描并切到未准备好的清理页。
+        if (typeof pending !== "string" || !pending) return;
+        await api("context_scan_path", { path: pending });
+        // 扫描结果落进新的 cleanup_item，切到清理页即可看到。
+        setTab("items");
+      } catch {
+        // 非 Tauri 环境 / 扫描失败：不阻塞启动（用户可手动扫描）
+      }
+    })();
   }, []);
 
   // task-061：跟随系统主题的实时变化（用户在 Windows 设置里切换时不需重启应用）。
@@ -395,15 +416,21 @@ export default function App() {
       data-theme={resolvedTheme}
       style={{
         ...themeVars,
-        padding: 24,
+        padding: "clamp(12px, 1.6vw, 32px)", // task-086 3.4：高分屏下外边距随视口伸缩，避免 4K 下上下留白过大
         fontFamily: "system-ui, sans-serif",
+        // task-086 3.4：全局基准字号用 clamp 响应式。
+        // 以往是整除固定 px（13/12/24…），在 150%/200% 缩放下子元素 rem 基础值不放大、
+        // 而系统又把整个网页放大，导致字号相对区域显得偏小或偏大。这里给根设一个
+        // 随视口宽度平滑缩放的字号基准，`em` 派生子元素即可跟随（`rem` 以 html 为基准，
+        // 需要配合 injection 或根 rem 定义；本应用全内联样式，故用根 fontSize + em 兜底）。
+        fontSize: "clamp(13px, 0.8rem + 0.2vw, 16px)",
         background: tokens.bg,
         color: tokens.text,
         minHeight: "100vh",
         boxSizing: "border-box",
       }}
     >
-      <h1 style={{ margin: "0 0 16px" }}>C-Disk Cleaner</h1>
+      <h1 style={{ margin: "0 0 1em", fontSize: "clamp(18px, 2.2vw, 26px)" }}>C-Disk Cleaner</h1>
 
       {/* task-036：非阻塞更新 banner——有新版本才显示，不挡操作 */}
       {update && !dismissed && (
@@ -518,31 +545,31 @@ export default function App() {
 
       <div style={{ marginBottom: 16 }}>
         <button style={tabBtnStyle(tab === "dashboard")} onClick={() => setTab("dashboard")}>
-          仪表盘
+          {t("nav.dashboard")}
         </button>
         <button style={tabBtnStyle(tab === "items")} onClick={() => setTab("items")}>
-          清理
+          {t("nav.items")}
         </button>
         <button style={tabBtnStyle(tab === "plans")} onClick={() => setTab("plans")}>
-          方案
+          {t("nav.plans")}
         </button>
         <button style={tabBtnStyle(tab === "bigfiles")} onClick={() => setTab("bigfiles")}>
-          大文件
+          {t("nav.bigfiles")}
         </button>
         <button style={tabBtnStyle(tab === "residual")} onClick={() => setTab("residual")}>
-          残留
+          {t("nav.residual")}
         </button>
         <button style={tabBtnStyle(tab === "registry")} onClick={() => setTab("registry")}>
-          注册表
+          {t("nav.registry")}
         </button>
         <button style={tabBtnStyle(tab === "safebox")} onClick={() => setTab("safebox")}>
-          保险箱
+          {t("nav.safebox")}
         </button>
         <button style={tabBtnStyle(tab === "history")} onClick={() => setTab("history")}>
-          历史
+          {t("nav.history")}
         </button>
         <button style={tabBtnStyle(tab === "settings")} onClick={() => setTab("settings")}>
-          设置
+          {t("nav.settings")}
         </button>
       </div>
       <ErrorBoundary onReset={() => setTab("dashboard")}>

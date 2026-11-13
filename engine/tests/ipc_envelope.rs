@@ -32,7 +32,7 @@ fn all_error_codes_have_message() {
     }
     assert_eq!(
         error_codes::ALL.len(),
-        14,
-        "TRD §5.3 共 14 个错误码（task-084 加 2008 残留定位）"
+        15,
+        "TRD §5.3 共 14 个错误码（task-084 加 2008；task-086 组2 加 2009 符号链接拒绝）"
     );
 }

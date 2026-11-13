@@ -5,6 +5,8 @@
 //!   item 行写 `cleanup_item` 表并 emit 进度，done 行结束。
 
 pub mod big_files;
+/// task-086 5.5：增量扫描缓存（目录 mtime 签名命中即复用）。
+pub mod cache;
 /// 固定磁盘枚举（task-077，P2 多盘扫描起步）。
 pub mod drive_enum;
 /// Rust 原生扫描模块（task-074 起，架构债 R5）。

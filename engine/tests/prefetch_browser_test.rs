@@ -1,120 +1,11 @@
-//! task-075：prefetch / browser_cache Rust 重写的集成测试。
+//! task-086：prefetch / browser_cache 纯 Rust 扫描集成测试。
 //!
-//! # 三层验证
-//!
-//! 1. **browser_cache 与 ps1 真实对比**：把 `LOCALAPPDATA` 通过 `Command::env`
-//!    注入子进程，跑真实 `scan_browser_cache.ps1`，与 Rust `scan_at` 逐条比对
-//!    Edge / Chrome 两个类别的产出。**不 mock**——脚本改坏了这条会直接红。
-//! 2. **Firefox 是新增功能**：ps1 不扫 Firefox，这条单独断言「Rust 扫到、
-//!    ps1 没扫到」，把行为差异**显式记录下来**而不是让它悄悄存在。
-//! 3. **prefetch 的权限现实**：`C:\Windows\Prefetch` 普通用户读不了，
-//!    两边都返回空——这条验证「都返回空而不是报错」，不是「都扫到 0 条」。
-//!
-//! # 为什么 prefetch 不做「集合相等」对比
-//!
-//! 本机普通权限下两边都是空集，比对空集等于什么都没验证。真要对比得提权，
-//! 而扫描器不该为了测试要求管理员。所以 prefetch 只验证「不可读时两边行为一致」，
-//! 以及「可读时（CI 管理员）产出格式正确」。
-
-use std::path::{Path, PathBuf};
+//! 覆盖 Edge / Chrome / Firefox 缓存、空目录、Prefetch 缺失目录与字段打点，
+//! 以及真实目录扫描不 panic 的结构不变量。
 
 use engine::scan::modules::{browser_cache, prefetch};
 
 // ===================== 辅助 =====================
-
-/// 把路径规范化成长名小写再比对。
-///
-/// CI runner 用户名较长（如 `runneradmin`）会触发 8.3 短路径别名：
-/// `tempfile::tempdir()` 拿到 `C:\Users\RUNNER~1\...`，而 PowerShell `Get-ChildItem`
-/// 的 `FullName` 输出长名。两侧指同一文件仅字符串不同，用 `canonicalize` 解析到
-/// 最终路径后再比，消除短/长名差异。
-fn norm_path(p: &str) -> String {
-    std::fs::canonicalize(p)
-        .map(|c| {
-            c.to_string_lossy()
-                .trim_start_matches(r"\\?\")
-                .to_lowercase()
-        })
-        .unwrap_or_else(|_| p.to_lowercase())
-}
-
-/// 跑一个 ps1 脚本，返回它产出的 `(category, 小写路径, size, risk)` 集合。
-///
-/// `envs` 通过**子进程环境变量**注入（`Command::env`），不影响本进程。
-///
-/// 返回 `None` 表示本机跑不了 ps1（没有解释器 / 脚本缺失），调用方跳过。
-fn run_ps1(script_name: &str, envs: &[(&str, &Path)]) -> Option<Vec<(String, String, i64, i64)>> {
-    let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()?
-        .join("scripts")
-        .join(script_name);
-    if !script.exists() {
-        eprintln!(
-            "[跳过] 找不到 {}（scripts/ 不在预期位置）",
-            script.display()
-        );
-        return None;
-    }
-
-    let mut cmd = std::process::Command::new("powershell.exe");
-    cmd.args([
-        "-NoProfile",
-        "-NonInteractive",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-File",
-    ])
-    .arg(&script);
-    for (k, v) in envs {
-        cmd.env(k, v);
-    }
-
-    let out = cmd.output().ok()?;
-    if !out.status.success() {
-        eprintln!("[跳过] {script_name} 退出码 {:?}", out.status.code());
-        return None;
-    }
-
-    let text = String::from_utf8_lossy(&out.stdout);
-    let mut rows = Vec::new();
-    for line in text.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
-            continue;
-        };
-        if v.get("type").and_then(|t| t.as_str()) != Some("item") {
-            continue;
-        }
-        rows.push((
-            v.get("category")
-                .and_then(|c| c.as_str())
-                .unwrap_or("")
-                .to_string(),
-            norm_path(v.get("path").and_then(|p| p.as_str()).unwrap_or("")),
-            v.get("size_bytes").and_then(|s| s.as_i64()).unwrap_or(-1),
-            v.get("risk_level").and_then(|r| r.as_i64()).unwrap_or(-1),
-        ));
-    }
-    Some(rows)
-}
-
-/// 把 Rust 的 `ScanItem` 转成与 [`run_ps1`] 同形状的元组，便于逐条比对。
-fn as_rows(items: &[engine::scan::modules::ScanItem]) -> Vec<(String, String, i64, i64)> {
-    items
-        .iter()
-        .map(|i| {
-            (
-                i.category.clone(),
-                norm_path(&i.path),
-                i.size_bytes,
-                i.risk_level,
-            )
-        })
-        .collect()
-}
 
 /// 造一个假的 `%LOCALAPPDATA%`，含 Edge + Chrome 的 `Default\Cache`。
 fn make_lad_with_edge_and_chrome() -> tempfile::TempDir {
@@ -132,65 +23,46 @@ fn make_lad_with_edge_and_chrome() -> tempfile::TempDir {
     dir
 }
 
-// ===================== ① browser_cache：Rust vs ps1 真实对比 =====================
+// ===================== ① browser_cache：受控目录扫描 =====================
 
 #[test]
-fn browser_cache_rust_matches_ps1_on_edge_and_chrome() {
-    // 本任务「等价重写」的核心证据：同一份目录，两套实现的 Edge/Chrome 产出必须一致。
+fn browser_cache_scans_edge_and_chrome() {
     let lad = make_lad_with_edge_and_chrome();
-
-    let ps1 = match run_ps1("scan_browser_cache.ps1", &[("LOCALAPPDATA", lad.path())]) {
-        Some(r) => r,
-        None => return, // 本机跑不了 ps1，跳过（不是失败）
-    };
-
-    let rust = as_rows(&browser_cache::scan_at(lad.path()));
-
-    // ps1 不扫 Firefox，所以这里本来就只有 Edge/Chrome；显式过滤一次防将来变化
-    let mut a: Vec<_> = ps1
-        .into_iter()
-        .filter(|(c, ..)| c == browser_cache::CATEGORY_EDGE || c == browser_cache::CATEGORY_CHROME)
+    let items = browser_cache::scan_at(lad.path());
+    let caches: Vec<_> = items
+        .iter()
+        .filter(|i| {
+            i.category == browser_cache::CATEGORY_EDGE
+                || i.category == browser_cache::CATEGORY_CHROME
+        })
         .collect();
-    let mut b: Vec<_> = rust
-        .into_iter()
-        .filter(|(c, ..)| c == browser_cache::CATEGORY_EDGE || c == browser_cache::CATEGORY_CHROME)
-        .collect();
-    a.sort();
-    b.sort();
 
     assert_eq!(
-        a.len(),
+        caches.len(),
         3,
-        "ps1 应扫到 3 个文件（Edge 2 + Chrome 1）: {a:#?}"
+        "应扫到 Edge 2 个 + Chrome 1 个文件: {items:#?}"
     );
-    assert_eq!(a, b, "两套实现的产出必须完全一致\nps1={a:#?}\nrust={b:#?}");
-
-    let total: i64 = b.iter().map(|r| r.2).sum();
+    let total: i64 = caches.iter().map(|i| i.size_bytes).sum();
     assert_eq!(total, 100 + 50 + 70);
-    assert!(b.iter().all(|r| r.3 == browser_cache::RISK_L1));
+    assert!(caches
+        .iter()
+        .all(|i| i.risk_level == browser_cache::RISK_L1));
+    assert!(items
+        .iter()
+        .all(|i| i.module_code == browser_cache::MODULE_CODE));
 }
 
 #[test]
-fn browser_cache_rust_agrees_with_ps1_on_empty_localappdata() {
-    // 什么都没装：两边都该 0 条，且都不报错
+fn browser_cache_empty_localappdata_returns_empty() {
     let empty = tempfile::tempdir().unwrap();
-    let ps1 = match run_ps1("scan_browser_cache.ps1", &[("LOCALAPPDATA", empty.path())]) {
-        Some(r) => r,
-        None => return,
-    };
-    let rust = browser_cache::scan_at(empty.path());
-    assert!(ps1.is_empty(), "ps1 应产出 0 条: {ps1:#?}");
-    assert!(rust.is_empty(), "Rust 应产出 0 条: {rust:#?}");
+    let items = browser_cache::scan_at(empty.path());
+    assert!(items.is_empty(), "空 LOCALAPPDATA 应产出 0 条: {items:#?}");
 }
 
-// ===================== ② Firefox 是新增功能（行为差异要显式记录） =====================
+// ===================== ② Firefox 缓存 =====================
 
 #[test]
-fn firefox_cache_is_scanned_by_rust_but_not_by_ps1() {
-    // 这条用例存在的意义：**把「Rust 多扫了 Firefox」这件事写进测试**。
-    //
-    // 它不是回归保护，而是行为契约——将来如果有人怀疑「为什么 Rust 模式比
-    // ps1 模式多出几千条」，看这条就知道是设计如此，不是 bug。
+fn firefox_cache_is_scanned() {
     let lad = tempfile::tempdir().unwrap();
     let ff = lad
         .path()
@@ -198,35 +70,25 @@ fn firefox_cache_is_scanned_by_rust_but_not_by_ps1() {
     std::fs::create_dir_all(&ff).unwrap();
     std::fs::write(ff.join("A1B2"), vec![b'x'; 300]).unwrap();
 
-    let rust = browser_cache::scan_at(lad.path());
-    let ff_items: Vec<_> = rust
+    let items = browser_cache::scan_at(lad.path());
+    let ff_items: Vec<_> = items
         .iter()
         .filter(|i| i.category == browser_cache::CATEGORY_FIREFOX)
         .collect();
-    assert_eq!(ff_items.len(), 1, "Rust 应扫到 Firefox 缓存: {rust:#?}");
+    assert_eq!(ff_items.len(), 1, "应扫到 Firefox 缓存: {items:#?}");
     assert_eq!(ff_items[0].size_bytes, 300);
     assert_eq!(ff_items[0].risk_level, browser_cache::RISK_L1);
-
-    // ps1 对同一份目录应产出 0 条（它根本不看 Mozilla 目录）
-    if let Some(ps1) = run_ps1("scan_browser_cache.ps1", &[("LOCALAPPDATA", lad.path())]) {
-        assert!(
-            ps1.is_empty(),
-            "ps1 不该扫到 Firefox（本次是新增目标）: {ps1:#?}"
-        );
-    }
+    assert_eq!(ff_items[0].module_code, browser_cache::MODULE_CODE);
 }
 
-// ===================== ③ prefetch：权限现实 =====================
+// ===================== ③ prefetch：目录与权限边界 =====================
 
 #[test]
-fn prefetch_rust_and_ps1_both_return_empty_for_missing_dir() {
-    // Prefetch 目录不存在时（组策略关掉 / 目录被清空），两边都该返回空而不报错。
+fn prefetch_returns_empty_for_missing_dir() {
+    // Prefetch 目录不存在时（组策略关掉 / 目录被清空）应返回空而不报错。
     let empty_root = tempfile::tempdir().unwrap();
-    let rust = prefetch::scan_at(empty_root.path());
-    assert!(rust.is_empty());
-
-    // ps1 硬编码 `C:\Windows\Prefetch`，没法注入根目录，所以这里只验证 Rust 侧。
-    // ps1 侧的行为在下面 `prefetch_real_scan_never_panics` 里间接覆盖。
+    let items = prefetch::scan_at(empty_root.path());
+    assert!(items.is_empty());
 }
 
 #[test]

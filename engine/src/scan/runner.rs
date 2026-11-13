@@ -153,6 +153,8 @@ impl<'conn, 'emitter> ScanRunner<'conn, 'emitter> {
                         size_bytes,
                         risk_level,
                         None,
+                        None,
+                        None,
                     ) {
                         // DB 错视为致命：不继续往表里灌半份数据。
                         return Err(RunError::Db(e));
@@ -232,6 +234,8 @@ impl<'conn, 'emitter> ScanRunner<'conn, 'emitter> {
                 it.size_bytes,
                 it.risk_level,
                 it.username.as_deref(),
+                it.impact_note.as_deref(),
+                it.rebuild_note.as_deref(),
             )?;
             items_inserted += 1;
             // 饱和加法：文件大小之和理论上不会溢出，但扫描结果来自外部文件系统，
@@ -264,6 +268,10 @@ impl<'conn, 'emitter> ScanRunner<'conn, 'emitter> {
     /// 表 schema（v1__init.sql）：
     /// - `risk_level` 是 TEXT（'L0'/'L1'/'L2'），ps1 给的是 int，这里映射；
     /// - `description` NOT NULL，ps1 协议里没有该字段，给空串兜底。
+    ///
+    /// `impact_note` / `rebuild_note`：task-086 3.3 从规则库热取。Rust 路径（如
+    /// `software_cache`）传规则里的值；ps1 路径协议里没有，传 `None`。
+    #[allow(clippy::too_many_arguments)]
     fn insert_item(
         &self,
         module_code: &str,
@@ -272,6 +280,8 @@ impl<'conn, 'emitter> ScanRunner<'conn, 'emitter> {
         size_bytes: i64,
         risk_level: i64,
         username: Option<&str>,
+        impact_note: Option<&str>,
+        rebuild_note: Option<&str>,
     ) -> Result<(), rusqlite::Error> {
         let risk_text = match risk_level {
             0 => "L0",
@@ -288,8 +298,8 @@ impl<'conn, 'emitter> ScanRunner<'conn, 'emitter> {
         let extra =
             username.map(|u| format!(r#"{{"username":{u_json}}}"#, u_json = Self::json_escape(u)));
         self.conn.execute(
-            "INSERT INTO cleanup_item (session_id, module_code, category, path, size_bytes, risk_level, description, extra)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, '', ?7)",
+            "INSERT INTO cleanup_item (session_id, module_code, category, path, size_bytes, risk_level, description, extra, impact_note, rebuild_note)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, '', ?7, ?8, ?9)",
             rusqlite::params![
                 self.session_id,
                 module_code,
@@ -297,7 +307,9 @@ impl<'conn, 'emitter> ScanRunner<'conn, 'emitter> {
                 path,
                 size_bytes,
                 risk_text,
-                extra
+                extra,
+                impact_note,
+                rebuild_note
             ],
         )?;
         Ok(())

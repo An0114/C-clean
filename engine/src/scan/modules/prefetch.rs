@@ -18,10 +18,8 @@
 //!
 //! # 不做「按大小 / 修改时间筛选」
 //!
-//! 与 temp 模块同一判断：现有 ps1 没有任何筛选。加筛选会让
-//! `CCLEAN_RUST_PREFETCH=1` 和 `=0` 扫出的条目数不同，用户切换开关会看到
-//! 「清理项变少了」却不知道是阈值在起作用；而且阈值没有依据。
-//! 本任务是等价重写，不是改行为。
+//! 与 temp 模块同一判断：Prefetch 扫描定义为全量遍历，未经验证的阈值会
+//! 静默改变清理范围。要加筛选应作为独立产品决策。
 //!
 //! # 普通用户读不到这个目录是**正常现象**
 //!
@@ -88,6 +86,22 @@ pub fn scan_from_rules(rules: &CacheRules) -> Vec<ScanItem> {
         .into_iter()
         .flat_map(|r| {
             scan_dir(
+                std::path::Path::new(&r.root),
+                MODULE_CODE,
+                &r.category,
+                r.risk_level,
+            )
+        })
+        .collect()
+}
+
+/// task-086 5.5：规则驱动 + 增量缓存（生产主入口）。
+pub fn scan_from_rules_cached(rules: &CacheRules, conn: &rusqlite::Connection) -> Vec<ScanItem> {
+    crate::rules::schema::roots_for_categories(rules, OWN_CATEGORIES)
+        .into_iter()
+        .flat_map(|r| {
+            crate::scan::cache::scan_dir_cached(
+                conn,
                 std::path::Path::new(&r.root),
                 MODULE_CODE,
                 &r.category,

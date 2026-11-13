@@ -26,7 +26,8 @@ const ok = (data: unknown) => ({ code: 0, message: "ok", data });
 // set_prefs 是整体覆盖，提交体会带上这些默认值。断言需与之一致。
 const DEFAULT_EXTRA_PREFS = {
   autoCleanL1: false,
-  autoCleanL1Threshold: 500 * 1024 * 1024,
+  // task-086 1.2：自动清理默认阈值改为 5GB，与 Settings.tsx / engine::prefs 对齐。
+  autoCleanL1Threshold: 5 * 1024 * 1024 * 1024,
   devCacheGradleMaven: false,
 };
 

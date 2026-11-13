@@ -19,14 +19,6 @@ use engine::db::conn::open;
 use engine::ipc::progress::{ProgressEmitter, ScanProgress, ThrottledEmitter, VecEmitter};
 use engine::scan::ScanOrchestrator;
 
-const SCRIPTS: [&str; 5] = [
-    "scan_temp.ps1",
-    "scan_windows_update.ps1",
-    "scan_prefetch.ps1",
-    "scan_browser_cache.ps1",
-    "scan_dev_cache.ps1",
-];
-
 /// 造临时库 + 一条 scan_session，返回 (tmpdir, conn, session_id)。
 fn setup() -> (tempfile::TempDir, rusqlite::Connection, i64) {
     let dir = tempfile::tempdir().unwrap();
@@ -40,29 +32,6 @@ fn setup() -> (tempfile::TempDir, rusqlite::Connection, i64) {
     (dir, conn, sid)
 }
 
-/// 写一个假 ps1：吐 `items` 条 item 事件 + 一条 done。
-fn write_script(dir: &std::path::Path, name: &str, items: usize) {
-    let mut body =
-        String::from("[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)\n");
-    for i in 0..items {
-        body.push_str(&format!(
-            "[Console]::Out.WriteLine('{{\"type\":\"item\",\"module_code\":\"m\",\"category\":\"c\",\"path\":\"C:\\\\p{i}.tmp\",\"size_bytes\":10,\"risk_level\":1}}')\n"
-        ));
-    }
-    let total_bytes = items * 10;
-    body.push_str(&format!(
-        "[Console]::Out.WriteLine('{{\"type\":\"done\",\"module_code\":\"m\",\"total_items\":{items},\"total_bytes\":{total_bytes}}}')\n"
-    ));
-    std::fs::write(dir.join(name), body).unwrap();
-}
-
-/// 5 个脚本各 3 条 item。
-fn write_all_scripts(dir: &std::path::Path) {
-    for name in SCRIPTS {
-        write_script(dir, name, 3);
-    }
-}
-
 fn progress(percent: u8) -> ScanProgress {
     ScanProgress {
         session_id: 1,
@@ -72,26 +41,26 @@ fn progress(percent: u8) -> ScanProgress {
     }
 }
 
-/// **G7 主用例（关键回归）**：真实 `ThrottledEmitter` 包 `VecEmitter` 跑完整扫描，
+/// **G7 主用例（关键回归）**：真实 `ThrottledEmitter` 包 `VecEmitter` 跑完整 Rust 扫描，
 /// 断言最后到达订阅方的事件是 `percent === 100`，且事件数确实被节流压下来。
 #[test]
 fn throttled_orchestrator_tail_event_reaches_100() {
-    let (dir, conn, sid) = setup();
-    write_all_scripts(dir.path());
+    let (_dir, conn, sid) = setup();
+    let empty_scripts_dir = tempfile::tempdir().unwrap();
 
-    // 基线：裸 VecEmitter（不节流），拿到「节流前应有的事件数」。
+    // 基线：裸 VecEmitter（不节流），直接跑真实 Rust 模块，拿到全量事件数。
     let raw = VecEmitter::default();
     ScanOrchestrator::new(sid, &conn, &raw)
-        .run_all(dir.path())
+        .run_all(empty_scripts_dir.path())
         .unwrap();
     let raw_count = raw.snapshot().len();
     assert!(raw_count > 0, "基线必须至少 emit 一次");
 
-    // 被测：与生产同构的 ThrottledEmitter 包装层。
+    // 被测：同样的真实 Rust 扫描，加与生产同构的 ThrottledEmitter 包装层。
     let throttled_inner = VecEmitter::default();
     let throttled = ThrottledEmitter::new(throttled_inner);
     ScanOrchestrator::new(sid, &conn, &throttled)
-        .run_all(dir.path())
+        .run_all(empty_scripts_dir.path())
         .unwrap();
 
     let events = throttled.inner().snapshot();

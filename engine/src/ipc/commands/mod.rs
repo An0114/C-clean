@@ -6,6 +6,8 @@ pub mod big_files;
 pub mod draft;
 pub mod dry_run;
 pub mod plan;
+/// task-086 1.3：目标空间推荐组合（PRD P1-8）。
+pub mod recommend;
 pub mod registry_health;
 pub mod residual;
 pub mod scan_start;

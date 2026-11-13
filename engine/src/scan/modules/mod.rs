@@ -50,7 +50,11 @@ use std::path::{Path, PathBuf};
 ///
 /// 取值约定（与 ps1 一致）：`0` = L0 / `1` = L1 / `2` = L2。L3 不允许出现在
 /// 扫描结果里（白名单层会拦，见 `execute::whitelist`）。
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// task-086 5.5：加 `Serialize` / `Deserialize`，供增量扫描缓存以 JSON 落库
+/// （`scan_cache.items_json`）。字段名保持 snake_case——它只在 engine 内部
+/// 存取，不跨 IPC，不需要 camelCase。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ScanItem {
     /// 模块代码（`temp` / `browser_cache` / ...）。对应 `cleanup_item.module_code`。
     pub module_code: String,
@@ -69,6 +73,15 @@ pub struct ScanItem {
     /// （`ScanOrchestrator` 枚举 `C:\Users\*`）才需要标注，让它带 `Option` 可空
     /// 是最小侵入——既有构造点全部不动。
     pub username: Option<String>,
+    /// task-086 3.3：删除影响说明（「删了会怎样」）。
+    ///
+    /// 从规则库热取，而非前端硬编码：`software_cache` 扫到条目时把对应规则
+    /// 的 `impact_note` 透传到这里，`insert_item` 落库到 `cleanup_item.impact_note`。
+    /// 规则库热更新后再扫描，前端 hover 文案就跟着变。空值返回 `None`，
+    /// 前端退回 L1/L2/L3 通用文案。
+    pub impact_note: Option<String>,
+    /// task-086 3.3：重建方式（「怎么重建」）。语义同 [`impact_note`](Self::impact_note)。
+    pub rebuild_note: Option<String>,
 }
 
 impl ScanItem {
@@ -87,12 +100,28 @@ impl ScanItem {
             size_bytes,
             risk_level,
             username: None,
+            impact_note: None,
+            rebuild_note: None,
         }
     }
 
     /// task-084 C1：给条目标记用户名（跨用户扫描时调用）。
     pub fn with_username(mut self, username: impl Into<String>) -> Self {
         self.username = Some(username.into());
+        self
+    }
+
+    /// task-086 3.3：给条目标记删除影响说明 / 重建方式（规则库热取）。
+    ///
+    /// 只对能确定语义的模块（`software_cache`）调用；内置模块扫的都是「自动重建」
+    /// 的目录，语义已由前端 L1/L2 文案覆盖，不强制要求带。
+    pub fn with_impact(
+        mut self,
+        impact_note: impl Into<String>,
+        rebuild_note: impl Into<String>,
+    ) -> Self {
+        self.impact_note = Some(impact_note.into());
+        self.rebuild_note = Some(rebuild_note.into());
         self
     }
 }

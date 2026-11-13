@@ -5,15 +5,22 @@
 import { useCallback, useEffect, useState } from "react";
 import { formatTs } from "../utils/formatTimestamp";
 import { api } from "../utils/invoke";
+import { t } from "../i18n";
 
 // engine AuditLogEntry 是 #[serde(rename_all = "camelCase")]，前端用 camelCase。
 interface AuditLogEntry {
   id: number;
-  sessionId: number;
+  sessionId: number | null;
   eventType: string;
   path: string;
   detail: string | null;
   createdAt: number;
+}
+
+interface ScanSessionOption {
+  id: number;
+  startedAt: number;
+  status: string;
 }
 
 type Status = "loading" | "ok" | "error";
@@ -43,12 +50,15 @@ export default function History() {
   const [rows, setRows] = useState<AuditLogEntry[]>([]);
   const [offset, setOffset] = useState(0);
   const [msg, setMsg] = useState<string>("");
+  const [sessionId, setSessionId] = useState<number | null>(null);
+  const [sessions, setSessions] = useState<ScanSessionOption[]>([]);
 
   const load = useCallback(async (off: number) => {
     setStatus("loading");
     setMsg("");
     try {
       const r = await api<AuditLogEntry[]>("audit_log_list", {
+        sessionId,
         limit: PAGE_SIZE,
         offset: off,
       });
@@ -60,18 +70,44 @@ export default function History() {
       setMsg(String(e));
       setStatus("error");
     }
-  }, []);
+  }, [sessionId]);
 
   useEffect(() => {
     load(0);
   }, [load]);
+
+  useEffect(() => {
+    api<ScanSessionOption[]>("scan_session_list", {})
+      .then(setSessions)
+      .catch(() => setSessions([])); // 筛选选项加载失败不阻断历史列表
+  }, []);
 
   const canPrev = offset > 0;
   const canNext = rows.length === PAGE_SIZE; // 下一页可能还有
 
   return (
     <div>
-      <h2 style={{ margin: "0 0 12px", fontSize: 18 }}>清理历史</h2>
+      <h2 style={{ margin: "0 0 12px", fontSize: 18 }}>{t("page.history")}</h2>
+
+      <label style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 12, fontSize: 13 }}>
+        按扫描会话筛选
+        <select
+          data-testid="session-filter"
+          value={sessionId ?? ""}
+          onChange={(e) => {
+            setOffset(0);
+            setSessionId(e.target.value === "" ? null : Number(e.target.value));
+          }}
+          style={{ padding: "6px 8px", background: "var(--surface)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 6 }}
+        >
+          <option value="">全部会话</option>
+          {sessions.map((s) => (
+            <option key={s.id} value={s.id}>
+              #{s.id} · {formatTs(s.startedAt)} · {s.status}
+            </option>
+          ))}
+        </select>
+      </label>
 
       {status === "loading" && (
         <div style={{ opacity: 0.5, padding: 12 }}>

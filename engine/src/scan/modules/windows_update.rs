@@ -96,6 +96,22 @@ pub fn scan_from_rules(rules: &CacheRules) -> Vec<ScanItem> {
         .collect()
 }
 
+/// task-086 5.5：规则驱动 + 增量缓存（生产主入口）。
+pub fn scan_from_rules_cached(rules: &CacheRules, conn: &rusqlite::Connection) -> Vec<ScanItem> {
+    crate::rules::schema::roots_for_categories(rules, OWN_CATEGORIES)
+        .into_iter()
+        .flat_map(|r| {
+            crate::scan::cache::scan_dir_cached(
+                conn,
+                Path::new(&r.root),
+                MODULE_CODE,
+                &r.category,
+                r.risk_level,
+            )
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

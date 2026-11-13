@@ -37,7 +37,7 @@ fn setup_rules() -> tempfile::TempDir {
     dir
 }
 
-/// 外部红线命中（非内置 L3 路径）→ 2002，denial_reason 为 L3SystemPath（外部桶）。
+/// 外部红线命中（非内置 L3 路径）→ 2002，denial_reason 明确标记外部来源。
 #[test]
 fn dry_run_external_deny_blocks_path() {
     let dir = setup_rules();
@@ -60,12 +60,7 @@ fn dry_run_external_deny_blocks_path() {
     let data = env.data.expect("2002 需回传 blocked 明细");
     assert_eq!(data.blocked_by_l3.len(), 1);
     assert!(data.blocked_by_l3[0].path.contains("SomeSensitiveCache"));
-    // 外部红线命中归 L3SystemPath（非内置 L3PersonalDir）。
-    assert!(
-        data.blocked_by_l3[0].denial_reason.contains("L3SystemPath"),
-        "外部红线应记 L3SystemPath，实际: {}",
-        data.blocked_by_l3[0].denial_reason
-    );
+    assert_eq!(data.blocked_by_l3[0].denial_reason, "ExternalRedline");
 }
 
 /// 不传外部红线（&[]）时，内置 L3 桌面红线仍独立生效。
@@ -82,9 +77,10 @@ fn dry_run_no_external_deny_falls_back_to_builtin() {
     assert_eq!(env.code, 2002);
     let data = env.data.unwrap();
     assert_eq!(data.blocked_by_l3.len(), 1);
-    assert!(data.blocked_by_l3[0]
-        .denial_reason
-        .contains("L3PersonalDir"));
+    assert_eq!(
+        data.blocked_by_l3[0].denial_reason,
+        "BuiltinRedline(L3PersonalDir)"
+    );
 }
 
 /// 纯内置红线独立生效（不依赖 rules 文件）。

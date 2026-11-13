@@ -77,6 +77,9 @@ pub enum RuleError {
     /// 静态根落在 L3 红线内。
     #[error("路径模式指向受保护的位置（{0}），不允许作为清理规则")]
     DeniedPath(String),
+    /// task-086 5.4：UNC 网络盘规则只允许 L2（删除前必须确认）。
+    #[error("网络盘（UNC）路径只能使用 L2（需确认），不允许 L1 自动勾选")]
+    UncRequiresL2,
     /// 同一模式已存在。
     #[error("该路径模式已存在（规则不能重复）")]
     Duplicate,
@@ -183,6 +186,21 @@ pub fn static_root(pattern: &str) -> Option<PathBuf> {
     if root.trim().is_empty() {
         return None;
     }
+
+    // task-086 5.4：UNC 至少要 `<server>\<share>\<一级目录>`。
+    // 只到 share 等于「遍历整个共享」，与 `D:\*` 同属太宽泛。
+    if root.starts_with(r"\\") {
+        let parts: Vec<&str> = root.trim_start_matches('\\').split('\\').collect();
+        if parts.len() < 3
+            || parts[0].trim().is_empty()
+            || parts[1].trim().is_empty()
+            || parts[2..].iter().any(|p| p.trim().is_empty())
+        {
+            return None;
+        }
+        return Some(PathBuf::from(root));
+    }
+
     // 只认 `<字母>:\<非空>` 这种形态：`D:` 或 `D:\` 都算「太宽泛」
     let bytes = root.as_bytes();
     if bytes.len() < 4 || !bytes[0].is_ascii_alphabetic() || bytes[1] != b':' {
@@ -220,6 +238,15 @@ pub fn validate(name: &str, pattern: &str, risk_level: &str) -> Result<(), RuleE
 
     // 静态根：没有就拒（否则等于全盘遍历）
     let root = static_root(pattern).ok_or(RuleError::NoStaticRoot)?;
+
+    // task-086 5.4：网络盘（UNC）只能 L2。
+    //
+    // 理由：UNC 路径无法通过盘符判断「是不是用户自己的数据」，删除又要走
+    // copy+remove（跨设备、慢且可能中断）。强制 L2 让它**永远不会被「一键全选」**
+    // 自动带上，用户必须在预览里逐项确认。
+    if root.to_string_lossy().starts_with(r"\\") && risk != "L2" {
+        return Err(RuleError::UncRequiresL2);
+    }
 
     // 静态根不能落在 L3 红线里。用与执行链路**同一个**归一化 + 白名单，
     // 保证「创建时允许」与「执行时允许」是同一套判定，不会出现
@@ -716,6 +743,34 @@ mod tests {
         ] {
             assert_eq!(static_root(p), None, "{p} 不该有静态根");
         }
+    }
+
+    // ===== task-086 5.4：UNC 规则 =====
+
+    #[test]
+    fn static_root_accepts_unc_with_one_subdir() {
+        assert_eq!(
+            static_root(r"\\nas\backup\Games\*"),
+            Some(PathBuf::from(r"\\nas\backup\Games"))
+        );
+        // 只到共享根太宽泛
+        assert_eq!(static_root(r"\\nas\backup\*"), None);
+        assert_eq!(static_root(r"\\nas\*"), None);
+    }
+
+    #[test]
+    fn validate_forces_l2_for_unc_rules() {
+        // L1 会让网络盘条目进入「一键全选」，必须拒
+        assert_eq!(
+            validate("网络缓存", r"\\nas\backup\Games\*", "L1"),
+            Err(RuleError::UncRequiresL2)
+        );
+        assert!(validate("网络缓存", r"\\nas\backup\Games\*", "L2").is_ok());
+        // 红线仍然生效：指向共享里的个人目录要拒
+        assert!(matches!(
+            validate("坏规则", r"\\nas\backup\Users\alice\Desktop\*", "L2"),
+            Err(RuleError::DeniedPath(_))
+        ));
     }
 
     // ===== 校验 =====

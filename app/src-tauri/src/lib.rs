@@ -25,11 +25,34 @@ fn ping() -> &'static str {
 /// `engine/tests/auto_scan_test.rs` 的静态检查兜底）。
 const AUTO_SCAN_FLAG: &str = "--auto-scan";
 
+/// 读取 `--scan-path "<目录>"` 启动参数（task-086 5.7）。
+///
+/// 单独抽成函数便于单测：只做「找到 flag 就取下一个参数」这一件事，
+/// 空值 / 缺参数都返回 `None`（不 panic、不把下一个 flag 当路径）。
+fn read_scan_path_arg() -> Option<String> {
+    read_scan_path_from(std::env::args().skip(1))
+}
+
+/// 从任意参数序列里提取 `--scan-path` 的值（纯函数，单测入口）。
+fn read_scan_path_from<I: IntoIterator<Item = String>>(args: I) -> Option<String> {
+    let mut iter = args.into_iter();
+    while let Some(a) = iter.next() {
+        if a == engine::context_menu::ARG_SCAN_PATH {
+            return iter.next().filter(|v| !v.trim().is_empty());
+        }
+    }
+    None
+}
+
 /// Tauri 应用入口：构造默认 Builder 并挂上命令，随后阻塞运行窗口。
 pub fn run() {
     // 由 Windows 任务计划拉起时带 `--auto-scan`：不建窗口、不起轮询、不建托盘，
     // 跑一次扫描（只扫不删）后自行退出。
     let auto_scan_mode = std::env::args().any(|a| a == AUTO_SCAN_FLAG);
+
+    // task-086 5.7：右键菜单以 `--scan-path "<目录>"` 拉起主程序。
+    // 参数只在启动时消费一次，前端挂载后通过 `take_pending_scan_path` 取走。
+    let pending_scan_path = read_scan_path_arg();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -45,13 +68,17 @@ pub fn run() {
         ))
         .manage(std::sync::Mutex::new(0_i64))
         // task-007：在 setup 闭包里拿 AppHandle，构造全局进度 State 并注入。
-        // debt-cleanup-003：构造 AppPaths（data_root/rules_dir/scripts_dir/box_dir）并注入。
+        // debt-cleanup-003：构造 AppPaths（数据、规则、资源定位与保险箱目录）并注入。
         .setup(move |app| {
             let paths = paths::AppPaths::from_app(app.handle())?;
             app.manage(paths);
             app.manage(progress::ProgressState::new(app.handle().clone()));
             // task-063：扫描取消标志（scan_cancel 置位，scan_start 每轮复位）。
             app.manage(commands::ScanCancelState::default());
+            // task-086 5.7：暂存右键菜单传来的目录，等前端挂载后取走。
+            app.manage(commands::PendingScanPath(std::sync::Mutex::new(
+                pending_scan_path.clone(),
+            )));
 
             // task-083：启用软件感知扫描（进程级开关）。
             //
@@ -142,10 +169,13 @@ pub fn run() {
             commands::rules_has_backup,
             commands::rules_rollback,
             commands::audit_log_list,
+            commands::scan_session_list,
             commands::audit_log_stats,
             commands::cleanup_stats_trend,
             commands::cleanup_list_pending,
             commands::report_export,
+            // task-086 1.3：目标空间推荐组合（PRD P1-8）
+            commands::recommend_plan,
             commands::drive_usage,
             // task-077：多盘扫描——固定磁盘枚举（Dashboard 多环形图数据源）
             commands::drive_list,
@@ -195,7 +225,17 @@ pub fn run() {
             // task-084 C2：草稿暂存——勾选跨会话持久化 / 恢复 / 清空
             commands::draft_save,
             commands::draft_load,
-            commands::draft_clear
+            commands::draft_clear,
+            // task-086 5.7：右键菜单 + 单目录扫描
+            commands::context_menu_status,
+            commands::context_menu_set_enabled,
+            commands::context_scan_path,
+            commands::take_pending_scan_path,
+            // task-086 5.8：通知历史
+            commands::notification_history_list,
+            commands::notification_history_unread_count,
+            commands::notification_history_mark_read,
+            commands::notification_history_clear
         ])
         .run(tauri::generate_context!())
         .expect("error while running C-Disk Cleaner");
@@ -550,5 +590,27 @@ mod tests {
             tooltip_line(1, 3 * 1024 * 1024 * 1024),
             "C-Disk Cleaner · 待清理 1 项 · 累计释放 3.0 GB"
         );
+    }
+
+    // ===== task-086 5.7：右键菜单启动参数 =====
+
+    #[test]
+    fn scan_path_arg_is_extracted_after_flag() {
+        let args = vec![
+            "--scan-path".to_string(),
+            r"D:\My Folder".to_string(),
+            "--other".to_string(),
+        ];
+        assert_eq!(read_scan_path_from(args), Some(r"D:\My Folder".to_string()));
+    }
+
+    #[test]
+    fn scan_path_arg_missing_or_blank_returns_none() {
+        assert_eq!(read_scan_path_from(vec!["--scan-path".to_string()]), None);
+        assert_eq!(
+            read_scan_path_from(vec!["--scan-path".to_string(), "  ".to_string()]),
+            None
+        );
+        assert_eq!(read_scan_path_from(Vec::new()), None);
     }
 }

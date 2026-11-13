@@ -24,6 +24,7 @@ import { useCallback, useEffect, useState } from "react";
 import { formatBytes } from "../utils/formatBytes";
 import { formatTs } from "../utils/formatTimestamp";
 import { api, apiRaw } from "../utils/invoke";
+import { t } from "../i18n";
 
 /** 与 `engine::ipc::commands::plan::PlanSummary`（camelCase）对齐。 */
 export interface PlanSummary {
@@ -287,7 +288,7 @@ export default function PlanTemplates({ currentSelection, onApply }: Props) {
 
   return (
     <main style={{ padding: 20, maxWidth: 1000 }}>
-      <h1 style={{ margin: "0 0 4px" }}>方案模板</h1>
+      <h1 style={{ margin: "0 0 4px" }}>{t("page.plans")}</h1>
       <p style={{ color: "var(--text-muted)", margin: "0 0 16px", fontSize: 13 }}>
         把常清的那批条目存成方案，下次一键勾选。方案存的是**路径**而不是条目编号，
         所以重新扫描之后照样能用。

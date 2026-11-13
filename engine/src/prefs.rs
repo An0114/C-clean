@@ -25,8 +25,9 @@ const KEY_AUTO_CLEAN_L1: &str = "prefs.auto_clean_l1";
 /// B1 附表：自动清理的「预估释放阈值」（字节）。**预估释放 < 阈值就跳过本轮**——
 /// 建一次系统还原点要弹 UAC + 等几十秒，为清出几十 MB 不值得。
 const KEY_AUTO_CLEAN_L1_THRESHOLD: &str = "prefs.auto_clean_l1_threshold";
-/// 阈值默认 500 MB：正好是「值得为它弹一次 UAC 建还原点」的心理下限。
-pub const DEFAULT_AUTO_CLEAN_L1_THRESHOLD: i64 = 500 * 1024 * 1024;
+/// task-086 1.2：预估释放阈值默认 5 GB（PRD P1-1「≥5GB 才自动执行」）。
+/// 此前 task-084 默认 500 MB——建还原点要弹 UAC + 等几十秒，只清几百 MB 不值得。
+pub const DEFAULT_AUTO_CLEAN_L1_THRESHOLD: i64 = 5 * 1024 * 1024 * 1024;
 /// task-084 B5：dev_cache 模块是否同时识别 Gradle / Maven 缓存。**默认 false**——
 /// Gradle/Maven 依赖缓存动辄几百 MB，扫错会触发用户重下全部依赖，代价远超
 /// 普通 npm/pip 缓存，所以必须是用户显式拍板的独立开关（fail-closed）。
@@ -42,19 +43,32 @@ const KEY_LAST_AUTO_SCAN_AT: &str = "prefs.last_auto_scan_at";
 pub const SCAN_DAILY: &str = "daily";
 pub const SCAN_WEEKLY: &str = "weekly";
 pub const SCAN_MONTHLY: &str = "monthly";
+/// task-086 1.2：PRD P1-1 新增高频档位——每 30 分钟。
+pub const SCAN_HALF_HOUR: &str = "half_hour";
+/// task-086 1.2：PRD P1-1 新增档位——每小时。
+pub const SCAN_HOURLY: &str = "hourly";
 
-/// 归一化扫描间隔：只认三档，其余回落 `daily`。
+/// 归一化扫描间隔：只认五档，其余回落 `daily`。
+///
+/// task-084 StoreScanInterval 用 daily/weekly/monthly；task-086 把 PRD 要求的
+/// 30min/1h 也纳进来，于是 total 五档。monthly 保留是为了不把老用户已存的
+/// `monthly` 悄悄吞成 daily。
 pub fn normalize_scan_interval(raw: &str) -> String {
     match raw.trim().to_ascii_lowercase().as_str() {
         SCAN_WEEKLY => SCAN_WEEKLY.to_string(),
         SCAN_MONTHLY => SCAN_MONTHLY.to_string(),
+        SCAN_HALF_HOUR => SCAN_HALF_HOUR.to_string(),
+        SCAN_HOURLY => SCAN_HOURLY.to_string(),
         _ => SCAN_DAILY.to_string(),
     }
 }
 
-/// 间隔 → 秒数。`monthly` 取 30 天（不按自然月，避免 28/29/31 天的边界差异）。
+/// 间隔 → 秒数。`half_hour`=1800s、`hourly`=3600s；`monthly` 取 30 天
+/// （不按自然月，避免 28/29/31 天的边界差异）。
 pub fn interval_secs(interval: &str) -> i64 {
     match normalize_scan_interval(interval).as_str() {
+        SCAN_HALF_HOUR => 30 * 60,
+        SCAN_HOURLY => 60 * 60,
         SCAN_WEEKLY => 7 * 86_400,
         SCAN_MONTHLY => 30 * 86_400,
         _ => 86_400,
@@ -111,7 +125,7 @@ pub fn set_auto_clean_l1(conn: &Connection, on: bool) -> Result<(), String> {
     write_setting(conn, KEY_AUTO_CLEAN_L1, if on { "1" } else { "0" })
 }
 
-/// 读预估释放阈值（字节）。缺行 / 非数值 / ≤ 0 → 默认 500 MB。
+/// 读预估释放阈值（字节）。缺行 / 非数值 / ≤ 0 → 默认 5 GB（task-086 1.2）。
 /// ≤0 视为「默认」而非「关掉」：阈值是低级配置，用户配置 0 想表达的大概率是
 /// 「回到默认」，而不是「任何大小都清」——把 0 解释成最小阈值会诱导清垃圾。
 pub fn get_auto_clean_l1_threshold(conn: &Connection) -> i64 {
@@ -287,7 +301,7 @@ pub struct Prefs {
     #[serde(default)]
     pub auto_clean_l1: bool,
     /// B1 附表：预估释放阈值（字节）。预估释放 < 阈值就跳过本轮。
-    /// 默认 500 MB。`serde(default)`：旧前端不传该字段时按默认，避免 `set_prefs` 崩。
+    /// 默认 5 GB（task-086 1.2）。`serde(default)`：旧前端不传该字段时按默认，避免 `set_prefs` 崩。
     #[serde(default = "default_auto_clean_l1_threshold")]
     pub auto_clean_l1_threshold: i64,
     /// task-084 B5：dev_cache 是否同时识别 Gradle/Maven 缓存。默认 false（fail-closed）——
@@ -427,10 +441,7 @@ pub fn wildcard_match(pattern: &str, name: &str) -> bool {
     }
 
     // pattern 不以 * 结尾时，必须已经吃到字符串末尾
-    if !p.ends_with('*') && !rest.is_empty() {
-        return false;
-    }
-    true
+    p.ends_with('*') || rest.is_empty()
 }
 
 /// 判断「被关闭的可重启进程」是否**全部**落在白名单内。
@@ -742,11 +753,10 @@ mod tests {
         let (_dir, conn) = open_temp();
         assert_eq!(normalize_scan_interval("  WEEKLY "), "weekly");
         assert_eq!(normalize_scan_interval("monthly"), "monthly");
-        assert_eq!(
-            normalize_scan_interval("hourly"),
-            "daily",
-            "非法值回落 daily"
-        );
+        // task-086 1.2：half_hour / hourly 已是合法档位，不再回落 daily。
+        assert_eq!(normalize_scan_interval("hoUrLy"), "hourly");
+        assert_eq!(normalize_scan_interval("half_hour"), "half_hour");
+        assert_eq!(normalize_scan_interval("every-minute"), "daily");
         assert_eq!(normalize_scan_interval(""), "daily");
 
         conn.execute(
@@ -763,12 +773,25 @@ mod tests {
     }
 
     #[test]
-    fn interval_secs_maps_three_tiers() {
+    fn interval_secs_maps_five_tiers() {
+        assert_eq!(interval_secs("half_hour"), 1_800);
+        assert_eq!(interval_secs("hourly"), 3_600);
         assert_eq!(interval_secs("daily"), 86_400);
         assert_eq!(interval_secs("weekly"), 7 * 86_400);
         assert_eq!(interval_secs("monthly"), 30 * 86_400);
         // 非法值按 daily
         assert_eq!(interval_secs("bogus"), 86_400);
+    }
+
+    #[test]
+    fn auto_scan_due_five_tiers() {
+        let now = 1_000_000_000_i64;
+        // 30 分钟：距上次 29 分钟不到期，31 分钟到期。
+        assert!(!auto_scan_due(true, "half_hour", now - 29 * 60, now));
+        assert!(auto_scan_due(true, "half_hour", now - 31 * 60, now));
+        // 每小时：距上次 59 分钟不到期，61 分钟到期。
+        assert!(!auto_scan_due(true, "hourly", now - 59 * 60, now));
+        assert!(auto_scan_due(true, "hourly", now - 61 * 60, now));
     }
 
     #[test]
@@ -844,6 +867,13 @@ mod tests {
             Prefs::load(&conn).auto_clean_l1_threshold,
             DEFAULT_AUTO_CLEAN_L1_THRESHOLD
         );
+    }
+
+    #[test]
+    fn auto_clean_l1_threshold_default_is_five_gb() {
+        // task-086 1.2：PRD P1-1 要求「默认 5GB 才自动执行」——锁死这个值，
+        // 防止后续任务无意识改回 500 MB。
+        assert_eq!(DEFAULT_AUTO_CLEAN_L1_THRESHOLD, 5 * 1024 * 1024 * 1024);
     }
 
     #[test]

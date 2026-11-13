@@ -306,5 +306,20 @@ describe("大文件地图", () => {
       expect(screen.getByTestId("drive-header-C")).toBeTruthy();
       await waitFor(() => expect(mockedInvoke).toHaveBeenCalledWith("big_files_folder_stats", {}));
     });
+
+    it("task-086 3.2：文件夹分布可切换到矩形树图", async () => {
+      mockScan();
+      render(<BigFiles />);
+      await screen.findByTestId("category-hiberfil");
+
+      fireEvent.click(screen.getByRole("tab", { name: "文件夹分布" }));
+      await screen.findByText(/占用最多的文件夹/);
+
+      expect(screen.queryByTestId("folder-treemap")).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "矩形树图" }));
+      expect(await screen.findByTestId("folder-treemap")).toBeTruthy();
+      // 每个盘一组 treemap（FOLDER_STATS 里有 C / D 两组）
+      expect(screen.getAllByTestId("folder-treemap").length).toBeGreaterThan(0);
+    });
   });
 });

@@ -74,9 +74,12 @@ fn restore_fails_when_mkdir_impossible() {
 
     let err = restore_from_safe_box(&conn, &box_dir, id).unwrap_err();
     let msg = format!("{err}");
-    // 父路径不可用（父组件是文件）→ restore 必然失败（mkdir 或 rename 阶段）。
+    // 父路径不可用（父组件是文件）→ restore 必然失败（mkdir 或 move 阶段）。
     assert!(
-        msg.contains("无法创建父目录") || msg.contains("rename") || msg.contains("Io"),
-        "expected mkdir/rename error, got: {msg}"
+        msg.contains("无法创建父目录")
+            || msg.contains("move")
+            || msg.contains("rename")
+            || msg.contains("Io"),
+        "expected mkdir/move error, got: {msg}"
     );
 }

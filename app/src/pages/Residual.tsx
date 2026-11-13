@@ -19,6 +19,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { formatBytes } from "../utils/formatBytes";
 import { api, apiRaw } from "../utils/invoke";
+import { t } from "../i18n";
 
 /** 与 engine ResidualItem（camelCase）对齐。 */
 interface ResidualItem {
@@ -285,7 +286,7 @@ export default function Residual() {
         }}
       >
         <div>
-          <h1 style={{ margin: "0 0 4px" }}>残留扫描</h1>
+          <h1 style={{ margin: "0 0 4px" }}>{t("page.residual")}</h1>
           <p style={{ color: "var(--text-muted)", margin: 0, fontSize: 13 }}>
             比对「注册表卸载列表」与「安装目录」，找出两类残留。
             <strong>注册表键本工具永不代删</strong>，文件残留只能移入保险箱。

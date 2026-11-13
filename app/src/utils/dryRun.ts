@@ -52,17 +52,24 @@ export function formatBreakdownLine(row: BreakdownItem): string {
   return `${row.moduleCode} / ${row.category} · ${formatBytes(row.bytes)}`;
 }
 
-/** 已知 `DenialReason` 变体（Debug 串）→ 中文原因。 */
-const DENIAL_TEXT: Record<string, string> = {
+/** 内置红线的具体原因（`BuiltinRedline` 包裹的 Debug 串）→ 中文。 */
+const BUILTIN_DENIAL_TEXT: Record<string, string> = {
   L3PersonalDir: "个人目录（桌面/文档/下载等）",
   L3BrowserProfile: "浏览器用户数据目录",
   L3BrowserSensitive: "浏览器敏感文件（书签/密码/历史）",
   L3SystemPath: "系统关键路径",
   L3ReservedAction: "动作级禁令",
+};
+
+/** 无嵌套原因的拒绝变体 → 中文；文案明确展示规则来源。 */
+const DENIAL_TEXT: Record<string, string> = {
+  ExternalRedline: "外部红线：规则库拒绝路径",
+  UserRule: "用户规则：自定义拒绝规则",
   PathTraversal: "路径穿越/非法路径",
 };
 
-/** `ResolveFailed(String)` 变体前缀——带参数，无法走查表，须单独判。 */
+/** 带参变体前缀——无法走查表，须单独判。 */
+const BUILTIN_REDLINE_PREFIX = "BuiltinRedline(";
 const RESOLVE_FAILED_PREFIX = "ResolveFailed";
 
 /**
@@ -71,7 +78,11 @@ const RESOLVE_FAILED_PREFIX = "ResolveFailed";
  * 未知串原样返回：宁可显示原始标识，也不吞掉信息或抛错。
  */
 export function describeDenial(reason: string): string {
-  // 顺序要紧：ResolveFailed 带参数（如 `ResolveFailed("io error")`），须先于查表判断。
+  if (reason.startsWith(BUILTIN_REDLINE_PREFIX) && reason.endsWith(")")) {
+    const inner = reason.slice(BUILTIN_REDLINE_PREFIX.length, -1);
+    return `内置红线：${BUILTIN_DENIAL_TEXT[inner] ?? inner}`;
+  }
+  // ResolveFailed 带参数（如 `ResolveFailed("io error")`），须先于查表判断。
   if (reason.startsWith(RESOLVE_FAILED_PREFIX)) {
     const inner = reason
       .slice(RESOLVE_FAILED_PREFIX.length)

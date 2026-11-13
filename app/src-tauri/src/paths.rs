@@ -7,14 +7,14 @@
 //! - **只读资源**：`app.path().resource_dir()`（打包后随安装包分发）；
 //! - 首次启动把 bundled `rules/` 复制到 `data_root/rules/`，后续 `apply_update`
 //!   直接写 data_root 下的副本（不再动安装目录）；
-//! - `scripts/` 只读 ps1 脚本从 resource_dir 读。
+//! - 五个扫描模块已全量 Rust 化，安装包不再分发 ps1。
 //!
 //! task-050 修复点：`bundle.resources` 曾用数组式，Tauri 按「保留原目录结构」把
 //! `../../rules/x.json` 落到 `<安装目录>\_up_\_up_\rules\x.json`，而这里只认
-//! `<resource_dir>/rules` → 全新安装用户首次启动找不到规则与脚本。现在
+//! `<resource_dir>/rules` → 全新安装用户首次启动找不到规则。现在
 //! 打包侧改为映射式（见 `tauri.conf.json`），本文件同步把定位逻辑收紧：
 //! release 下**只认** `resource_dir()`，不再用 cwd 向上搜索（否则从任意含
-//! `rules/`+`scripts/` 的目录启动安装版就能劫持资源），也不再静默回退 `.`。
+//! `rules/` 的目录启动安装版就能劫持资源），也不再静默回退 `.`。
 
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager};
@@ -25,7 +25,7 @@ pub struct AppPaths {
     pub data_root: PathBuf,
     /// 可写 rules 目录（首次从 bundled 复制，后续 apply_update 写这里）。
     pub rules_dir: PathBuf,
-    /// 只读 ps1 扫描脚本目录。
+    /// 只读资源定位锚点；父目录用于查找提权 exe 和软件规则，目录本身可不存在。
     pub scripts_dir: PathBuf,
     /// 可写保险箱目录。
     pub box_dir: PathBuf,
@@ -47,14 +47,14 @@ fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// 返回第一个同时含 `rules/` 与 `scripts/` 的候选目录。
+/// 返回第一个含 `rules/` 的候选目录。
 ///
 /// 抽成纯函数是为了可单测：判定只看磁盘结构，不依赖真实 cwd / 真实安装目录。
 /// 用 `is_dir()` 而非 `exists()`——同名普通文件不算资源目录。
 fn pick_resource_root(candidates: &[PathBuf]) -> Option<PathBuf> {
     candidates
         .iter()
-        .find(|c| c.join("rules").is_dir() && c.join("scripts").is_dir())
+        .find(|c| c.join("rules").is_dir())
         .cloned()
 }
 
@@ -64,7 +64,7 @@ fn pick_resource_root(candidates: &[PathBuf]) -> Option<PathBuf> {
 ///   （见 `from_app()` 里的 `cfg` 分叉），因此 release 分支根本不碰 cwd；
 /// - **dev**：先 cwd 向上三级（`app/src-tauri/` → `app/` → workspace 根），再退到
 ///   `resource_dir()`。顺序有意为之：`tauri dev` 会把 resources 复制到
-///   `target/debug/`，若优先用它，改 `scripts/*.ps1` 后 dev 仍读陈旧副本；
+///   `target/debug/`，若优先用它，改 `rules/*.json` 后 dev 仍读陈旧副本；
 ///   而 `cargo run` 直跑时 target/debug 下没有资源，resource_dir 作兜底。
 fn build_candidates(resource_dir: Option<PathBuf>, dev_cwd: Option<PathBuf>) -> Vec<PathBuf> {
     let mut candidates: Vec<PathBuf> = Vec::new();
@@ -97,11 +97,8 @@ fn describe_missing(candidates: &[PathBuf]) -> String {
             if !c.join("rules").is_dir() {
                 missing.push("rules/");
             }
-            if !c.join("scripts").is_dir() {
-                missing.push("scripts/");
-            }
             if missing.is_empty() {
-                // 理论上不会走到：两条都在就不是缺失候选。
+                // 理论上不会走到：rules/ 存在就不是缺失候选。
                 format!("{} 结构完整", c.display())
             } else {
                 format!("{} 下缺少 {}", c.display(), missing.join(" 与 "))
@@ -110,7 +107,7 @@ fn describe_missing(candidates: &[PathBuf]) -> String {
         .collect();
 
     format!(
-        "找不到同时含 rules/ 与 scripts/ 的资源目录：{}；安装包可能不完整，请重新安装",
+        "找不到含 rules/ 的资源目录：{}；安装包可能不完整，请重新安装",
         details.join("；")
     )
 }
@@ -149,7 +146,7 @@ impl AppPaths {
             })?;
         }
 
-        // 4. scripts_dir：只读，随安装包版本走。
+        // 4. scripts_dir：资源定位锚点；ps1 删除后该目录可以不存在。
         let scripts_dir = resource_dir.join("scripts");
 
         // 5. safe_box：可写。
@@ -217,13 +214,13 @@ mod tests {
     }
 
     #[test]
-    fn pick_resource_root_只有_rules_返回_none() {
+    fn pick_resource_root_只有_rules_即可命中() {
         let tree = TempTree::new("only-rules");
         tree.mkdir("rules");
         assert_eq!(
             pick_resource_root(&[tree.dir()]),
-            None,
-            "只有 rules/ 不算完整资源根（缺 scripts/）"
+            Some(tree.dir()),
+            "ps1 删除后只含 rules/ 就是完整资源根"
         );
     }
 
@@ -272,10 +269,9 @@ mod tests {
     #[test]
     fn pick_resource_root_多候选取第一个命中() {
         let broken = TempTree::new("broken");
-        broken.mkdir("rules");
+        broken.mkdir("scripts");
         let good = TempTree::new("good");
         good.mkdir("rules");
-        good.mkdir("scripts");
 
         let candidates = vec![broken.dir(), good.dir()];
         assert_eq!(
@@ -303,7 +299,7 @@ mod tests {
             assert_eq!(
                 candidates,
                 vec![cwd.clone(), cwd.join(".."), cwd.join("../.."), res],
-                "dev 下应优先 cwd 三级（仓库内资源，ps1 改动即时生效），resource_dir 仅兜底"
+                "dev 下应优先 cwd 三级（仓库内规则改动即时生效），resource_dir 仅兜底"
             );
         } else {
             // release 编译时即便传入 cwd 也不追加，双保险。
@@ -313,21 +309,20 @@ mod tests {
 
     #[test]
     fn describe_missing_带绝对路径与缺失项() {
-        let only_rules = TempTree::new("missing-scripts");
-        only_rules.mkdir("rules");
-        let msg = describe_missing(&[only_rules.dir()]);
+        let missing_rules = TempTree::new("missing-rules");
+        let msg = describe_missing(&[missing_rules.dir()]);
 
         assert!(
-            msg.contains(&only_rules.dir().display().to_string()),
+            msg.contains(&missing_rules.dir().display().to_string()),
             "错误信息必须含候选绝对路径，实际：{msg}"
         );
         assert!(
-            msg.contains("scripts/"),
+            msg.contains("缺少 rules/"),
             "错误信息必须点出缺失项，实际：{msg}"
         );
         assert!(
-            !msg.contains("缺少 rules/"),
-            "rules/ 存在时不应报缺 rules/，实际：{msg}"
+            !msg.contains("scripts/"),
+            "ps1 删除后不应再要求 scripts/，实际：{msg}"
         );
         assert!(msg.contains("重新安装"), "应给出可操作建议，实际：{msg}");
     }

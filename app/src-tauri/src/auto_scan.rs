@@ -23,7 +23,8 @@ use std::time::Duration;
 
 use tauri::{AppHandle, Emitter, Manager};
 
-/// 轮询间隔：30 分钟。最小间隔是 daily，30 分钟精度足够。
+/// 轮询间隔：30 分钟。等于 UI 可选的最小档「每 30 分钟」（task-086 1.2 把
+/// half_hour / hourly 纳入了可选频率）——任何档位都能在 ≤30 分钟内被探测到。
 const TICK: Duration = Duration::from_secs(30 * 60);
 
 /// 启动后先等 60s：避开应用启动时的「检查更新 + 首屏加载」高峰，
@@ -364,7 +365,25 @@ pub fn run_once_for_task(app: &AppHandle) -> Result<String, String> {
 }
 
 /// 发系统通知。用官方 notification 插件（dev / 安装态都可用）。
+///
+/// task-086 5.8：发送前先落一条应用内历史。顺序是「先记录再发 toast」——
+/// 用户关掉/忽略系统通知后，仍能在 Settings 的「通知历史」里看到这次扫描结果。
 fn notify(app: &AppHandle, body: &str) -> Result<(), String> {
+    use tauri::Manager;
+    // 历史写入失败只记日志：不能因为一张历史表写不进去就不发系统通知。
+    if let Some(paths) = app.try_state::<crate::paths::AppPaths>() {
+        match engine::db::conn::open(&paths.data_root) {
+            Ok(conn) => {
+                if let Err(e) =
+                    engine::notification_history::record(&conn, "C-Disk Cleaner 自动扫描", body)
+                {
+                    eprintln!("[notify] 写入通知历史失败（忽略）: {e}");
+                }
+            }
+            Err(e) => eprintln!("[notify] 打开数据库失败，通知历史未记录: {e}"),
+        }
+    }
+
     use tauri_plugin_notification::NotificationExt;
     app.notification()
         .builder()

@@ -12,6 +12,8 @@ import { check as checkApp, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { getVersion } from "@tauri-apps/api/app";
 import { classifyUpdateError } from "../utils/update";
+import { formatTs } from "../utils/formatTimestamp";
+import { getLang, setLang, t, type Lang } from "../i18n";
 
 // task-042：后端返回 CheckUpdateResult（三态：upToDate / newVersion / offline）。
 type CheckStatus = "upToDate" | "newVersion" | "offline";
@@ -55,8 +57,8 @@ interface Prefs {
   devCacheGradleMaven: boolean;
 }
 
-/** task-061：自动扫描间隔，与 `engine::prefs::{SCAN_DAILY, SCAN_WEEKLY, SCAN_MONTHLY}` 对齐。 */
-type ScanInterval = "daily" | "weekly" | "monthly";
+/** task-061：自动扫描间隔，与 `engine::prefs::{SCAN_HALF_HOUR, SCAN_HOURLY, SCAN_DAILY, SCAN_WEEKLY, SCAN_MONTHLY}` 对齐。 */
+type ScanInterval = "half_hour" | "hourly" | "daily" | "weekly" | "monthly";
 
 /**
  * task-073：系统级定时扫描的任务状态。
@@ -70,14 +72,16 @@ interface AutoScanTaskStatus {
   time: string;
 }
 
-const SCAN_OPTIONS: { value: ScanInterval; label: string }[] = [
-  { value: "daily", label: "每天" },
-  { value: "weekly", label: "每周" },
-  { value: "monthly", label: "每月" },
+const SCAN_OPTIONS: { value: ScanInterval; label: string; hint: string }[] = [
+  { value: "half_hour", label: "每 30 分钟", hint: "高频：适合最近在频繁清理的场景" },
+  { value: "hourly", label: "每小时", hint: "应用运行期间每小时检查一次" },
+  { value: "daily", label: "每天", hint: "推荐：默认频率，兼顾及时与低打扰" },
+  { value: "weekly", label: "每周", hint: "低打扰：适合不常清理的用户" },
+  { value: "monthly", label: "每月", hint: "最低打扰" },
 ];
 
-/** task-084 B1：自动清理阈值默认 500 MB，与 `engine::prefs::DEFAULT_AUTO_CLEAN_L1_THRESHOLD` 对齐。 */
-const DEFAULT_AUTO_CLEAN_THRESHOLD = 500 * 1024 * 1024;
+/** task-086 1.2：自动清理阈值默认 5 GB，与 `engine::prefs::DEFAULT_AUTO_CLEAN_L1_THRESHOLD` 对齐。 */
+const DEFAULT_AUTO_CLEAN_THRESHOLD = 5 * 1024 * 1024 * 1024;
 
 /** task-061：主题三态。与 `engine::prefs::{THEME_SYSTEM, THEME_LIGHT, THEME_DARK}` 对齐。 */
 type ThemeMode = "system" | "light" | "dark";
@@ -256,7 +260,14 @@ export default function Settings({ onUpdateFound, onThemeChange }: SettingsProps
           theme: th === "light" || th === "dark" || th === "system" ? th : "system",
           autoScanEnabled: Boolean(p?.autoScanEnabled),
           autoScanInterval:
-          si === "weekly" || si === "monthly" || si === "daily" ? si : "daily",
+            // task-086 1.2：五档全合法；其余（脏数据 / 旧档位）回落 daily。
+            si === "half_hour" ||
+            si === "hourly" ||
+            si === "weekly" ||
+            si === "monthly" ||
+            si === "daily"
+              ? si
+              : "daily",
         // task-084 B1：布尔 `Boolean()` 兜 null；阈值 <1 由后端兜成默认，这里也做一道防御。
         autoCleanL1: Boolean(p?.autoCleanL1),
         autoCleanL1Threshold:
@@ -870,6 +881,38 @@ export default function Settings({ onUpdateFound, onThemeChange }: SettingsProps
         </div>
       </div>
 
+      {/* task-086 5.6：语言切换。纯客户端偏好，存 localStorage，立即生效。 */}
+      <h2 style={{ margin: "24px 0 12px", fontSize: 16 }}>{t("settings.language")}</h2>
+      <div style={cardStyle}>
+        <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 12, lineHeight: 1.6 }}>
+          {t("settings.languageHint")}
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          {(
+            [
+              ["zh-CN", t("settings.languageZh")],
+              ["en-US", t("settings.languageEn")],
+            ] as [Lang, string][]
+          ).map(([value, label]) => (
+            <button
+              key={value}
+              onClick={() => setLang(value)}
+              style={{
+                padding: "6px 14px",
+                borderRadius: 6,
+                fontSize: 13,
+                cursor: "pointer",
+                border: getLang() === value ? "1px solid var(--text)" : "1px solid var(--border)",
+                background: getLang() === value ? "var(--text)" : "var(--surface)",
+                color: getLang() === value ? "var(--surface)" : "var(--text)",
+              }}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
       {/* task-057：行为偏好卡片——默认关闭，新用户看不到任何自动重启行为 */}
       <h2 style={{ margin: "24px 0 12px", fontSize: 16 }}>行为偏好</h2>
       <div style={cardStyle}>
@@ -989,6 +1032,7 @@ export default function Settings({ onUpdateFound, onThemeChange }: SettingsProps
           {SCAN_OPTIONS.map((opt) => (
             <label
               key={opt.value}
+              title={opt.hint}
               style={{
                 display: "flex",
                 alignItems: "center",
@@ -1212,6 +1256,10 @@ export default function Settings({ onUpdateFound, onThemeChange }: SettingsProps
         </div>
       </div>
 
+      {/* task-086 5.7：右键菜单（放在「启动」之前，桌面集成与开机行为相邻）。
+          注意：不要挪到「开机自启」之后——旧测试按「最后一个 checkbox = 自启」定位。 */}
+      <ContextMenuCard />
+
       {/* task-062：开机自启。状态真实来源是系统注册表（autostart 插件），不存 prefs。 */}
       <h2 style={{ margin: "24px 0 12px", fontSize: 16 }}>启动</h2>
       <div style={cardStyle}>
@@ -1253,7 +1301,186 @@ export default function Settings({ onUpdateFound, onThemeChange }: SettingsProps
           </label>
         </div>
       </div>
+
+      {/* task-086 5.8：通知历史 */}
+      <NotificationHistoryCard />
     </div>
+  );
+}
+
+// ===================== task-086 5.7：右键菜单 =====================
+
+/** 资源管理器右键菜单开关（注册表状态是唯一真值源）。 */
+function ContextMenuCard() {
+  const [enabled, setEnabled] = useState<boolean | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    (async () => {
+      try {
+        setEnabled(await api<boolean>("context_menu_status", {}));
+      } catch {
+        // 非 Tauri 环境：按未注册显示
+        setEnabled(false);
+      }
+    })();
+  }, []);
+
+  const toggle = useCallback(async (next: boolean) => {
+    setSaving(true);
+    setError("");
+    try {
+      const v = await api<boolean>("context_menu_set_enabled", { enabled: next });
+      setEnabled(v);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setSaving(false);
+    }
+  }, []);
+
+  return (
+    <>
+      <h2 style={{ margin: "24px 0 12px", fontSize: 16 }}>{t("settings.contextMenu")}</h2>
+      <div style={cardStyle}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.6, paddingRight: 16 }}>
+            {t("settings.contextMenuHint")}
+          </div>
+          <label
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              cursor: saving || enabled === null ? "wait" : "pointer",
+              whiteSpace: "nowrap",
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={enabled === true}
+              disabled={saving || enabled === null}
+              onChange={(e) => void toggle(e.target.checked)}
+            />
+            <span style={{ fontSize: 12, color: "var(--text)" }}>
+              {enabled === true
+                ? t("settings.contextMenuOn")
+                : t("settings.contextMenuOff")}
+            </span>
+          </label>
+        </div>
+        {error && (
+          <div style={{ marginTop: 8, fontSize: 12, color: "#b91c1c" }}>{error}</div>
+        )}
+      </div>
+    </>
+  );
+}
+
+// ===================== task-086 5.8：通知历史 =====================
+
+interface NotificationEntry {
+  id: number;
+  ts: number;
+  title: string;
+  body: string;
+  read: boolean;
+}
+
+/** 通知历史列表（系统 toast 的应用内留存）。 */
+function NotificationHistoryCard() {
+  const [rows, setRows] = useState<NotificationEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      // 单测 mock / 旧后端可能返回 undefined：一律退化成空列表，避免渲染期崩溃。
+      const list =
+        (await api<NotificationEntry[] | null>("notification_history_list", { limit: 50 })) ?? [];
+      setRows(list);
+      // 打开列表即视为已读：徽标不该在用户已经看过后还亮着。
+      if (list.some((r) => !r.read)) {
+        await api("notification_history_mark_read", {});
+      }
+    } catch {
+      // 非 Tauri / 旧库：显示空列表即可
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const clear = useCallback(async () => {
+    setBusy(true);
+    try {
+      await api("notification_history_clear", {});
+      setRows([]);
+    } catch {
+      // 清空失败保持原列表，用户可再点一次
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+
+  return (
+    <>
+      <h2 style={{ margin: "24px 0 12px", fontSize: 16 }}>{t("settings.notifications")}</h2>
+      <div style={cardStyle}>
+        {loading ? (
+          <div style={{ fontSize: 12, color: "var(--text-muted)" }}>加载中…</div>
+        ) : rows.length === 0 ? (
+          <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+            {t("settings.notificationsEmpty")}
+          </div>
+        ) : (
+          <>
+            <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 8 }}>
+              <button
+                onClick={() => void clear()}
+                disabled={busy}
+                style={{
+                  fontSize: 12,
+                  padding: "4px 10px",
+                  borderRadius: 6,
+                  border: "1px solid var(--border)",
+                  background: "var(--surface)",
+                  color: "var(--text)",
+                  cursor: busy ? "wait" : "pointer",
+                }}
+              >
+                {t("settings.notificationsClear")}
+              </button>
+            </div>
+            <div style={{ maxHeight: 240, overflowY: "auto" }}>
+              {rows.map((r) => (
+                <div
+                  key={r.id}
+                  style={{
+                    padding: "8px 0",
+                    borderTop: "1px solid var(--border)",
+                    fontSize: 12,
+                    lineHeight: 1.6,
+                  }}
+                >
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
+                    <span style={{ fontWeight: 600, color: "var(--text)" }}>{r.title}</span>
+                    <span style={{ color: "var(--text-muted)", whiteSpace: "nowrap" }}>
+                      {formatTs(r.ts)}
+                    </span>
+                  </div>
+                  <div style={{ color: "var(--text-muted)" }}>{r.body}</div>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+      </div>
+    </>
   );
 }
 

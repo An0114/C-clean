@@ -45,9 +45,8 @@
 //!
 //! # 为什么不按「文件大小 / 修改时间」筛选
 //!
-//! 与 temp / prefetch / browser_cache 同一判断：ps1 没有任何筛选，加阈值会让
-//! `CCLEAN_RUST_DEV_CACHE=1` 和 `=0` 扫出的条目数不同，用户切换开关会看到
-//! 「清理项变少了」却不知道是阈值在起作用。本任务是等价重写，不是改行为。
+//! 与 temp / prefetch / browser_cache 同一判断：缓存扫描定义为全量遍历，
+//! 未经验证的阈值会静默改变清理范围。要加筛选应作为独立产品决策。
 //!
 //! # 全部 L1
 //!
@@ -159,6 +158,22 @@ pub fn scan_from_rules(rules: &CacheRules) -> Vec<ScanItem> {
     crate::rules::schema::roots_for_categories(rules, OWN_CATEGORIES)
         .into_iter()
         .flat_map(|r| scan_dir(Path::new(&r.root), MODULE_CODE, &r.category, r.risk_level))
+        .collect()
+}
+
+/// task-086 5.5：规则驱动 + 增量缓存（生产主入口）。
+pub fn scan_from_rules_cached(rules: &CacheRules, conn: &rusqlite::Connection) -> Vec<ScanItem> {
+    crate::rules::schema::roots_for_categories(rules, OWN_CATEGORIES)
+        .into_iter()
+        .flat_map(|r| {
+            crate::scan::cache::scan_dir_cached(
+                conn,
+                Path::new(&r.root),
+                MODULE_CODE,
+                &r.category,
+                r.risk_level,
+            )
+        })
         .collect()
 }
 

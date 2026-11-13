@@ -635,8 +635,8 @@ fn do_scan(
         orch = orch.with_builtin_prefixes(engine::rules::loader::builtin_dir_prefixes(&l));
     }
 
-    // 脚本目录：CLI 便携版里 5 个模块全走 Rust，ps1 只是回退。找不到脚本目录也
-    // 不影响（`run_all` 只在「回退到 ps1」时才需要它）。
+    // 资源定位锚点：run_all 仅用它的父目录查找同级 software_rules.json，
+    // 五个内置模块始终走 Rust，不要求 scripts 目录真实存在。
     let scripts_dir = {
         let d = exe_dir.join("scripts");
         if d.is_dir() {

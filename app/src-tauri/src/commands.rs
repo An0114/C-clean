@@ -11,7 +11,8 @@
 use std::path::Path;
 
 use engine::audit_log::{
-    cleanup_stats, list_audit_log, AuditLogEntry, AuditLogFilter, CleanupStats,
+    cleanup_stats, list_audit_log, list_scan_sessions, AuditLogEntry, AuditLogFilter, CleanupStats,
+    ScanSessionOption,
 };
 use engine::execute::list_pending::{list_pending_page_by_drive, PendingPage, DEFAULT_PAGE_SIZE};
 use engine::ipc::commands::dry_run::{handle_dry_run, DryRunReq, DryRunResp};
@@ -723,6 +724,27 @@ pub async fn audit_log_list(
     }
 }
 
+/// `scan_session.list`：History 按扫描会话筛选的下拉选项（只读）。
+#[tauri::command]
+pub async fn scan_session_list(
+    paths: tauri::State<'_, AppPaths>,
+) -> Result<Envelope<Vec<ScanSessionOption>>, String> {
+    let conn = match engine::db::conn::open(&paths.data_root) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[scan_session_list] open db: {e}");
+            return Ok(Envelope::err(INTERNAL));
+        }
+    };
+    match list_scan_sessions(&conn) {
+        Ok(v) => Ok(Envelope::ok(v)),
+        Err(e) => {
+            eprintln!("[scan_session_list] list: {e}");
+            Ok(Envelope::err(INTERNAL))
+        }
+    }
+}
+
 /// `audit_log.stats`：返回清理结果聚合数字（total_bytes / success / fail / sessions）。
 #[tauri::command]
 pub async fn audit_log_stats(
@@ -809,6 +831,34 @@ pub async fn cleanup_list_pending(
     }
 }
 
+/// `recommend_plan`：目标空间推荐组合（task-086 1.3 / PRD P1-8）。
+///
+/// 输入用户想要的空闲空间（MB），返回「推荐勾选哪些清理项 + 预计达成度」——
+/// 纯推荐，不删任何东西，前端只负责预勾选、用户照旧手动确认后才执行。
+///
+/// `target_mb` 由前端把「GB 输入 ×1024」换算而来（如输入 20 → 传 20480）。
+#[tauri::command]
+pub async fn recommend_plan(
+    target_mb: i64,
+    paths: tauri::State<'_, AppPaths>,
+) -> Result<Envelope<engine::ipc::commands::recommend::RecommendPlan>, String> {
+    let conn = match engine::db::conn::open(&paths.data_root) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[recommend_plan] open db: {e}");
+            return Ok(Envelope::err(INTERNAL));
+        }
+    };
+    let target_bytes = target_mb.max(0).saturating_mul(1024 * 1024);
+    match engine::ipc::commands::recommend::recommend_plan(&conn, target_bytes) {
+        Ok(v) => Ok(Envelope::ok(v)),
+        Err(e) => {
+            eprintln!("[recommend_plan] compute: {e}");
+            Ok(Envelope::err(INTERNAL))
+        }
+    }
+}
+
 /// `get_prefs`：读用户偏好（task-057）。新用户缺行时默认 auto_restart_on_close=false。
 #[tauri::command]
 pub async fn get_prefs(
@@ -888,12 +938,17 @@ pub async fn set_prefs(
 /// 行在删除后状态已变，重建不出「哪条失败、为什么」），所以由前端把结果原样传回。
 /// 这也让「导出」是纯函数式的——不依赖任何后端会话状态。
 ///
+/// **落盘位置**：`path` 给定时写到用户指定目录（目录不存在会自动创建），
+/// 这是 PRD P0-6「用户自选保存位置」的能力；不传时回落到 `data_root/reports`
+/// （早起版本固定目录的既有行为，前端仍可只依赖默认目录）。
+///
 /// 返回落盘后的**绝对路径**，前端可展示给用户「报告已保存到 …」。
 #[tauri::command]
 pub async fn report_export(
     format: String,
     summary: engine::execute::executor::ExecuteSummary,
     drive: Option<String>,
+    path: Option<String>,
     paths: tauri::State<'_, AppPaths>,
 ) -> Result<Envelope<String>, String> {
     let drive = drive.unwrap_or_else(|| "C".to_string());
@@ -920,13 +975,60 @@ pub async fn report_export(
     };
 
     let filename = format!("cleanup-report-{now}.{ext}");
-    let dir = paths.data_root.join("reports");
+    // task-086 1.1：用户指定路径优先；空白 / 未传回落默认 `data_root/reports`。
+    let dir = resolve_export_dir(path.as_deref(), &paths.data_root);
     match engine::report::write_report(&dir, &filename, &content) {
         Ok(p) => Ok(Envelope::ok(p.to_string_lossy().to_string())),
         Err(e) => {
             eprintln!("[report_export] {e}");
             Ok(Envelope::err(INTERNAL))
         }
+    }
+}
+
+/// task-086 1.1：解析报告导出目录。
+///
+/// 纯函数抽出是为了可单测：`path` 给非空目录时用它（自动 trim、忽略纯空白），
+/// 否则回落 `data_root/reports`（PRD P0-6 之前的固定目录行为）。
+fn resolve_export_dir(path: Option<&str>, data_root: &std::path::Path) -> std::path::PathBuf {
+    match path.map(str::trim).filter(|p| !p.is_empty()) {
+        Some(p) => std::path::PathBuf::from(p),
+        None => data_root.join("reports"),
+    }
+}
+
+#[cfg(test)]
+mod report_export_tests {
+    use super::resolve_export_dir;
+
+    fn mkdata() -> std::path::PathBuf {
+        std::env::temp_dir().join("cdisk-report-test")
+    }
+
+    #[test]
+    fn none_falls_back_to_default() {
+        let dir = resolve_export_dir(None, &mkdata());
+        assert_eq!(dir, mkdata().join("reports"));
+    }
+
+    #[test]
+    fn blank_and_whitespace_fall_back() {
+        let d1 = resolve_export_dir(Some("   "), &mkdata());
+        assert_eq!(d1, mkdata().join("reports"));
+        let d2 = resolve_export_dir(Some(""), &mkdata());
+        assert_eq!(d2, mkdata().join("reports"));
+    }
+
+    #[test]
+    fn custom_path_is_trimmed_and_used() {
+        let dir = resolve_export_dir(Some("  D:\\my\\exports  "), &mkdata());
+        assert_eq!(dir, std::path::PathBuf::from("D:\\my\\exports"));
+    }
+
+    #[test]
+    fn custom_relative_path_is_preserved() {
+        let dir = resolve_export_dir(Some("./out"), &mkdata());
+        assert_eq!(dir, std::path::PathBuf::from("./out"));
     }
 }
 
@@ -1747,4 +1849,154 @@ pub async fn draft_clear(paths: tauri::State<'_, AppPaths>) -> Result<Envelope<(
     let conn = engine::db::conn::open(&paths.data_root).map_err(|e| e.to_string())?;
     engine::ipc::commands::draft::clear_selections(&conn).map_err(|e| e.to_string())?;
     Ok(Envelope::ok(()))
+}
+
+// ===================== task-086 5.7：右键菜单 + 单目录扫描 =====================
+//
+// 注册表写入在 engine（`context_menu`），本层只做三件事：
+//   1. 把「当前 exe 路径」交给 engine；
+//   2. 启动参数 `--scan-path` 暂存到 State，等前端挂载后取走（见 lib.rs）；
+//   3. 单目录扫描建 session + 入库，前端切到 Items 就能看到。
+
+/// 启动参数里的待扫描目录（`--scan-path "%1"`）。
+///
+/// 用 `Mutex<Option<String>>` 而不是一次性全局：前端可能在 StrictMode 下
+/// 挂载两次，`take` 语义保证只有第一次拿到——重复消费会触发两次相同的扫描。
+#[derive(Default)]
+pub struct PendingScanPath(pub std::sync::Mutex<Option<String>>);
+
+/// 取走启动时携带的待扫描目录（没有则返回 null）。
+#[tauri::command]
+pub fn take_pending_scan_path(
+    pending: tauri::State<'_, PendingScanPath>,
+) -> Result<Envelope<Option<String>>, String> {
+    let mut guard = pending.0.lock().map_err(|e| e.to_string())?;
+    Ok(Envelope::ok(guard.take()))
+}
+
+/// 右键菜单是否已注册。
+#[tauri::command]
+pub fn context_menu_status() -> Result<Envelope<bool>, String> {
+    Ok(Envelope::ok(engine::context_menu::is_installed()))
+}
+
+/// 开启 / 关闭右键菜单注册（写 `HKCU\Software\Classes\Directory\shell\CClean`）。
+#[tauri::command]
+pub fn context_menu_set_enabled(enabled: bool) -> Result<Envelope<bool>, String> {
+    let result = if enabled {
+        let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
+        engine::context_menu::install(&exe)
+    } else {
+        engine::context_menu::uninstall()
+    };
+    match result {
+        Ok(()) => Ok(Envelope::ok(engine::context_menu::is_installed())),
+        Err(e) => {
+            eprintln!("[context_menu] 设置失败: {e}");
+            Ok(Envelope::err(INTERNAL))
+        }
+    }
+}
+
+/// `context_scan_path`：扫描右键菜单指定的目录，写入一个新扫描会话。
+///
+/// 风险等级固定 L2（见 `engine::context_menu`），用户仍需在 Items 页确认后清理。
+#[tauri::command]
+pub async fn context_scan_path(
+    path: String,
+    paths: tauri::State<'_, AppPaths>,
+) -> Result<Envelope<engine::context_menu::ContextScanResp>, String> {
+    let items = match engine::context_menu::collect_items(&path) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("[context_scan_path] {e}");
+            return Ok(Envelope::err(INTERNAL));
+        }
+    };
+
+    let conn = engine::db::conn::open(&paths.data_root).map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT INTO scan_session (started_at, status, scope) VALUES (unixepoch(), 'completed', 'context_menu')",
+        [],
+    )
+    .map_err(|e| e.to_string())?;
+    let session_id = conn.last_insert_rowid();
+
+    let emitter = engine::ipc::progress::NoopEmitter;
+    let runner =
+        engine::scan::ScanRunner::new(session_id, &conn, &emitter).with_percent_span(0, 100);
+    match runner.insert_batch(&items) {
+        Ok(s) => Ok(Envelope::ok(engine::context_menu::ContextScanResp {
+            session_id,
+            items: s.items_inserted,
+            bytes: s.total_bytes,
+        })),
+        Err(e) => {
+            eprintln!("[context_scan_path] 入库失败: {e}");
+            Ok(Envelope::err(INTERNAL))
+        }
+    }
+}
+
+// ===================== task-086 5.8：通知历史 =====================
+
+/// 列出最近通知（默认 50 条，最多 200 条）。
+#[tauri::command]
+pub async fn notification_history_list(
+    limit: Option<u32>,
+    paths: tauri::State<'_, AppPaths>,
+) -> Result<Envelope<Vec<engine::notification_history::NotificationEntry>>, String> {
+    let conn = engine::db::conn::open(&paths.data_root).map_err(|e| e.to_string())?;
+    match engine::notification_history::list(&conn, limit.unwrap_or(50)) {
+        Ok(v) => Ok(Envelope::ok(v)),
+        Err(e) => {
+            eprintln!("[notification_history_list] {e}");
+            Ok(Envelope::err(INTERNAL))
+        }
+    }
+}
+
+/// 未读条数（Settings 入口徽标）。
+#[tauri::command]
+pub async fn notification_history_unread_count(
+    paths: tauri::State<'_, AppPaths>,
+) -> Result<Envelope<i64>, String> {
+    let conn = engine::db::conn::open(&paths.data_root).map_err(|e| e.to_string())?;
+    match engine::notification_history::unread_count(&conn) {
+        Ok(n) => Ok(Envelope::ok(n)),
+        Err(e) => {
+            eprintln!("[notification_history_unread_count] {e}");
+            Ok(Envelope::err(INTERNAL))
+        }
+    }
+}
+
+/// 全部标记为已读。
+#[tauri::command]
+pub async fn notification_history_mark_read(
+    paths: tauri::State<'_, AppPaths>,
+) -> Result<Envelope<usize>, String> {
+    let conn = engine::db::conn::open(&paths.data_root).map_err(|e| e.to_string())?;
+    match engine::notification_history::mark_all_read(&conn) {
+        Ok(n) => Ok(Envelope::ok(n)),
+        Err(e) => {
+            eprintln!("[notification_history_mark_read] {e}");
+            Ok(Envelope::err(INTERNAL))
+        }
+    }
+}
+
+/// 清空历史。
+#[tauri::command]
+pub async fn notification_history_clear(
+    paths: tauri::State<'_, AppPaths>,
+) -> Result<Envelope<usize>, String> {
+    let conn = engine::db::conn::open(&paths.data_root).map_err(|e| e.to_string())?;
+    match engine::notification_history::clear(&conn) {
+        Ok(n) => Ok(Envelope::ok(n)),
+        Err(e) => {
+            eprintln!("[notification_history_clear] {e}");
+            Ok(Envelope::err(INTERNAL))
+        }
+    }
 }
