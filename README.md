@@ -149,11 +149,13 @@ C-clean/
 - **不可逆操作前留退路**：L2 项与 WinSxS 清理前自动创建系统还原点，建点失败默认中止；删注册表启动项前自动导出 `.reg` 备份。
 - **最小权限**：主进程普通权限，仅写操作按需 UAC 提权，无常驻提权进程；提权程序只认白名单命令、参数硬编码，外部无法注入额外参数。
 - **全本地处理**：无遥测、无云上传、无广告 SDK。唯一的网络请求是规则库更新与版本检查，两者失败都不影响核心功能。
+- **安全披露**：杀软 / SmartScreen 误报说明、支持版本与漏洞报告流程见 [`docs/SECURITY.md`](docs/SECURITY.md)。
 
 ## 贡献
 
 欢迎提 Issue 与 PR。改动前建议先读：
 
+- [`CONTRIBUTING.md`](CONTRIBUTING.md)——开发环境、代码风格、安全红线与 PR 流程
 - [`docs/PROJECT_STATE.md`](docs/PROJECT_STATE.md)——项目当前状态与已知问题
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)——模块边界与关键约束
 - [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md)——面向用户的功能说明（改 UI 时请同步更新）
