@@ -236,11 +236,17 @@ mod tests {
         };
 
         // 短名 → 长名展开：应还原为原来的长目录路径（大小写不敏感）。
+        // 不能拿 `dir` 当期望值：CI runner 的 `temp_dir()` 本身可能就是短名
+        // （`C:\Users\RUNNER~1\...`），展开后反而与它不等。用 canonicalize
+        // 取真实长路径再比较。
         let long = long_path_name(&short);
-        assert_eq!(
-            long.trim_end_matches('\\').to_lowercase(),
-            dir.to_string_lossy().to_lowercase()
-        );
+        let expected = std::fs::canonicalize(&dir)
+            .unwrap()
+            .to_string_lossy()
+            .trim_start_matches(r"\\?\")
+            .trim_end_matches('\\')
+            .to_lowercase();
+        assert_eq!(long.trim_end_matches('\\').to_lowercase(), expected);
     }
 
     #[cfg(windows)]
