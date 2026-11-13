@@ -3,8 +3,8 @@
 > **特别声明**：本文件是项目唯一真实数据源，也是「每次任务结束必更新、必单独提交」的文件。后续所有 Agent 必须遵守：任何任务完成后都要先更新本文件，再单独提交一次（commit message 形如 `docs(state): ... (#task-00X)`），不得与业务代码混在同一个 commit。
 
 ## 当前目标
-**v0.6.0 发版准备完成，状态 `testing`**（`feature/task-086-v060-prd-closure-hardening`）：task-086 的 29 项全部落地，版本号六处升 0.6.0、CHANGELOG v0.6.0、README / USER_GUIDE 已同步。
-**下一阶段 = 测试轮验证 + 合并 main + 打 tag `v0.6.0` 触发 Release**（NSIS 干净目录冒烟、CI 五道闸、真实通知历史、右键菜单人工点击）。
+**v0.6.0 测试轮完成，状态 `awaiting_review`**（`feature/task-086-v060-prd-closure-hardening`）：task-086 的 29 项全部落地，版本号六处升 0.6.0、CHANGELOG v0.6.0、README / USER_GUIDE 已同步；独立测试轮复跑 769 passed / 233 passed，NSIS 干净目录安装+卸载冒烟、通知历史落库已真机闭环，右键人工点击 / 200% 全页截图登记第三档。
+**下一阶段 = 评审 Agent 重评 → 合并 main → 打 tag `v0.6.0` 触发 Release**（剩余第三档项留活动桌面机器补取证；CI 五道闸由 PR #51 触发）。
 历史决策不变：代码签名不做、品牌图标不做、G6 不修；跨盘恢复 fallback 与 RmShutdown 进度/兄弟进程提示已在 task-086 补齐。
 
 ## 最近一次变更
