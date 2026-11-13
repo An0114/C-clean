@@ -5,6 +5,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { formatTs } from "../utils/formatTimestamp";
 import { api } from "../utils/invoke";
+import { t } from "../i18n";
 
 // engine AuditLogEntry 是 #[serde(rename_all = "camelCase")]，前端用 camelCase。
 interface AuditLogEntry {
@@ -86,7 +87,7 @@ export default function History() {
 
   return (
     <div>
-      <h2 style={{ margin: "0 0 12px", fontSize: 18 }}>清理历史</h2>
+      <h2 style={{ margin: "0 0 12px", fontSize: 18 }}>{t("page.history")}</h2>
 
       <label style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 12, fontSize: 13 }}>
         按扫描会话筛选

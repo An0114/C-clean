@@ -200,6 +200,15 @@ pub fn scan_from_rules(rules: &CacheRules) -> Vec<ScanItem> {
     out
 }
 
+/// task-086 5.5：协议统一入口。
+///
+/// **不启用增量缓存**：本模块的规则锚是浏览器安装根，真正要扫的目录要先读
+/// `profiles.ini` / 枚举 Profile 才能定位；而缓存文件高频改写、安装根 `mtime`
+/// 几乎不动，按根签名复用会长期返回旧结果。理由详见 [`crate::scan::cache`]。
+pub fn scan_from_rules_cached(rules: &CacheRules, _conn: &rusqlite::Connection) -> Vec<ScanItem> {
+    scan_from_rules(rules)
+}
+
 /// 从 Firefox 安装根目录读取 `profiles.ini` 并展开所有 profile。
 ///
 /// `root` 是 `...\Mozilla\Firefox`（不是 `Profiles` 子目录），

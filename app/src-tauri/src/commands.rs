@@ -1850,3 +1850,153 @@ pub async fn draft_clear(paths: tauri::State<'_, AppPaths>) -> Result<Envelope<(
     engine::ipc::commands::draft::clear_selections(&conn).map_err(|e| e.to_string())?;
     Ok(Envelope::ok(()))
 }
+
+// ===================== task-086 5.7：右键菜单 + 单目录扫描 =====================
+//
+// 注册表写入在 engine（`context_menu`），本层只做三件事：
+//   1. 把「当前 exe 路径」交给 engine；
+//   2. 启动参数 `--scan-path` 暂存到 State，等前端挂载后取走（见 lib.rs）；
+//   3. 单目录扫描建 session + 入库，前端切到 Items 就能看到。
+
+/// 启动参数里的待扫描目录（`--scan-path "%1"`）。
+///
+/// 用 `Mutex<Option<String>>` 而不是一次性全局：前端可能在 StrictMode 下
+/// 挂载两次，`take` 语义保证只有第一次拿到——重复消费会触发两次相同的扫描。
+#[derive(Default)]
+pub struct PendingScanPath(pub std::sync::Mutex<Option<String>>);
+
+/// 取走启动时携带的待扫描目录（没有则返回 null）。
+#[tauri::command]
+pub fn take_pending_scan_path(
+    pending: tauri::State<'_, PendingScanPath>,
+) -> Result<Envelope<Option<String>>, String> {
+    let mut guard = pending.0.lock().map_err(|e| e.to_string())?;
+    Ok(Envelope::ok(guard.take()))
+}
+
+/// 右键菜单是否已注册。
+#[tauri::command]
+pub fn context_menu_status() -> Result<Envelope<bool>, String> {
+    Ok(Envelope::ok(engine::context_menu::is_installed()))
+}
+
+/// 开启 / 关闭右键菜单注册（写 `HKCU\Software\Classes\Directory\shell\CClean`）。
+#[tauri::command]
+pub fn context_menu_set_enabled(enabled: bool) -> Result<Envelope<bool>, String> {
+    let result = if enabled {
+        let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
+        engine::context_menu::install(&exe)
+    } else {
+        engine::context_menu::uninstall()
+    };
+    match result {
+        Ok(()) => Ok(Envelope::ok(engine::context_menu::is_installed())),
+        Err(e) => {
+            eprintln!("[context_menu] 设置失败: {e}");
+            Ok(Envelope::err(INTERNAL))
+        }
+    }
+}
+
+/// `context_scan_path`：扫描右键菜单指定的目录，写入一个新扫描会话。
+///
+/// 风险等级固定 L2（见 `engine::context_menu`），用户仍需在 Items 页确认后清理。
+#[tauri::command]
+pub async fn context_scan_path(
+    path: String,
+    paths: tauri::State<'_, AppPaths>,
+) -> Result<Envelope<engine::context_menu::ContextScanResp>, String> {
+    let items = match engine::context_menu::collect_items(&path) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("[context_scan_path] {e}");
+            return Ok(Envelope::err(INTERNAL));
+        }
+    };
+
+    let conn = engine::db::conn::open(&paths.data_root).map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT INTO scan_session (started_at, status, scope) VALUES (unixepoch(), 'completed', 'context_menu')",
+        [],
+    )
+    .map_err(|e| e.to_string())?;
+    let session_id = conn.last_insert_rowid();
+
+    let emitter = engine::ipc::progress::NoopEmitter;
+    let runner =
+        engine::scan::ScanRunner::new(session_id, &conn, &emitter).with_percent_span(0, 100);
+    match runner.insert_batch(&items) {
+        Ok(s) => Ok(Envelope::ok(engine::context_menu::ContextScanResp {
+            session_id,
+            items: s.items_inserted,
+            bytes: s.total_bytes,
+        })),
+        Err(e) => {
+            eprintln!("[context_scan_path] 入库失败: {e}");
+            Ok(Envelope::err(INTERNAL))
+        }
+    }
+}
+
+// ===================== task-086 5.8：通知历史 =====================
+
+/// 列出最近通知（默认 50 条，最多 200 条）。
+#[tauri::command]
+pub async fn notification_history_list(
+    limit: Option<u32>,
+    paths: tauri::State<'_, AppPaths>,
+) -> Result<Envelope<Vec<engine::notification_history::NotificationEntry>>, String> {
+    let conn = engine::db::conn::open(&paths.data_root).map_err(|e| e.to_string())?;
+    match engine::notification_history::list(&conn, limit.unwrap_or(50)) {
+        Ok(v) => Ok(Envelope::ok(v)),
+        Err(e) => {
+            eprintln!("[notification_history_list] {e}");
+            Ok(Envelope::err(INTERNAL))
+        }
+    }
+}
+
+/// 未读条数（Settings 入口徽标）。
+#[tauri::command]
+pub async fn notification_history_unread_count(
+    paths: tauri::State<'_, AppPaths>,
+) -> Result<Envelope<i64>, String> {
+    let conn = engine::db::conn::open(&paths.data_root).map_err(|e| e.to_string())?;
+    match engine::notification_history::unread_count(&conn) {
+        Ok(n) => Ok(Envelope::ok(n)),
+        Err(e) => {
+            eprintln!("[notification_history_unread_count] {e}");
+            Ok(Envelope::err(INTERNAL))
+        }
+    }
+}
+
+/// 全部标记为已读。
+#[tauri::command]
+pub async fn notification_history_mark_read(
+    paths: tauri::State<'_, AppPaths>,
+) -> Result<Envelope<usize>, String> {
+    let conn = engine::db::conn::open(&paths.data_root).map_err(|e| e.to_string())?;
+    match engine::notification_history::mark_all_read(&conn) {
+        Ok(n) => Ok(Envelope::ok(n)),
+        Err(e) => {
+            eprintln!("[notification_history_mark_read] {e}");
+            Ok(Envelope::err(INTERNAL))
+        }
+    }
+}
+
+/// 清空历史。
+#[tauri::command]
+pub async fn notification_history_clear(
+    paths: tauri::State<'_, AppPaths>,
+) -> Result<Envelope<usize>, String> {
+    let conn = engine::db::conn::open(&paths.data_root).map_err(|e| e.to_string())?;
+    match engine::notification_history::clear(&conn) {
+        Ok(n) => Ok(Envelope::ok(n)),
+        Err(e) => {
+            eprintln!("[notification_history_clear] {e}");
+            Ok(Envelope::err(INTERNAL))
+        }
+    }
+}

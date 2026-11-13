@@ -30,6 +30,12 @@ pub mod scan;
 /// 用户偏好（task-057）：复用 settings 表存 auto_restart_on_close 等开关。
 pub mod prefs;
 
+/// 通知中心历史（task-086 5.8）：系统 toast 之外的应用内可回看记录。
+pub mod notification_history;
+
+/// Windows 右键菜单集成 + 单目录一次性扫描（task-086 5.7）。
+pub mod context_menu;
+
 /// 清理报告导出 + 磁盘空间查询（task-063）。
 pub mod report;
 

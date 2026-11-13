@@ -176,6 +176,44 @@ pub fn delete_value(root: RegRoot, subkey: &str, value: &str) -> Result<(), Stri
     }
 }
 
+// ===================== task-086 5.7：写注册表（右键菜单） =====================
+//
+// 只加「创建键 + 写字符串值 + 删整棵子树」三件事，够右键菜单用；
+// 仍然不引 `winreg` crate（理由见文件头）。
+
+/// 写一个 `REG_SZ` 字符串值；键不存在时自动创建。
+///
+/// `value` 为空字符串表示写**默认值**（右键菜单的显示名就是默认值）。
+pub fn set_string_value(
+    root: RegRoot,
+    subkey: &str,
+    value: &str,
+    data: &str,
+) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        imp::set_string_value(root, subkey, value, data)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (root, subkey, value, data);
+        Err("注册表操作仅支持 Windows".to_string())
+    }
+}
+
+/// 删除 `root\subkey` 及其全部子键；键不存在视为成功（幂等）。
+pub fn delete_tree(root: RegRoot, subkey: &str) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        imp::delete_tree(root, subkey)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (root, subkey);
+        Err("注册表操作仅支持 Windows".to_string())
+    }
+}
+
 // ===================== .reg 导出（纯文本生成，可单测） =====================
 
 /// 生成 `.reg` 文件内容（Windows Registry Editor 5.00 格式，双击可导入还原）。
@@ -482,6 +520,89 @@ mod imp {
                 root.short(),
                 subkey,
                 value
+            ));
+        }
+        Ok(())
+    }
+
+    // ===== task-086 5.7：写注册表 =====
+
+    /// 打开或创建可写键。
+    ///
+    /// 用 `RegCreateKeyW`（不是 `RegCreateKeyExW`）：后者在 windows crate 里
+    /// 被 `Win32_Security` feature 门控，而本 crate 的 feature 清单里没有它
+    /// （task-062 只为 SHELLEXECUTEINFOW 开了 `Win32_System_Registry`）。
+    /// `RegCreateKeyW` 语义足够：HKCU 下创建/打开子键，继承当前用户默认 DACL。
+    fn create_key(root: RegRoot, subkey: &str) -> Result<Key, String> {
+        use windows::Win32::System::Registry::RegCreateKeyW;
+
+        let path = to_wide(subkey);
+        let mut hkey = HKEY::default();
+        // SAFETY: path 以 NUL 结尾且存活；hkey 是栈上变量，API 只写它。
+        let rc = unsafe { RegCreateKeyW(hkey_of(root), PCWSTR(path.as_ptr()), &mut hkey) };
+        if rc.is_err() {
+            return Err(format!(
+                "创建注册表键失败（{}\\{}）：{rc:?}",
+                root.short(),
+                subkey
+            ));
+        }
+        Ok(Key(hkey))
+    }
+
+    pub fn set_string_value(
+        root: RegRoot,
+        subkey: &str,
+        value: &str,
+        data: &str,
+    ) -> Result<(), String> {
+        use windows::Win32::System::Registry::{RegSetValueExW, REG_SZ};
+
+        let key = create_key(root, subkey)?;
+        let name = to_wide(value);
+        // REG_SZ 的数据是 UTF-16（含结尾 NUL）的字节序列。
+        let bytes: Vec<u8> = data
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .flat_map(|u| u.to_le_bytes())
+            .collect();
+        // SAFETY: name 以 NUL 结尾且存活；bytes 是本函数栈上的完整缓冲区，
+        // 切片长度即 cbData；key 由 RAII 包装保证有效。
+        let rc = unsafe {
+            RegSetValueExW(
+                key.0,
+                PCWSTR(name.as_ptr()),
+                0,
+                REG_SZ,
+                Some(bytes.as_slice()),
+            )
+        };
+        rc.ok().map_err(|e| {
+            format!(
+                "写注册表值失败（{}\\{} :: {}）：{e}",
+                root.short(),
+                subkey,
+                value
+            )
+        })
+    }
+
+    pub fn delete_tree(root: RegRoot, subkey: &str) -> Result<(), String> {
+        use windows::Win32::Foundation::ERROR_FILE_NOT_FOUND;
+        use windows::Win32::System::Registry::RegDeleteTreeW;
+
+        let path = to_wide(subkey);
+        // SAFETY: path 以 NUL 结尾且存活；只删指定子树，不碰根键。
+        let rc = unsafe { RegDeleteTreeW(hkey_of(root), PCWSTR(path.as_ptr())) };
+        if rc.is_err() {
+            // 键本来就不存在 = 已是目标状态（幂等）。
+            if rc.0 == ERROR_FILE_NOT_FOUND.0 {
+                return Ok(());
+            }
+            return Err(format!(
+                "删除注册表键失败（{}\\{}）：{rc:?}",
+                root.short(),
+                subkey
             ));
         }
         Ok(())

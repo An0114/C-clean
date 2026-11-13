@@ -81,6 +81,25 @@ pub fn scan_from_rules(rules: &CacheRules) -> Vec<ScanItem> {
         .collect()
 }
 
+/// task-086 5.5：规则驱动 + 增量缓存（生产主入口）。
+///
+/// 每个扫描根独立判断：根目录 `mtime` 未变则复用上次该根的条目清单。
+/// 近似与边界见 [`crate::scan::cache`] 模块文档。
+pub fn scan_from_rules_cached(rules: &CacheRules, conn: &rusqlite::Connection) -> Vec<ScanItem> {
+    crate::rules::schema::roots_for_categories(rules, OWN_CATEGORIES)
+        .into_iter()
+        .flat_map(|r| {
+            crate::scan::cache::scan_dir_cached(
+                conn,
+                Path::new(&r.root),
+                MODULE_CODE,
+                &r.category,
+                r.risk_level,
+            )
+        })
+        .collect()
+}
+
 /// 目标目录表：`(路径, 类别键, 风险等级)`。
 ///
 /// 抽成独立函数是为了能单测「环境变量缺失时的兜底」——直接调 [`scan`] 会

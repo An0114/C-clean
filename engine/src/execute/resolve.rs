@@ -9,7 +9,8 @@
 //!   与输入做相等比较**——CI runner 的 TEMP 用 8.3 短名（`RUNNER~1`），
 //!   canonicalize 会解析成长名（`runneradmin`），字符串不等会误判 hop=1。
 //! - 最多 [`MAX_HOPS`] 跳防环路（canonicalize 自身遇环会报错，这里仅作显式常量）；
-//! - UNC（`\\server\share\...`）本任务保守拒绝（沿用 task-003 策略）。
+//! - UNC（`\\server\share\...`）task-086 5.4 起允许解析（用户规则可指向网络盘，
+//!   固定 L2 需确认）；`\\?\UNC\` 前缀统一还原为 `\\server\share\...`。
 
 use super::normalize::NormalizedPath;
 
@@ -160,16 +161,14 @@ fn count_reparse_hops(_normalized: &str) -> u32 {
 ///
 /// 调用方拿到 [`ResolvedPath.real`] 后应再过一次 `normalize()` + `classify()`，
 /// 用真实路径（而非用户输入路径）做 L3 判定。
+///
+/// # task-086 5.4：UNC 不再一律拒绝
+///
+/// 用户自定义规则可以指向网络共享（L2，需确认）。`canonicalize` 对 UNC 实际可用，
+/// 返回 `\\?\UNC\server\share\...`；这里统一去前缀，让上层拿到的 `real` 与
+/// 用户规则里的 `\\server\share\...` 形态一致（否则字符串前缀匹配永远不中）。
 pub fn resolve_to_real(input: &NormalizedPath) -> Result<ResolvedPath, ResolveError> {
     let raw = input.normalized();
-
-    // UNC 保守拒绝：canonicalize 对 \\server\share 行为复杂，本阶段一律拒。
-    if raw.starts_with(r"\\") {
-        return Err(ResolveError::Io(std::io::Error::new(
-            std::io::ErrorKind::Unsupported,
-            format!("UNC path not supported: {raw}"),
-        )));
-    }
 
     let canonical = std::fs::canonicalize(raw).map_err(|e| {
         // 区分「不存在」与其他 IO 错误，便于上层填 audit。
@@ -180,11 +179,13 @@ pub fn resolve_to_real(input: &NormalizedPath) -> Result<ResolvedPath, ResolveEr
         }
     })?;
 
-    // canonicalize 在 Windows 返回 \\?\C:\... 长路径前缀，去掉以匹配 classify 的字符串比较。
-    let real = canonical
-        .to_string_lossy()
-        .trim_start_matches(r"\\?\")
-        .to_string();
+    // canonicalize 在 Windows 返回 `\\?\C:\...` / `\\?\UNC\server\share\...`。
+    // 两种前缀都要去掉，才能与 classify / 规则库的字符串比较对齐。
+    let canonical_str = canonical.to_string_lossy();
+    let real = match canonical_str.strip_prefix(r"\\?\UNC\") {
+        Some(rest) => format!(r"\\{rest}"),
+        None => canonical_str.trim_start_matches(r"\\?\").to_string(),
+    };
 
     // hop 数：逐级查 reparse point（不再靠 canonicalize 字符串比对）。
     let hop_count = count_reparse_hops(raw);

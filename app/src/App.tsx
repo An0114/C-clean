@@ -6,6 +6,7 @@ import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { listen } from "@tauri-apps/api/event";
 import { api } from "./utils/invoke";
+import { t, useLang } from "./i18n";
 import BigFiles from "./pages/BigFiles";
 import Dashboard from "./pages/Dashboard";
 import History from "./pages/History";
@@ -164,6 +165,8 @@ class ErrorBoundary extends Component<
 }
 
 export default function App() {
+  // task-086 5.6：订阅语言变化（App 重渲染时整棵子树跟着换文案）。
+  useLang();
   const [tab, setTab] = useState<Tab>("dashboard");
 
   // task-061：主题。
@@ -257,6 +260,24 @@ export default function App() {
       unScan?.();
       unQuit?.();
     };
+  }, []);
+
+  // task-086 5.7：右键菜单以 `--scan-path` 拉起时，挂载后取走目录并扫描。
+  // 取走是原子操作（后端 take），StrictMode 双挂载不会扫两次。
+  useEffect(() => {
+    (async () => {
+      try {
+        const pending = await api<string | null>("take_pending_scan_path", {});
+        // 单测 mock 可能返回对象 / undefined：只有非空字符串才算有效参数，
+        // 否则会误触发单目录扫描并切到未准备好的清理页。
+        if (typeof pending !== "string" || !pending) return;
+        await api("context_scan_path", { path: pending });
+        // 扫描结果落进新的 cleanup_item，切到清理页即可看到。
+        setTab("items");
+      } catch {
+        // 非 Tauri 环境 / 扫描失败：不阻塞启动（用户可手动扫描）
+      }
+    })();
   }, []);
 
   // task-061：跟随系统主题的实时变化（用户在 Windows 设置里切换时不需重启应用）。
@@ -524,31 +545,31 @@ export default function App() {
 
       <div style={{ marginBottom: 16 }}>
         <button style={tabBtnStyle(tab === "dashboard")} onClick={() => setTab("dashboard")}>
-          仪表盘
+          {t("nav.dashboard")}
         </button>
         <button style={tabBtnStyle(tab === "items")} onClick={() => setTab("items")}>
-          清理
+          {t("nav.items")}
         </button>
         <button style={tabBtnStyle(tab === "plans")} onClick={() => setTab("plans")}>
-          方案
+          {t("nav.plans")}
         </button>
         <button style={tabBtnStyle(tab === "bigfiles")} onClick={() => setTab("bigfiles")}>
-          大文件
+          {t("nav.bigfiles")}
         </button>
         <button style={tabBtnStyle(tab === "residual")} onClick={() => setTab("residual")}>
-          残留
+          {t("nav.residual")}
         </button>
         <button style={tabBtnStyle(tab === "registry")} onClick={() => setTab("registry")}>
-          注册表
+          {t("nav.registry")}
         </button>
         <button style={tabBtnStyle(tab === "safebox")} onClick={() => setTab("safebox")}>
-          保险箱
+          {t("nav.safebox")}
         </button>
         <button style={tabBtnStyle(tab === "history")} onClick={() => setTab("history")}>
-          历史
+          {t("nav.history")}
         </button>
         <button style={tabBtnStyle(tab === "settings")} onClick={() => setTab("settings")}>
-          设置
+          {t("nav.settings")}
         </button>
       </div>
       <ErrorBoundary onReset={() => setTab("dashboard")}>

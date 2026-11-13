@@ -28,6 +28,7 @@ use crate::db::DbError;
 /// - v6（task-084）：新增 `bigfiles_target_space` + `duplicate_files` 表（大文件地图 v2 缓存）。
 /// - v7（task-084）：新增 `draft_selections` 表（草稿暂存，用户勾选跨会话恢复）。
 /// - v8（task-086）：`audit_log` 加 `session_id`，支持按扫描会话筛选。
+/// - v9（task-086）：新增 `scan_cache`（增量扫描缓存）+ `notification_history`（通知历史）。
 ///
 /// # 为什么 v3 不是任务书说的 v2
 ///
@@ -43,6 +44,7 @@ static MIGRATIONS: &[(u32, &str)] = &[
     (6, include_str!("migrations/v6__bigfiles_v2.sql")),
     (7, include_str!("migrations/v7__draft.sql")),
     (8, include_str!("migrations/v8__audit_log_session.sql")),
+    (9, include_str!("migrations/v9__longtail.sql")),
 ];
 
 /// 对连接执行所有「版本号 > 当前 user_version」的迁移，返回迁移后的最新版本号。
@@ -101,7 +103,22 @@ mod tests {
         let v: i64 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 8, "最新版本应为 v8（audit_log.session_id）");
+        assert_eq!(v, 9, "最新版本应为 v9（scan_cache + notification_history）");
+    }
+
+    #[test]
+    fn v9_adds_longtail_tables() {
+        let conn = migrated();
+        let names: Vec<String> = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        for t in ["scan_cache", "notification_history"] {
+            assert!(names.iter().any(|n| n == t), "缺少表 {t}，实际: {names:?}");
+        }
     }
 
     #[test]
@@ -254,10 +271,10 @@ mod tests {
     #[test]
     fn migrate_is_idempotent() {
         // 重复打开同一库不该重复执行迁移（ALTER TABLE 第二次会报「列已存在」）。
-        // task-086：v8 已加入（audit_log.session_id），最新版本升到 8。
+        // task-086：v9 已加入（scan_cache + notification_history），最新版本升到 9。
         let conn = migrated();
-        assert_eq!(migrate(&conn).unwrap(), 8);
-        assert_eq!(migrate(&conn).unwrap(), 8);
+        assert_eq!(migrate(&conn).unwrap(), 9);
+        assert_eq!(migrate(&conn).unwrap(), 9);
     }
 
     #[test]

@@ -71,8 +71,15 @@ pub fn classify(p: &NormalizedPath) -> Result<(), DenialReason> {
     let comps = p.lower_components();
 
     // 1. 系统关键路径：System32 及后代 / Installer 及后代 / pagefile / swapfile 本体。
+    //
+    // UNC（task-086 5.4）没有盘符，组件序列以共享内目录开头；用子串判定覆盖
+    // `\\server\share\Windows\System32\...`，避免网络路径绕过系统红线。
     if comps.starts_with(&["windows".into(), "system32".into()])
         || comps.starts_with(&["windows".into(), "installer".into()])
+        || lower.contains(r"\windows\system32\")
+        || lower.ends_with(r"\windows\system32")
+        || lower.contains(r"\windows\installer\")
+        || lower.ends_with(r"\windows\installer")
         || comps == vec!["pagefile.sys".to_string()]
         || comps == vec!["swapfile.sys".to_string()]
     {
@@ -176,5 +183,36 @@ mod tests {
             Err(builtin(BuiltinRedlineReason::L3ReservedAction))
         );
         assert!(check_action("dism /cleanup-image").is_ok());
+    }
+
+    // ===== task-086 5.4：UNC 仍受内置红线保护 =====
+
+    #[test]
+    fn unc_personal_dirs_are_blocked() {
+        assert_eq!(
+            classify_of(r"\\nas\backup\Users\alice\Desktop\a.docx"),
+            Err(builtin(BuiltinRedlineReason::L3PersonalDir))
+        );
+        assert_eq!(
+            classify_of(r"\\nas\backup\Users\alice\Downloads\a.exe"),
+            Err(builtin(BuiltinRedlineReason::L3PersonalDir))
+        );
+    }
+
+    #[test]
+    fn unc_system_paths_and_browser_files_are_blocked() {
+        assert_eq!(
+            classify_of(r"\\nas\backup\Windows\System32\kernel32.dll"),
+            Err(builtin(BuiltinRedlineReason::L3SystemPath))
+        );
+        assert_eq!(
+            classify_of(r"\\nas\backup\profiles\Bookmarks"),
+            Err(builtin(BuiltinRedlineReason::L3BrowserSensitive))
+        );
+    }
+
+    #[test]
+    fn unc_plain_cache_dir_is_allowed() {
+        assert!(classify_of(r"\\nas\backup\Games\cache\a.bin").is_ok());
     }
 }

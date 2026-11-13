@@ -719,17 +719,21 @@ impl<'conn, 'emitter> ScanOrchestrator<'conn, 'emitter> {
     ///
     /// A2：内置模块扫描的分发——注入规则走规则驱动，否则退回环境变量兜底。
     ///
+    /// task-086 5.5：规则驱动分支统一走 `scan_from_rules_cached`，按扫描根
+    /// `mtime` 复用上次结果（`browser_cache` 刻意不启用，理由见 `scan::cache`）。
+    ///
     /// 为什么抽成函数指针而非每处 `if let`：五个模块的「规则入口 / 兜底入口」
     /// 成对出现，抽出来避免每个分支写一遍相同的 `if`。返回类型用完整路径，
     /// 避免再为这个内部辅助补 `use`。
     #[allow(clippy::type_complexity)]
     fn builtin_scan(
         rules: Option<&CacheRules>,
-        from_rules: fn(&CacheRules) -> Vec<crate::scan::modules::ScanItem>,
+        conn: &Connection,
+        from_rules: fn(&CacheRules, &Connection) -> Vec<crate::scan::modules::ScanItem>,
         fallback: fn() -> Vec<crate::scan::modules::ScanItem>,
     ) -> Vec<crate::scan::modules::ScanItem> {
         match rules {
-            Some(r) => from_rules(r),
+            Some(r) => from_rules(r, conn),
             None => fallback(),
         }
     }
@@ -738,30 +742,36 @@ impl<'conn, 'emitter> ScanOrchestrator<'conn, 'emitter> {
     /// 调用方在循环开头已经做过模块粒度的取消检查。
     fn rust_module_items(&self, name: &str) -> Vec<crate::scan::modules::ScanItem> {
         let rules = self.system_rules.as_ref();
+        let conn = self.conn;
         match name {
             TEMP_SCRIPT => Self::builtin_scan(
                 rules,
-                crate::scan::modules::temp::scan_from_rules,
+                conn,
+                crate::scan::modules::temp::scan_from_rules_cached,
                 crate::scan::modules::temp::scan,
             ),
             PREFETCH_SCRIPT => Self::builtin_scan(
                 rules,
-                crate::scan::modules::prefetch::scan_from_rules,
+                conn,
+                crate::scan::modules::prefetch::scan_from_rules_cached,
                 crate::scan::modules::prefetch::scan,
             ),
             BROWSER_CACHE_SCRIPT => Self::builtin_scan(
                 rules,
-                crate::scan::modules::browser_cache::scan_from_rules,
+                conn,
+                crate::scan::modules::browser_cache::scan_from_rules_cached,
                 crate::scan::modules::browser_cache::scan,
             ),
             DEV_CACHE_SCRIPT => Self::builtin_scan(
                 rules,
-                crate::scan::modules::dev_cache::scan_from_rules,
+                conn,
+                crate::scan::modules::dev_cache::scan_from_rules_cached,
                 crate::scan::modules::dev_cache::scan,
             ),
             WINDOWS_UPDATE_SCRIPT => Self::builtin_scan(
                 rules,
-                crate::scan::modules::windows_update::scan_from_rules,
+                conn,
+                crate::scan::modules::windows_update::scan_from_rules_cached,
                 crate::scan::modules::windows_update::scan,
             ),
             _ => unreachable!("未知内置扫描模块: {name}"),

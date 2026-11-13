@@ -215,47 +215,23 @@ impl<'conn> Deleter for SafeBoxDeleter<'conn> {
         )
         .map_err(|e| format!("insert safe_box row for {src}: {e}"))?;
 
-        // 5. rename；跨盘 rename 失败时 fallback copy+remove。
-        match fs::rename(src_path, &box_path) {
-            Ok(()) => {}
-            Err(e) if is_cross_device(&e) => {
-                if let Err(e2) = fs::copy(src_path, &box_path) {
-                    // copy 失败：box_path 可能已被创建为不完整文件，删掉再报错。
-                    let _ = fs::remove_file(&box_path);
-                    return Err(format!("copy fallback {src} -> {:?}: {e2}", box_path));
-                }
-                if let Err(e2) = fs::remove_file(src_path) {
-                    // copy 成功但 remove 失败：源文件还在，box 里那份是重复的。
-                    // 必须删掉目标，否则 enforce_quota 会把它当正常条目占配额。
-                    let _ = fs::remove_file(&box_path);
-                    return Err(match crate::execute::error_kind::classify_io_error(&e2) {
-                        crate::execute::error_kind::DeleteFailureKind::SharingViolation => {
-                            format!("FILE_IN_USE: {src}")
-                        }
-                        crate::execute::error_kind::DeleteFailureKind::PermissionDenied => {
-                            format!("PERMISSION_DENIED: {src}")
-                        }
-                        _ => format!("copy+remove fallback {src} -> {:?}: {e2}", box_path),
-                    });
-                }
-            }
+        // 5. rename；跨盘时 [`move_path`] 会退回 copy+remove（文件与目录都支持）。
+        if let Err(e) = move_path(src_path, &box_path) {
             // task-019：rename 失败按 errno 分类，给前端明确的 FILE_IN_USE / PERMISSION_DENIED 信号。
-            Err(e) => {
-                return match crate::execute::error_kind::classify_io_error(&e) {
-                    crate::execute::error_kind::DeleteFailureKind::SharingViolation => {
-                        Err(format!("FILE_IN_USE: {src}"))
-                    }
-                    crate::execute::error_kind::DeleteFailureKind::PermissionDenied => {
-                        Err(format!("PERMISSION_DENIED: {src}"))
-                    }
-                    // NotFound：源文件本来就不在（竞态）。行已写进事务，这里要显式
-                    // rollback 语义——`?` 返回后 Transaction Drop 会回滚，无需手动删。
-                    crate::execute::error_kind::DeleteFailureKind::NotFound => Ok(false),
-                    crate::execute::error_kind::DeleteFailureKind::Unknown => {
-                        Err(format!("rename {src} -> {:?}: {e}", box_path))
-                    }
-                };
-            }
+            return match crate::execute::error_kind::classify_io_error(&e) {
+                crate::execute::error_kind::DeleteFailureKind::SharingViolation => {
+                    Err(format!("FILE_IN_USE: {src}"))
+                }
+                crate::execute::error_kind::DeleteFailureKind::PermissionDenied => {
+                    Err(format!("PERMISSION_DENIED: {src}"))
+                }
+                // NotFound：源文件本来就不在（竞态）。行已写进事务，这里要显式
+                // rollback 语义——`?` 返回后 Transaction Drop 会回滚，无需手动删。
+                crate::execute::error_kind::DeleteFailureKind::NotFound => Ok(false),
+                crate::execute::error_kind::DeleteFailureKind::Unknown => {
+                    Err(format!("move {src} -> {:?}: {e}", box_path))
+                }
+            };
         }
 
         // 6. 文件已就位 → 提交事务（行与文件此时一致）。
@@ -282,6 +258,89 @@ impl<'conn> Deleter for SafeBoxDeleter<'conn> {
 /// 判断是否为跨盘 rename（Windows ERROR_NOT_SAME_DEVICE=17；Linux EXDEV=18）。
 fn is_cross_device(e: &io::Error) -> bool {
     matches!(e.raw_os_error(), Some(17) | Some(18))
+}
+
+/// 递归复制目录树（**不跟随**符号链接 / junction）。
+///
+/// # 为什么遇到重解析点要直接报错
+///
+/// 保险箱里的目录是整体 rename 进来的，正常不含链接（扫描模块和删除网关都过滤
+/// reparse point）。真有链接时继续复制会**穿透到箱外**，把链接目标的数据复制到
+/// 目标盘——宁可让这一次恢复失败，也不能把「复制哪份数据」交给链接指向决定。
+fn copy_dir_recursive(src: &Path, dst: &Path) -> io::Result<()> {
+    fs::create_dir_all(dst)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let path = entry.path();
+        let md = fs::symlink_metadata(&path)?;
+        if is_reparse_point(&md) {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                format!(
+                    "目录内含符号链接/Junction，拒绝跨盘复制: {}",
+                    path.display()
+                ),
+            ));
+        }
+        let to = dst.join(entry.file_name());
+        if md.is_dir() {
+            copy_dir_recursive(&path, &to)?;
+        } else {
+            fs::copy(&path, &to)?;
+        }
+    }
+    Ok(())
+}
+
+/// 判断 metadata 是否为 reparse point（symlink / junction）。
+///
+/// 与 `scan::modules::is_reparse_point` 同一判定，但在 execute 层单独放一份
+/// 最小实现：execute 是删除网关，不应反向依赖扫描模块。
+fn is_reparse_point(md: &fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        if md.file_attributes() & 0x400 != 0 {
+            return true;
+        }
+    }
+    md.file_type().is_symlink()
+}
+
+/// 把 `src` 搬运到 `dst`：先 `rename`；跨盘失败时退回「复制 + 删除源」。
+///
+/// task-086 5.1：保险箱默认在数据目录（通常 C 盘），用户把文件恢复到 D 盘时
+/// `fs::rename` 必然跨卷失败（ERROR_NOT_SAME_DEVICE）。此前 restore 直接把错误
+/// 冒给用户，表现为「跨盘恢复不可用」。
+///
+/// 与旧实现的两点差异：
+/// 1. **目录也能跨盘**：旧 fallback 用 `fs::copy`，对目录直接失败；现在目录走
+///    [`copy_dir_recursive`]。这让「残留扫描整目录进保险箱后恢复到别的盘」可用；
+/// 2. **失败清理集中在函数内**：复制失败或删除源失败都会把已复制的目标删掉，
+///    避免保险箱里留下半份副本（会被配额统计当成正常条目）。
+fn move_path(src: &Path, dst: &Path) -> io::Result<()> {
+    match fs::rename(src, dst) {
+        Ok(()) => Ok(()),
+        Err(e) if is_cross_device(&e) => {
+            let md = fs::symlink_metadata(src)?;
+            let copied = if md.is_dir() {
+                copy_dir_recursive(src, dst)
+            } else {
+                fs::copy(src, dst).map(|_| ())
+            };
+            if let Err(e2) = copied {
+                let _ = remove_entry(dst);
+                return Err(e2);
+            }
+            if let Err(e2) = remove_entry(src) {
+                // 源还在、目标已复制：必须删目标，否则同一份数据出现两次。
+                let _ = remove_entry(dst);
+                return Err(e2);
+            }
+            Ok(())
+        }
+        Err(e) => Err(e),
+    }
 }
 
 // ===================== task-017: restore =====================
@@ -349,9 +408,9 @@ pub fn restore_from_safe_box(
         }
     }
 
-    // 4. rename box → original
-    std::fs::rename(&box_abs, orig)
-        .map_err(|e| RestoreError::Io(format!("rename {box_abs:?} -> {orig:?}: {e}")))?;
+    // 4. 搬回原位置。同盘走 rename；跨盘（task-086 5.1）自动退回 copy+remove。
+    move_path(&box_abs, orig)
+        .map_err(|e| RestoreError::Io(format!("move {box_abs:?} -> {orig:?}: {e}")))?;
 
     // 5. 标记为已恢复（task-056：不再 DELETE 行）
     //
@@ -987,5 +1046,58 @@ mod tests {
         assert!(ids.is_empty());
         assert!(from.is_none() && to.is_none());
         assert!(!f.is_empty_range());
+    }
+
+    // ===== task-086 5.1：跨盘 copy+remove fallback =====
+
+    #[test]
+    fn move_path_moves_file_and_leaves_no_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("a.bin");
+        let dst = dir.path().join("moved").join("a.bin");
+        fs::create_dir_all(dst.parent().unwrap()).unwrap();
+        fs::write(&src, vec![b'x'; 32]).unwrap();
+
+        move_path(&src, &dst).expect("move_path 同盘应走 rename");
+        assert!(!src.exists(), "源文件必须已被移走");
+        assert_eq!(fs::read(&dst).unwrap().len(), 32);
+    }
+
+    #[test]
+    fn move_path_moves_directory_recursively() {
+        // 跨盘分支对目录同样成立：copy_dir_recursive 直接覆盖这一路径。
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("tree");
+        fs::create_dir_all(src.join("sub")).unwrap();
+        fs::write(src.join("a.txt"), b"a").unwrap();
+        fs::write(src.join("sub").join("b.txt"), b"bb").unwrap();
+        let dst = dir.path().join("out");
+
+        move_path(&src, &dst).expect("目录搬运应成功");
+        assert!(!src.exists(), "源目录必须已被移走");
+        assert_eq!(fs::read(dst.join("a.txt")).unwrap(), b"a");
+        assert_eq!(fs::read(dst.join("sub").join("b.txt")).unwrap(), b"bb");
+    }
+
+    #[test]
+    fn copy_dir_recursive_reproduces_tree() {
+        // 直接验 fallback 的核心：不依赖「会不会真的跨盘」。
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        fs::create_dir_all(src.join("deep").join("deeper")).unwrap();
+        fs::write(src.join("x.dat"), vec![1u8; 3]).unwrap();
+        fs::write(src.join("deep").join("y.dat"), vec![2u8; 4]).unwrap();
+        fs::write(src.join("deep").join("deeper").join("z.dat"), b"z").unwrap();
+        let dst = dir.path().join("dst");
+
+        copy_dir_recursive(&src, &dst).expect("递归复制应成功");
+        assert_eq!(fs::read(dst.join("x.dat")).unwrap().len(), 3);
+        assert_eq!(fs::read(dst.join("deep").join("y.dat")).unwrap().len(), 4);
+        assert_eq!(
+            fs::read(dst.join("deep").join("deeper").join("z.dat")).unwrap(),
+            b"z"
+        );
+        // 源必须原样保留（copy 不删源；删除由 move_path 的第二步负责）
+        assert!(src.join("x.dat").exists());
     }
 }

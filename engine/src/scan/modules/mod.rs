@@ -50,7 +50,11 @@ use std::path::{Path, PathBuf};
 ///
 /// 取值约定（与 ps1 一致）：`0` = L0 / `1` = L1 / `2` = L2。L3 不允许出现在
 /// 扫描结果里（白名单层会拦，见 `execute::whitelist`）。
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// task-086 5.5：加 `Serialize` / `Deserialize`，供增量扫描缓存以 JSON 落库
+/// （`scan_cache.items_json`）。字段名保持 snake_case——它只在 engine 内部
+/// 存取，不跨 IPC，不需要 camelCase。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ScanItem {
     /// 模块代码（`temp` / `browser_cache` / ...）。对应 `cleanup_item.module_code`。
     pub module_code: String,

@@ -17,6 +17,7 @@ import { useCallback, useEffect, useState } from "react";
 import { formatBytes } from "../utils/formatBytes";
 import { api } from "../utils/invoke";
 import { layoutTreemap, type TreemapDatum } from "../utils/treemap";
+import { t } from "../i18n";
 
 /** 与 engine BigFileItem（camelCase）对齐。 */
 interface BigFileItem {
@@ -269,7 +270,7 @@ export default function BigFiles() {
         }}
       >
         <div>
-          <h1 style={{ margin: "0 0 4px" }}>大文件地图</h1>
+          <h1 style={{ margin: "0 0 4px" }}>{t("page.bigfiles")}</h1>
           <p style={{ color: "var(--text-muted)", margin: 0, fontSize: 13 }}>
             系统盘上最占空间的几类东西。<strong>本页只读，不会删除任何文件。</strong>
           </p>

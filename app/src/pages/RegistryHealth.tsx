@@ -14,6 +14,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { api, apiRaw } from "../utils/invoke";
+import { t } from "../i18n";
 
 /** 与 engine RegistryHealthItem（camelCase）对齐。 */
 interface RegistryHealthItem {
@@ -249,7 +250,7 @@ export default function RegistryHealth() {
         }}
       >
         <div>
-          <h1 style={{ margin: "0 0 4px" }}>注册表健康</h1>
+          <h1 style={{ margin: "0 0 4px" }}>{t("page.registry")}</h1>
           <p style={{ color: "var(--text-muted)", margin: 0, fontSize: 13 }}>
             开机启动项 / 卸载残留 / 计划任务体检。
             <strong>只有启动项可以代删</strong>，且删前自动导出 .reg 备份。
