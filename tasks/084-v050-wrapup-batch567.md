@@ -134,7 +134,7 @@ pending
 - **现状**：CI 只打 windows-latest（x64）。
 - **修法**：
   - `.github/workflows/release.yml` 加 ARM64 matrix：
-    - `platform: [windows-latest, windows-11-arm64]`（或 windows-arm64-latest，按 GitHub 实际可用 runner）；
+    - `platform: [windows-latest, windows-11-arm]`（GitHub 托管 Windows arm64 标准 runner 的内置标签为 `windows-11-arm`，不存在 `windows-11-arm64`；VS2026 镜像为 `windows-11-vs2026-arm`）；
     - Tauri 配置 `tauri.conf.json` 加 target `aarch64-pc-windows-msvc`；
   - 发版产物多一个 `C-clean_0.5.0_arm64-setup.exe`；
   - **不签代码**（死路，SmartScreen 警告可接受）。
